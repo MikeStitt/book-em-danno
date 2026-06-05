@@ -1,0 +1,36 @@
+{
+  "env": {
+    "PREK_QUIET": "1"
+  },
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/precompact-checkpoint.sh",
+            "timeout": 20,
+            "statusMessage": "Writing compact checkpoint to project memory…"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(openscad *)",
+      "Bash(cgal-probe/build/release/mesh-atlas-cgal-probe *)",
+      "Bash(cgal-probe/build/dev/mesh-atlas-cgal-probe *)",
+      "Bash(./scripts/scad-parity.sh)",
+      "Bash(./scripts/scad-parity.sh *)",
+      "Bash(scripts/scad-parity.sh)",
+      "Bash(scripts/scad-parity.sh *)",
+      "Bash(bash scripts/scad-parity.sh)",
+      "Bash(bash scripts/scad-parity.sh *)",
+      "Bash(python3 scripts/extract-claude-session.py *)",
+      "Bash(./scripts/extract-claude-session.py *)",
+      "Bash(./scripts/shapes-from-annotations.jq *)",
+      "Bash(jq *)"
+    ]
+  }
+}
