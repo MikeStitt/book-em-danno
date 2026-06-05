@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# ados-sandbox — run OpenCode for a target project inside an isolated Docker
+# (Linux microVM) sandbox, wired to host Ollama and the project's hybrid config.
+#
+# Findings baked in (Docker Desktop `docker sandbox`, verified on this host):
+#   * `docker sandbox create --name <n> opencode <workspace>` mounts the project
+#     at the same path inside the VM.
+#   * The sandbox resolves host.docker.internal (the Mac), BUT host Ollama must
+#     listen on 0.0.0.0 — its default 127.0.0.1 is unreachable from the VM. Set
+#     `OLLAMA_HOST=0.0.0.0:11434` and restart Ollama.
+#   * Per-sandbox CPU/memory is NOT a flag — size the VM in Docker Desktop ▸
+#     Resources.
+#   * Egress is gated by a proxy; allow host.docker.internal (+ your cloud host).
+#
+# Usage: ados-sandbox --target <dir> [options]
+#   --target <dir>      Project to run (default: .)
+#   --name <name>       Sandbox name (default: ados-<dirname>)
+#   --ollama-url <url>  OLLAMA_BASE_URL inside the sandbox
+#                       (default: http://host.docker.internal:11434/v1)
+#   --allow-host <h>    Extra host to allow through the egress proxy (repeatable)
+#   --env KEY=VAL       Env var to inject (repeatable; e.g. ANTHROPIC_API_KEY=...)
+#   --env-file <f>      File of KEY=VAL env vars to inject
+#   --use-run           Launch via `docker sandbox run` (no env injection)
+#   --no-launch         Create + configure but do not launch OpenCode
+#   -n, --dry-run / -v, --verbose / -h, --help / -V, --version
+#
+# Exit: 0 ok; 2 usage; 3 config; 4 runtime.
+set -Eeuo pipefail
+set -o errtrace
+shopt -s inherit_errexit 2>/dev/null || true
+IFS=$'\n\t'
+
+readonly APP_NAME="ados-sandbox"
+readonly APP_VERSION="0.1.0"
+LOG_TAG="(${APP_NAME})"
+readonly EXIT_CONFIG=3
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=../scripts/lib/common.sh
+source "${SCRIPT_DIR}/../scripts/lib/common.sh"
+
+require_bash 4
+
+TARGET_DIR="."
+SANDBOX_NAME=""
+OLLAMA_URL="http://host.docker.internal:11434/v1"
+USE_RUN=false
+NO_LAUNCH=false
+ALLOW_HOSTS=(host.docker.internal)
+ENV_PAIRS=()
+ENV_FILES=()
+_ENV_FILE_TMP=""
+
+die_config() {
+  log_err "$@"
+  exit "${EXIT_CONFIG}"
+}
+
+cleanup() {
+  if [[ -n "${_ENV_FILE_TMP}" && -f "${_ENV_FILE_TMP}" ]]; then
+    rm -f "${_ENV_FILE_TMP}"
+  fi
+}
+trap cleanup EXIT
+
+sandbox_exists() { docker sandbox ls 2>/dev/null | grep -qw "${SANDBOX_NAME}"; }
+
+# Warn (don't fail) if host Ollama is bound to loopback only — unreachable from
+# the sandbox VM.
+warn_if_ollama_loopback() {
+  command -v lsof >/dev/null 2>&1 || return 0
+  local listen
+  listen="$(lsof -nP -iTCP:11434 -sTCP:LISTEN 2>/dev/null || true)"
+  [[ -n "${listen}" ]] || return 0
+  if grep -q '127.0.0.1:11434' <<<"${listen}" && ! grep -qE '(\*|0\.0\.0\.0):11434' <<<"${listen}"; then
+    log_warn "Host Ollama is bound to 127.0.0.1 only — the sandbox cannot reach it."
+    log_warn "Restart Ollama with OLLAMA_HOST=0.0.0.0:11434 so the VM can connect."
+  fi
+}
+
+create_sandbox() {
+  if sandbox_exists; then
+    log_info "Sandbox already exists: ${SANDBOX_NAME}"
+    return 0
+  fi
+  run_cmd docker sandbox create --name "${SANDBOX_NAME}" opencode "${TARGET_ABS}"
+}
+
+configure_proxy() {
+  local -a args=()
+  local h
+  for h in "${ALLOW_HOSTS[@]}"; do args+=(--allow-host "${h}"); done
+  run_cmd docker sandbox network proxy "${SANDBOX_NAME}" "${args[@]}"
+}
+
+build_env_file() {
+  # Combine --env-file(s), --env pairs, and OLLAMA_BASE_URL into one temp file.
+  _ENV_FILE_TMP="$(mktemp)"
+  chmod 600 "${_ENV_FILE_TMP}"
+  local f
+  for f in "${ENV_FILES[@]}"; do
+    [[ -f "${f}" ]] || die_config "--env-file not found: ${f}"
+    cat "${f}" >>"${_ENV_FILE_TMP}"
+  done
+  local kv
+  for kv in "${ENV_PAIRS[@]}"; do printf '%s\n' "${kv}" >>"${_ENV_FILE_TMP}"; done
+  printf 'OLLAMA_BASE_URL=%s\n' "${OLLAMA_URL}" >>"${_ENV_FILE_TMP}"
+}
+
+launch() {
+  if [[ "${NO_LAUNCH}" == "true" ]]; then
+    log_info "Sandbox ready: ${SANDBOX_NAME} (not launched; --no-launch)"
+    return 0
+  fi
+  if [[ "${USE_RUN}" == "true" ]]; then
+    log_info "Launching via 'docker sandbox run' (no env injection — config must be self-contained)"
+    run_cmd docker sandbox run "${SANDBOX_NAME}"
+    return 0
+  fi
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    log_info "[DRY-RUN] Would inject OLLAMA_BASE_URL=${OLLAMA_URL} (+ ${#ENV_PAIRS[@]} --env, ${#ENV_FILES[@]} --env-file)"
+    log_info "[DRY-RUN] Would execute: docker sandbox exec -it --env-file <tmp> ${SANDBOX_NAME} opencode"
+    return 0
+  fi
+  build_env_file
+  log_info "Launching OpenCode in sandbox ${SANDBOX_NAME}..."
+  docker sandbox exec -it --env-file "${_ENV_FILE_TMP}" "${SANDBOX_NAME}" opencode
+}
+
+usage() {
+  cat <<EOF
+Usage: ${APP_NAME} --target <dir> [options]
+
+Run OpenCode for a target project inside an isolated Docker (Linux microVM)
+sandbox, wired to host Ollama (host.docker.internal) and the project's hybrid
+.opencode/opencode.jsonc.
+
+Prerequisites:
+  * Host Ollama must listen on 0.0.0.0 (OLLAMA_HOST=0.0.0.0:11434), not 127.0.0.1.
+  * Size the VM in Docker Desktop > Resources (no per-sandbox CPU/mem flag).
+
+Options:
+  --target <dir>      Project to run (default: .)
+  --name <name>       Sandbox name (default: ados-<dirname>)
+  --ollama-url <url>  OLLAMA_BASE_URL inside the sandbox
+                      (default: ${OLLAMA_URL})
+  --allow-host <h>    Extra host to allow through the egress proxy (repeatable)
+  --env KEY=VAL       Env var to inject (repeatable; e.g. ANTHROPIC_API_KEY=...)
+  --env-file <f>      File of KEY=VAL env vars to inject
+  --use-run           Launch via 'docker sandbox run' (no env injection)
+  --no-launch         Create + configure but do not launch OpenCode
+  -n, --dry-run       Show what would be done without doing it
+  -v, --verbose       Debug output
+  -h, --help          Show this help
+  -V, --version       Show version
+EOF
+}
+
+main() {
+  while (($#)); do
+    case "$1" in
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      -V | --version)
+        printf '%s %s\n' "${APP_NAME}" "${APP_VERSION}"
+        exit 0
+        ;;
+      --target)
+        shift
+        TARGET_DIR="${1:?--target requires a dir}"
+        ;;
+      --name)
+        shift
+        SANDBOX_NAME="${1:?--name requires a value}"
+        ;;
+      --ollama-url)
+        shift
+        OLLAMA_URL="${1:?--ollama-url requires a url}"
+        ;;
+      --allow-host)
+        shift
+        ALLOW_HOSTS+=("${1:?--allow-host requires a host}")
+        ;;
+      --env)
+        shift
+        ENV_PAIRS+=("${1:?--env requires KEY=VAL}")
+        ;;
+      --env-file)
+        shift
+        ENV_FILES+=("${1:?--env-file requires a path}")
+        ;;
+      --use-run) USE_RUN=true ;;
+      --no-launch) NO_LAUNCH=true ;;
+      -n | --dry-run) DRY_RUN=true ;;
+      -v | --verbose) VERBOSE=true ;;
+      *) die "Unknown option: $1" ;;
+    esac
+    shift
+  done
+
+  require_cmd docker
+
+  TARGET_ABS="$(cd "${TARGET_DIR}" 2>/dev/null && pwd -P)" \
+    || die_config "Target directory not found: ${TARGET_DIR}"
+  [[ -f "${TARGET_ABS}/.opencode/opencode.jsonc" ]] \
+    || log_warn "No .opencode/opencode.jsonc in target — run gen-opencode-config first."
+  [[ -z "${SANDBOX_NAME}" ]] && SANDBOX_NAME="ados-$(basename "${TARGET_ABS}")"
+
+  log_info "Target:  ${TARGET_ABS}"
+  log_info "Sandbox: ${SANDBOX_NAME}"
+  log_info "Ollama:  ${OLLAMA_URL}"
+
+  warn_if_ollama_loopback
+  create_sandbox
+  configure_proxy
+  launch
+}
+
+if [[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

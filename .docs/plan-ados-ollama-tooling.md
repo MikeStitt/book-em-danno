@@ -29,7 +29,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] **M2 — Ollama provisioning** — `scripts/setup-ollama.sh` (`--model`, pull Gemma, verify responds + tool-probe)
 - [x] **M3 — ADOS install integration** — `scripts/install-ados.sh` (global + project-local; record SHA)
 - [x] **M4 — Hybrid config generator** — `tools/gen-opencode-config` (target `.opencode/opencode.jsonc`)
-- [ ] **M5 — Docker sandbox launcher** — `tools/ados-sandbox` (spike: `docker sandbox` + host-gateway Ollama)
+- [x] **M5 — Docker sandbox launcher** — `tools/ados-sandbox` (spike done; see findings below)
 - [ ] **M6 — Orchestrator** — `tools/ados-ollama` (`doctor|setup|install|configure|sandbox|all`)
 - [ ] **M7 — (later) macOS Seatbelt sandbox** — `tools/ados-sandbox-macos`
 - [ ] **M8 — Docs + constitution sync** — README, usage guide, amend `parts/ados-ollama.md`
@@ -60,6 +60,15 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
   JSON (python json.tool), idempotent re-run, preserve-on-diff without --force. baseURL
   env-token + whether OpenCode loads project `.opencode/opencode.jsonc` inside the sandbox
   remain M5 risks to verify. Starting M5.
+- **2026-06-05** — M5 done: `tools/ados-sandbox`; 33/33 bats green. **Spike findings
+  (live):** `docker sandbox create --name <n> opencode <ws>` works; the VM resolves
+  `host.docker.internal` -> 192.168.65.254; **host Ollama binds 127.0.0.1 by default so
+  the VM can't reach it -> must set `OLLAMA_HOST=0.0.0.0:11434`** (launcher detects +
+  warns). No per-sandbox CPU/mem flag (Docker Desktop ▸ Resources). Egress is proxy-gated
+  (`docker sandbox network proxy --allow-host`). Also fixed `run_cmd` to space-join
+  dry-run output (was \n-joined via IFS). **Not yet verified (needs user):** full
+  interactive `@pm` session in-sandbox — requires cloud keys + a tool-capable Gemma (27b)
+  + confirming env injection via `exec --env-file`. Starting M6.
 
 ---
 
