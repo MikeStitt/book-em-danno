@@ -1,0 +1,6 @@
+# ShellCheck configuration for the ADOS-on-Ollama toolkit.
+shell=bash
+enable=all
+# SC2312: "Consider invoking this command separately to avoid masking its return
+# value" — too noisy for the log/pipe patterns used throughout.
+disable=SC2312

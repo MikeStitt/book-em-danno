@@ -17,14 +17,14 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] Design plan approved — 2026-06-05
 - [x] UX north-star doc — `.docs/user-experience-elephant.md`
 - [x] Plan mirrored to `.docs/` + `.docs/` marked lint/format-exempt
-- [ ] **M0 — Repo foundation & quality gate**
-  - [ ] `Makefile` (`check` = shellcheck + `shfmt -d` + `scripts/test-all.sh`; `test`; `develop`)
-  - [ ] `.shellcheckrc` (`enable=all`)
-  - [ ] `scripts/test-all.sh` aggregator (from ADOS bash rules)
-  - [ ] `.pre-commit-config.yaml` (prek) — **excludes `.docs/`** from markdownlint/prettier
-  - [ ] `scripts/setup-dev.sh` (brew: bash shellcheck shfmt bats-core)
-  - [ ] CI: GitHub Actions running `make check` on **macOS + Linux**
-  - [ ] first bats smoke test
+- [x] **M0 — Repo foundation & quality gate** (`make check` green locally)
+  - [x] `Makefile` (`check` = shellcheck + `shfmt -d` + `scripts/test-all.sh`; `test`; `develop`)
+  - [x] `.shellcheckrc` (`enable=all`, disable SC2312)
+  - [x] `scripts/test-all.sh` aggregator (bats; 0 if none found)
+  - [x] `.pre-commit-config.yaml` (prek) — **excludes `.docs/`** (not yet exercised; prek run pending)
+  - [x] `scripts/setup-dev.sh` (brew: bash shellcheck shfmt bats-core) — bash 3.2-safe bootstrap
+  - [x] CI: GitHub Actions running `make check` on **macOS + Linux** (validates on first push)
+  - [x] first bats smoke test (`scripts/.tests/setup-dev.bats`, 4 tests)
 - [ ] **M1 — Preflight doctor** — `tools/ados-ollama-doctor` (read-only deps check)
 - [ ] **M2 — Ollama provisioning** — `scripts/setup-ollama.sh` (`--model`, pull Gemma, verify tool-calls)
 - [ ] **M3 — ADOS install integration** — `scripts/install-ados.sh` (global + project-local; record SHA)
@@ -39,6 +39,9 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **2026-06-05** — Plan approved. UX doc written (`user-experience-elephant.md`).
   Plan mirrored here; `.docs/` marked exempt from markdown/format checks. Work
   starting on M0.
+- **2026-06-05** — M0 done: `make check` (shellcheck + shfmt + bats) green locally;
+  installed brew bash 5.3.12 / shellcheck 0.11 / shfmt 3.13 / bats 1.13. Pending live
+  validation: GitHub Actions CI (on push) and prek hook run. Starting M1.
 
 ---
 

@@ -1,0 +1,30 @@
+# Pre-commit hooks, run via prek (a fast drop-in for the pre-commit runner).
+# Mirrors `make check` where practical. `.docs/` is exempt from doc-quality hooks
+# so the living plan/status tracker can be committed freely (see .markdownlintignore).
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^\.docs/
+      - id: end-of-file-fixer
+        exclude: ^\.docs/
+      - id: check-merge-conflict
+      - id: check-yaml
+
+  - repo: https://github.com/koalaman/shellcheck-precommit
+    rev: v0.10.0
+    hooks:
+      - id: shellcheck
+
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.10.0
+    hooks:
+      - id: shfmt
+        args: [-i, "2", -ci, -bn, -d]
+
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.43.0
+    hooks:
+      - id: markdownlint
+        exclude: ^\.docs/
