@@ -29,7 +29,7 @@ readonly EXIT_RUNTIME=4
 readonly EXIT_EXTERNAL=5
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-# shellcheck source=lib/common.sh
+# shellcheck source=scripts/lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
 require_bash 4

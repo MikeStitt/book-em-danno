@@ -19,7 +19,7 @@ check: lint fmt test ## Run the full gate: lint + format check + tests
 .PHONY: lint
 lint: ## ShellCheck all shell scripts
 	@command -v shellcheck >/dev/null || { echo "shellcheck missing — run scripts/setup-dev.sh"; exit 1; }
-	@if [ -n "$(SH_FILES)" ]; then shellcheck -x -P SCRIPTDIR $(SH_FILES); else echo "lint: no shell files yet"; fi
+	@if [ -n "$(SH_FILES)" ]; then shellcheck -x -P . $(SH_FILES); else echo "lint: no shell files yet"; fi
 
 .PHONY: fmt
 fmt: ## Check formatting (shfmt -d)

@@ -24,7 +24,7 @@ readonly APP_VERSION="0.1.0"
 LOG_TAG="(${APP_NAME})"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-# shellcheck source=../scripts/lib/common.sh
+# shellcheck source=scripts/lib/common.sh
 source "${SCRIPT_DIR}/../scripts/lib/common.sh"
 
 require_bash 4

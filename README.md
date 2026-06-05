@@ -121,6 +121,29 @@ Drive ADOS as usual — autopilot `@pm deliver change GH-1`, or step by step
 (`/plan-change` → `/write-spec` → … → `/pr`). Everything the agents run executes
 in the sandbox VM.
 
+### Re-launching the sandbox
+
+`ados-sandbox` creates the sandbox the first time and configures its network. After
+that, Docker reports it already exists — re-open it directly with:
+
+```bash
+docker sandbox run ados-<dirname>      # e.g. docker sandbox run ados-elephant
+```
+
+This reuses the configured proxy and the project's `.opencode/opencode.jsonc`. For
+the **all-cloud / hybrid** paths, re-launch via `ados-sandbox` instead (it injects
+your API key), or run `opencode auth login` once inside the sandbox; the
+**fully-local** path needs no key. The host must have `OLLAMA_HOST=0.0.0.0:11434`
+set (and Ollama restarted) so the VM can reach it.
+
+### Getting work out / copy-paste
+
+The project is **mounted** into the sandbox, so files the agents create or edit
+appear directly in your local clone — commit them from the host as usual; there's
+nothing to copy out. For terminal text, use your terminal's normal selection (in
+iTerm2 / Terminal.app, hold **Option** while dragging to bypass the TUI's mouse
+capture).
+
 ## Commands
 
 | Command | Role |

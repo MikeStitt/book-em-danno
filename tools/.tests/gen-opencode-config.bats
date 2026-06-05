@@ -81,6 +81,26 @@ setup() {
   rm -rf "${tmp}"
 }
 
+@test "config sets a top-level model and a literal Ollama baseURL" {
+  tmp="$(mktemp -d)"
+  run "${TOOL}" --target "${tmp}" --local-model gemma4:26b-mlx \
+    --cloud-model anthropic/claude-opus-4-8
+  [ "${status}" -eq 0 ]
+  cfg="${tmp}/.opencode/opencode.jsonc"
+  grep -q '"model": "anthropic/claude-opus-4-8"' "${cfg}"
+  grep -q '"small_model": "ollama/gemma4:26b-mlx"' "${cfg}"
+  grep -q '"baseURL": "http://host.docker.internal:11434/v1"' "${cfg}"
+  rm -rf "${tmp}"
+}
+
+@test "--local-only sets the top-level model to the local model" {
+  tmp="$(mktemp -d)"
+  run "${TOOL}" --target "${tmp}" --local-model gemma4:26b-mlx --local-only
+  [ "${status}" -eq 0 ]
+  grep -q '"model": "ollama/gemma4:26b-mlx"' "${tmp}/.opencode/opencode.jsonc"
+  rm -rf "${tmp}"
+}
+
 @test "an existing differing config is preserved without --force" {
   tmp="$(mktemp -d)"
   "${TOOL}" --target "${tmp}" --local-model gemma3:27b >/dev/null
