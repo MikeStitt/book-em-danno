@@ -30,7 +30,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] **M3 — ADOS install integration** — `scripts/install-ados.sh` (global + project-local; record SHA)
 - [x] **M4 — Hybrid config generator** — `tools/gen-opencode-config` (target `.opencode/opencode.jsonc`)
 - [x] **M5 — Docker sandbox launcher** — `tools/ados-sandbox` (spike done; see findings below)
-- [ ] **M6 — Orchestrator** — `tools/ados-ollama` (`doctor|setup|install|configure|sandbox|all`)
+- [x] **M6 — Orchestrator** — `tools/ados-ollama` (`doctor|setup|install|configure|sandbox|all`)
 - [ ] **M7 — (later) macOS Seatbelt sandbox** — `tools/ados-sandbox-macos`
 - [ ] **M8 — Docs + constitution sync** — README, usage guide, amend `parts/ados-ollama.md`
 
@@ -69,6 +69,10 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
   dry-run output (was \n-joined via IFS). **Not yet verified (needs user):** full
   interactive `@pm` session in-sandbox — requires cloud keys + a tool-capable Gemma (27b)
   + confirming env injection via `exec --env-file`. Starting M6.
+- **2026-06-05** — M6 done: `tools/ados-ollama` orchestrator (command pattern:
+  doctor|install|setup|configure|sandbox|all); 41/41 bats green. Verified live:
+  `all --dry-run` chains preflight -> install -> setup -> configure against a temp repo
+  with flag forwarding (--model -> setup+configure, etc.). Starting M7/M8.
 
 ---
 
