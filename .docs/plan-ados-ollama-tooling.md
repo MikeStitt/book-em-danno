@@ -31,7 +31,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] **M4 — Hybrid config generator** — `tools/gen-opencode-config` (target `.opencode/opencode.jsonc`)
 - [x] **M5 — Docker sandbox launcher** — `tools/ados-sandbox` (spike done; see findings below)
 - [x] **M6 — Orchestrator** — `tools/ados-ollama` (`doctor|setup|install|configure|sandbox|all`)
-- [ ] **M7 — (later) macOS Seatbelt sandbox** — `tools/ados-sandbox-macos`
+- [x] **M7 — macOS Seatbelt sandbox** — `tools/ados-sandbox-macos` (experimental; write-confinement verified)
 - [ ] **M8 — Docs + constitution sync** — README, usage guide, amend `parts/ados-ollama.md`
 
 ## Progress log
@@ -73,6 +73,10 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
   doctor|install|setup|configure|sandbox|all); 41/41 bats green. Verified live:
   `all --dry-run` chains preflight -> install -> setup -> configure against a temp repo
   with flag forwarding (--model -> setup+configure, etc.). Starting M7/M8.
+- **2026-06-05** — M7 done: `tools/ados-sandbox-macos` (experimental Seatbelt write-
+  confinement for macOS-native work); 47/47 bats green. **Verified live on macOS**: a
+  write inside the target succeeds, a write outside is BLOCKED by sandbox-exec. Also
+  fixed `${CMD_ARGS[*]}` newline-join in display. Starting M8 (docs + constitution sync).
 
 ---
 
