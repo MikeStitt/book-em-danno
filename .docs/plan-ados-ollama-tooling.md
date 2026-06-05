@@ -28,7 +28,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] **M1 — Preflight doctor** — `tools/ados-ollama-doctor` (read-only deps check) + shared `scripts/lib/common.sh`
 - [x] **M2 — Ollama provisioning** — `scripts/setup-ollama.sh` (`--model`, pull Gemma, verify responds + tool-probe)
 - [x] **M3 — ADOS install integration** — `scripts/install-ados.sh` (global + project-local; record SHA)
-- [ ] **M4 — Hybrid config generator** — `tools/gen-opencode-config` (target `.opencode/opencode.jsonc`)
+- [x] **M4 — Hybrid config generator** — `tools/gen-opencode-config` (target `.opencode/opencode.jsonc`)
 - [ ] **M5 — Docker sandbox launcher** — `tools/ados-sandbox` (spike: `docker sandbox` + host-gateway Ollama)
 - [ ] **M6 — Orchestrator** — `tools/ados-ollama` (`doctor|setup|install|configure|sandbox|all`)
 - [ ] **M7 — (later) macOS Seatbelt sandbox** — `tools/ados-sandbox-macos`
@@ -54,6 +54,12 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
   functional test that ran ADOS's installer into a temp git repo, copied agent/command
   defs project-local (the bit ADOS only does globally → needed for sandbox visibility),
   wrote `.opencode/ados-provenance.txt`, and confirmed idempotent re-run. Starting M4.
+- **2026-06-05** — M4 done: `tools/gen-opencode-config`; 27/27 bats green. Writes the
+  target `.opencode/opencode.jsonc` (ollama provider + 15 cloud / 5 local agent map,
+  default_agent pm, num_ctx 32000, baseURL via {env:OLLAMA_BASE_URL}). Verified: valid
+  JSON (python json.tool), idempotent re-run, preserve-on-diff without --force. baseURL
+  env-token + whether OpenCode loads project `.opencode/opencode.jsonc` inside the sandbox
+  remain M5 risks to verify. Starting M5.
 
 ---
 
