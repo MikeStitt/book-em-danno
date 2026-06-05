@@ -26,7 +26,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - [x] CI: GitHub Actions running `make check` on **macOS + Linux** (validates on first push)
   - [x] first bats smoke test (`scripts/.tests/setup-dev.bats`, 4 tests)
 - [x] **M1 — Preflight doctor** — `tools/ados-ollama-doctor` (read-only deps check) + shared `scripts/lib/common.sh`
-- [ ] **M2 — Ollama provisioning** — `scripts/setup-ollama.sh` (`--model`, pull Gemma, verify tool-calls)
+- [x] **M2 — Ollama provisioning** — `scripts/setup-ollama.sh` (`--model`, pull Gemma, verify responds + tool-probe)
 - [ ] **M3 — ADOS install integration** — `scripts/install-ados.sh` (global + project-local; record SHA)
 - [ ] **M4 — Hybrid config generator** — `tools/gen-opencode-config` (target `.opencode/opencode.jsonc`)
 - [ ] **M5 — Docker sandbox launcher** — `tools/ados-sandbox` (spike: `docker sandbox` + host-gateway Ollama)
@@ -45,6 +45,11 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **2026-06-05** — M1 done: `tools/ados-ollama-doctor` + shared `scripts/lib/common.sh`;
   9/9 bats green. Live run on this host: all required PASS except Gemma model (FAIL,
   fixed by M2); docker + `docker sandbox` + ollama + opencode all present. Starting M2.
+- **2026-06-05** — M2 done: `scripts/setup-ollama.sh`; 14/14 bats green. Exercised live:
+  pulled `gemma3:1b`, verified it responds (num_ctx 32000). **Finding:** `gemma3:1b`
+  did NOT tool-call on the probe → confirms the plan risk. Tool-heavy local agents
+  (runner/committer) need a larger/tool-capable Gemma or stay cloud; M4's default map
+  keeps this conservative + table-driven. Starting M3.
 
 ---
 
