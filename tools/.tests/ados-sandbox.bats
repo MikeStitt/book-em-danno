@@ -33,7 +33,7 @@ setup() {
   run "${TOOL}" --target "${tmp}" --name probe --dry-run
   [ "${status}" -eq 0 ]
   [[ "${output}" == *"docker sandbox create --name probe opencode ${tmp}"* ]]
-  [[ "${output}" == *"docker sandbox network proxy probe"* ]]
+  [[ "${output}" == *"docker sandbox network proxy probe --allow-host localhost:11434"* ]]
   [[ "${output}" == *"host.docker.internal"* ]]
   [[ "${output}" == *"opencode"* ]]
   rm -rf "${tmp}"

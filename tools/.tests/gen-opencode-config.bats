@@ -90,6 +90,8 @@ setup() {
   grep -q '"model": "anthropic/claude-opus-4-8"' "${cfg}"
   grep -q '"small_model": "ollama/gemma4:26b-mlx"' "${cfg}"
   grep -q '"baseURL": "http://host.docker.internal:11434/v1"' "${cfg}"
+  grep -q '"apiKey": "ollama"' "${cfg}"
+  grep -q '"tool_call": true' "${cfg}"
   rm -rf "${tmp}"
 }
 

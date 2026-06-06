@@ -46,7 +46,9 @@ SANDBOX_NAME=""
 OLLAMA_URL="http://host.docker.internal:11434/v1"
 USE_RUN=false
 NO_LAUNCH=false
-ALLOW_HOSTS=(host.docker.internal)
+# The egress proxy rewrites host.docker.internal -> localhost, so the allow-rule
+# must name localhost:<port>. This is what lets the VM reach host Ollama.
+ALLOW_HOSTS=(localhost:11434)
 ENV_PAIRS=()
 ENV_FILES=()
 _ENV_FILE_TMP=""
@@ -91,6 +93,16 @@ configure_proxy() {
   local h
   for h in "${ALLOW_HOSTS[@]}"; do args+=(--allow-host "${h}"); done
   run_cmd docker sandbox network proxy "${SANDBOX_NAME}" "${args[@]}"
+}
+
+# The network policy only takes effect on a fresh VM start; stop the sandbox so
+# the next launch applies the allow-rule.
+apply_policy_restart() {
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    log_info "[DRY-RUN] Would restart the sandbox so the network policy applies"
+    return 0
+  fi
+  docker sandbox stop "${SANDBOX_NAME}" >/dev/null 2>&1 || true
 }
 
 build_env_file() {
@@ -215,6 +227,7 @@ main() {
   warn_if_ollama_loopback
   create_sandbox
   configure_proxy
+  apply_policy_restart
   launch
 }
 

@@ -78,8 +78,8 @@ render_config() {
   printf '    "ollama": {\n'
   printf '      "npm": "@ai-sdk/openai-compatible",\n'
   printf '      "name": "Ollama (local)",\n'
-  printf '      "options": { "baseURL": "%s", "num_ctx": %s },\n' "${OLLAMA_URL}" "${NUM_CTX}"
-  printf '      "models": { "%s": { "name": "Gemma (local via Ollama)" } }\n' "${LOCAL_MODEL}"
+  printf '      "options": { "baseURL": "%s", "num_ctx": %s, "apiKey": "ollama" },\n' "${OLLAMA_URL}" "${NUM_CTX}"
+  printf '      "models": { "%s": { "name": "Gemma (local via Ollama)", "tool_call": true, "limit": { "context": %s, "output": 8192 } } }\n' "${LOCAL_MODEL}" "${NUM_CTX}"
   printf '    }\n'
   printf '  },\n'
   printf '  "agent": {\n'
