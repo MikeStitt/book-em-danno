@@ -40,6 +40,16 @@ checklist for any change to `constitution.md` or a part.
 
 ## Changelog
 
+- **1.1.1 (2026-06-05)** — PATCH: DRY the networking docs. The Docker-sandbox
+  network model (egress allow/deny, `host.docker.internal`→`localhost` rewrite,
+  `OLLAMA_HOST=0.0.0.0` bind, baseURL) now lives **once** in the README's "Network
+  model" section; `parts/ados-ollama.md` trims its `Ollama runtime` /
+  `Docker sandbox runtime` sections to the design principles and links to the
+  README. Also corrects stale detail (the old `{env:OLLAMA_BASE_URL}` baseURL is
+  superseded by a baked `host.docker.internal` URL + dummy `apiKey` +
+  `tool_call`/`limit`, which the OpenAI-compatible provider requires). No
+  behavioral rule changed; this is a documentation relocation, with the README as
+  the single home for operational network detail referenced from the part.
 - **1.1.0 (2026-06-05)** — MINOR: synced the constitution to the as-built
   ADOS-on-Ollama tooling (milestones M0–M8) and added one new rule.
   - Rewrote [`parts/ados-ollama.md`](ados-ollama.md) to the **as-built** design:

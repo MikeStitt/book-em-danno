@@ -190,4 +190,4 @@ in `scratch/`. This exception is named explicitly so future contributors don't
   [`parts/constitution-maintenance.md`](parts/constitution-maintenance.md).
   Read that part before changing this file or any other part.
 
-**Version**: 1.1.0 | **Ratified**: 2026-06-05 | **Last amended**: 2026-06-05
+**Version**: 1.1.1 | **Ratified**: 2026-06-05 | **Last amended**: 2026-06-05

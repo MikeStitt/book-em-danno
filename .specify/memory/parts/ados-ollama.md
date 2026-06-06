@@ -68,29 +68,33 @@ size, the user's "gemma 4"), or move them back to cloud. Keep `num_ctx` high
 
 ## Ollama runtime
 
-- Ollama is configured as an **OpenCode provider** (`@ai-sdk/openai-compatible`);
-  local agents reference it as `ollama/<model>`.
-- **baseURL is environment-dependent**, supplied via `{env:OLLAMA_BASE_URL}`:
-  - host runs: `http://localhost:11434/v1`
-  - inside the Docker sandbox: `http://host.docker.internal:11434/v1`
-- **Host Ollama must listen on `0.0.0.0`** (`OLLAMA_HOST=0.0.0.0:11434`). Its
-  default `127.0.0.1` bind is unreachable from the sandbox VM (verified: the VM
-  resolves `host.docker.internal` → the Mac, but loopback-only refuses it).
+- Ollama is an **OpenCode provider** (`@ai-sdk/openai-compatible`); local agents
+  reference it as `ollama/<model>`. The generated config carries a dummy
+  `apiKey: "ollama"`, `tool_call: true`, and a context `limit` — the
+  openai-compatible provider needs them (a missing apiKey makes OpenCode demand a
+  real key).
 - **Default local model: Gemma**; the exact tag/quant is a tooling-time `--model`
   flag tuned to the machine — never hard-pinned here.
 - The cloud half uses whatever provider the developer has configured in OpenCode;
   keys stay `{env:...}` (never written into the committed config).
 
+The **network model** — the `baseURL`, the `OLLAMA_HOST=0.0.0.0` host bind, the
+Docker-sandbox egress policy (internet + Ollama allowed; other host services and
+LAN denied), and the `host.docker.internal`→`localhost` rewrite — lives **once**
+in the [README "Network model" section][readme-net]. Do not duplicate it here.
+
 ## Docker sandbox runtime
 
-Agents run in Docker's `docker sandbox` (Linux microVM): `docker sandbox create
---name <n> opencode <workspace>`; egress is proxy-gated
-(`docker sandbox network proxy --allow-host`); env is injected via
-`exec --env-file`. **There is no per-sandbox CPU/memory flag** — size the VM in
-Docker Desktop ▸ Resources. Heavy builds run Linux-target inside the VM; GPU
-inference stays on the host (Ollama on Metal). The macOS `sandbox-exec` path
-(`tools/ados-sandbox-macos`) is a weaker, experimental write-confinement
-alternative for macOS-native work only.
+Agents run in Docker's `docker sandbox` (Linux microVM), configured by
+`tools/ados-sandbox`: `docker sandbox create --name <n> opencode <workspace>`.
+**There is no per-sandbox CPU/memory flag** — size the VM in Docker Desktop ▸
+Resources. Heavy builds run Linux-target inside the VM; GPU inference stays on the
+host (Ollama on Metal). The macOS `sandbox-exec` path (`tools/ados-sandbox-macos`)
+is a weaker, experimental write-confinement alternative for macOS-native work
+only. Network egress + isolation specifics: the
+[README "Network model"][readme-net].
+
+[readme-net]: ../../../README.md#network-model-docker-sandbox
 
 ## As-built: the toolkit
 
