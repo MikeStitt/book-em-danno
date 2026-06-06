@@ -20,7 +20,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${RUNNER_OS}" = "macOS" ]; then
-            brew install shellcheck shfmt bats-core
+            brew install bash shellcheck shfmt bats-core
+            # macOS ships bash 3.2; put brew's bash (>=5) ahead on PATH so the
+            # scripts' `#!/usr/bin/env bash` (and require_bash 4) use it.
+            echo "$(brew --prefix)/bin" >>"${GITHUB_PATH}"
           else
             # Linux: pin shellcheck/shfmt to the local versions; bats from apt.
             sudo apt-get update -qq
