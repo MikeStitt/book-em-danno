@@ -267,6 +267,51 @@ docker sandbox network proxy ados-<dir> --policy deny \
   --allow-host registry.npmjs.org
 ```
 
+## Context window & memory
+
+The toolkit sets the local model's context window with `--num-ctx` (default
+`32000`), writing both `num_ctx` (Ollama's window) and `limit.context` (OpenCode's
+budget). A fresh ADOS session already consumes ~12–13K of that window for the
+system prompt, agent instructions, tool definitions, and project files, so 32K
+leaves ~19K for work. `gemma4:26b` supports up to 256K.
+
+Larger contexts cost RAM (the KV cache). Resident memory measured via `ollama ps`
+for **`gemma4:26b` (GGUF)** on a 64 GB M3 Max — weights are ≈19 GB:
+
+| `--num-ctx` | resident RAM (model + KV cache) | KV cache over weights |
+| --- | --- | --- |
+| 32768 (32K) | 20 GB | ~1 GB |
+| 65536 (64K) | 21 GB | ~2 GB |
+| 131072 (128K) | 22 GB | ~3 GB |
+| 262144 (256K) | ~23 GB (extrapolated, +1 GB per doubling) | ~4 GB |
+
+The default **MLX** variant (`gemma4:26b-mlx`) holds ≈16 GB of weights and allocates
+the KV cache **lazily** as the context fills, so it starts ~16 GB and grows toward
+the same KV-cache sizes above rather than reserving them upfront.
+
+These figures are the model alone. A Docker sandbox VM running at the same time
+adds whatever you give it in Docker Desktop ▸ Resources; weights + KV cache + VM
+must fit in unified memory.
+
+### Change the context size
+
+```bash
+TOOLKIT=~/projects/fab-ri-na-tor/claude-setup-agentic-delivery-os
+
+# 1. Regenerate the project's config at the new size (sets num_ctx + limit.context)
+"$TOOLKIT/tools/gen-opencode-config" --target ~/projects/elephant \
+  --local-model gemma4:26b-mlx --local-only --num-ctx 131072 --force
+
+# 2. (optional) commit the config change in the project
+git -C ~/projects/elephant add -A
+git -C ~/projects/elephant commit -m "chore: set context window to 128K"
+
+# 3. Restart so Ollama reloads the model at the new context
+docker sandbox run ados-elephant
+```
+
+`ollama ps` shows the loaded model's size and context after it restarts.
+
 ## Development
 
 ```bash
