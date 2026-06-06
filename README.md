@@ -9,8 +9,16 @@ isolated **Docker (Linux microVM) sandbox**. Tuned for a local machine like a
 MacBook Pro — Gemma inference runs natively on the Mac GPU; only command/build
 execution runs in the VM.
 
+**Supported platform: macOS (Apple Silicon).** It relies on Homebrew, Docker
+Desktop's `docker sandbox`, Ollama running on the Mac GPU, and — for the optional
+write-confinement path — macOS-only `sandbox-exec`. It is not supported on Linux or
+Windows (the bash scripts are lint/unit-tested on Linux in CI, but the end-to-end
+runtime is macOS).
+
 Full narrative walkthrough:
 [`.docs/user-experience-elephant.md`](.docs/user-experience-elephant.md).
+Every command's flags: [`docs/cli-reference.md`](docs/cli-reference.md) (generated
+from each tool's `--help` via `make cli-reference`).
 Development rules: [`.specify/memory/constitution.md`](.specify/memory/constitution.md).
 
 ## What it puts on your Mac (host)
@@ -156,8 +164,9 @@ capture).
 | `tools/ados-sandbox` | run OpenCode in an isolated Docker sandbox |
 | `tools/ados-sandbox-macos` | experimental Seatbelt write-confinement (macOS-native work) |
 
-Every mutating script supports `-n`/`--dry-run` and is idempotent. Use `-h` on any
-of them for the full flag list.
+Every mutating script supports `-n`/`--dry-run` and is idempotent. Run `-h` on any
+tool, or see the complete, always-current flag reference for all of them in
+[`docs/cli-reference.md`](docs/cli-reference.md).
 
 ## Parameters & configuration you edit
 

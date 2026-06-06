@@ -14,7 +14,7 @@ help: ## Show this help
 		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: check
-check: lint fmt test ## Run the full gate: lint + format check + tests
+check: lint fmt test cli-reference-check ## Run the full gate: lint + format + tests + docs
 
 .PHONY: lint
 lint: ## ShellCheck all shell scripts
@@ -33,6 +33,14 @@ fmt-fix: ## Apply formatting (shfmt -w)
 .PHONY: test
 test: ## Run bats test suites
 	@scripts/test-all.sh
+
+.PHONY: cli-reference
+cli-reference: ## Regenerate docs/cli-reference.md from each tool's --help
+	@scripts/gen-cli-reference.sh
+
+.PHONY: cli-reference-check
+cli-reference-check: ## Fail if docs/cli-reference.md is out of date
+	@scripts/gen-cli-reference.sh --check
 
 .PHONY: develop
 develop: ## Install dev dependencies via Homebrew
