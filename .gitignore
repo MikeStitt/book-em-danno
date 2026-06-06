@@ -14,10 +14,10 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
-# Anchored to the repo root: this targets the setuptools/zc.buildout build dir,
-# not arbitrary directories named "parts" (e.g. .specify/memory/parts/).
+# Anchored to the repo root: these are Python build dirs, not arbitrary nested
+# directories named lib/ parts/ (e.g. scripts/lib/, .specify/memory/parts/).
+/lib/
+/lib64/
 /parts/
 sdist/
 var/
