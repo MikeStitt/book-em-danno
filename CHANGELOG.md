@@ -3,7 +3,7 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
-## [unreleased]
+## [0.1.0] - 2026-06-11
 
 ### Bug Fixes
 
@@ -14,11 +14,16 @@ commits by [git-cliff](https://git-cliff.org).
 - *(sandbox)* Correct docker sandbox rm flags and make provisioning idempotent
 - *(test)* Stop-then-rm in slow e2e teardown (no invalid -f flag)
 
+### Build System
+
+- *(release)* Add git-cliff changelog config and release flow
+
 ### CI
 
 - Fix shellcheck source-following and Linux tool install
 - Run scripts under brew bash 5 on macOS
 - Ados-sandbox --dry-run must not require docker
+- Publish GitHub Release from git-cliff on vX.Y.Z tag push
 
 ### Documentation
 
@@ -49,4 +54,8 @@ commits by [git-cliff](https://git-cliff.org).
 - Initial version
 - *(cli)* Add --version flag
 - *(sandbox)* Parametrize agent and inject Claude Code auth
+
+### Testing
+
+- *(slow)* Drop misplaced skipif on _teardown_sandbox helper
 
