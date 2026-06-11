@@ -39,10 +39,17 @@ def test_model_can_tool_call() -> None:
 
 
 @pytest.mark.skipif(docker_down, reason="Docker daemon down")
+def _teardown_sandbox(name: str) -> None:
+    # `docker sandbox rm` has no force flag and won't remove a running VM, so stop
+    # first, then remove. Both are best-effort (the sandbox may not exist).
+    subprocess.run(["docker", "sandbox", "stop", name], capture_output=True, check=False)
+    subprocess.run(["docker", "sandbox", "rm", name], capture_output=True, check=False)
+
+
 def test_opencode_only_runs_in_container() -> None:
     # A throwaway sandbox proves OpenCode is reachable in-container — never on host.
     name = "danno-livetest"
-    subprocess.run(["docker", "sandbox", "rm", "-f", name], capture_output=True, check=False)
+    _teardown_sandbox(name)
     try:
         created = subprocess.run(
             ["docker", "sandbox", "create", "--name", name, "opencode", "."],
@@ -58,4 +65,4 @@ def test_opencode_only_runs_in_container() -> None:
         )
         assert ver.returncode == 0 and ver.stdout.strip()
     finally:
-        subprocess.run(["docker", "sandbox", "rm", "-f", name], capture_output=True, check=False)
+        _teardown_sandbox(name)
