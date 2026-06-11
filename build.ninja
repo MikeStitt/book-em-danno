@@ -1,0 +1,37 @@
+# build.ninja — quality gate for book-em-danno (Python danno CLI).
+#
+# The gate is `ninja check` = ruff (lint) + ruff format --check + mypy + pytest.
+# Everything runs through `uv run` so the toolchain is the project's locked deps.
+# Slow live tests (Ollama/Docker) are excluded from the gate; run them with
+# `uv run pytest -m slow`.
+#
+# Each target has no real output file, so ninja re-runs it every invocation
+# (these are checks, not builds).
+
+rule lint
+  command = uv run ruff check .
+  description = ruff check
+
+rule fmt
+  command = uv run ruff format --check .
+  description = ruff format --check
+
+rule typecheck
+  command = uv run mypy
+  description = mypy
+
+rule test
+  command = uv run pytest -q -m "not slow"
+  description = pytest (fast)
+
+rule check
+  command = uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest -q -m "not slow"
+  description = full gate (lint + fmt + mypy + pytest)
+
+build lint: lint
+build fmt: fmt
+build typecheck: typecheck
+build test: test
+build check: check
+
+default check

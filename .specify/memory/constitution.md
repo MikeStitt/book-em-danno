@@ -16,26 +16,27 @@ for the work type you are touching.
 
 ## What this repository is
 
-This repository holds **Bash-first tooling that Claude Code uses to install and
-adjust [Agentic Delivery OS](https://github.com/juliusz-cwiakalski/agentic-delivery-os)
-(ADOS) onto target projects** — for example `mesh-atlas` or the generated
-`bench-*` benchmark runs that live alongside it. ADOS is an MIT-licensed,
-OpenCode-based delivery framework (19 agents, 16 commands, a 10-phase lifecycle);
-its local checkout is at `../agentic-delivery-os`. See
-[`parts/ados-ollama.md`](parts/ados-ollama.md) for how it installs and how we
-extend it.
+This repository holds **`danno`, a Python CLI** that declaratively provisions
+**OpenCode hybrid local/cloud model runtimes inside a Docker sandbox**, driven by
+a single `danno.toml`. From that one file `danno` generates the project's
+auto-loaded `.opencode/opencode.jsonc`, ensures the local [Ollama](https://ollama.com)-served
+models are pulled, installs a catalog of agentic tools, and creates a Docker
+Desktop microVM sandbox wired to host Ollama — so cheap, high-volume agents run
+locally on the developer's own machine (tuned for a MacBook Pro) while cloud
+models run the high-stakes agents.
 
-What this tooling adds on top of stock ADOS is a **hybrid model runtime**:
-local [Ollama](https://ollama.com)-served **Gemma** models run the cheap,
-high-volume agents on the developer's own machine (this is tuned for a local
-machine like a MacBook Pro), while cloud models run the high-stakes agents.
-Stock ADOS ships no local-model configuration — generating that hybrid
-assignment, and the glue to install it cleanly into a target repo, is this
-project's reason to exist.
+**ADOS** — [Agentic Delivery OS](https://github.com/juliusz-cwiakalski/agentic-delivery-os),
+an MIT-licensed OpenCode-based delivery framework (local checkout at
+`../agentic-delivery-os`) — is **one configurable tool in danno's catalog**, not
+the reason this project exists. Installing it is a special case in the tool
+installer (its agent/command defs must land project-local so the sandbox can see
+them); see [`parts/ados-ollama.md`](parts/ados-ollama.md).
 
-Because the deliverable installs and edits **other people's repositories**, the
-defining discipline here is doing so **non-destructively and idempotently** (see
-the Working Rules below).
+Because `danno` writes into **other people's repositories** (the target project)
+and runs host/Docker/Ollama side effects, the defining discipline here is doing
+so **non-destructively, idempotently, and transparently** — a two-tier policy
+that advises (prints copy-paste commands) by default and executes only under
+`--apply` (see the Working Rules below and [`parts/python.md`](parts/python.md)).
 
 ## Working Rules
 
@@ -80,7 +81,7 @@ The behavioral contract. Numbered for reference, not priority.
 10. **Mind the budget.** On non-trivial work, watch the token/time budget. If a
     task is spiraling (e.g. debugging the same error repeatedly), stop,
     summarize, and restart fresh rather than overrun silently.
-11. **Verify before done.** `make check` MUST be green before you declare a task
+11. **Verify before done.** `ninja check` MUST be green before you declare a task
     complete. Tests are a first-class artifact (see
     [`parts/testing.md`](parts/testing.md)).
 
@@ -88,10 +89,12 @@ The behavioral contract. Numbered for reference, not priority.
 
 ### Quality Gates
 
-All code MUST pass `make check` before being committed. For this Bash-first
-repository the gate runs `shellcheck`, `shfmt -d` (format check), and the `bats`
-/ embedded test suites (see [`parts/bash.md`](parts/bash.md) and
-[`parts/testing.md`](parts/testing.md)).
+All code MUST pass `ninja check` before being committed. For this Python
+repository the gate runs **ruff** (lint), **ruff format --check** (format),
+**mypy** (types), and **pytest** (the fast suite; slow live tests are opt-in via
+`-m slow`). The gate is defined in `build.ninja` and shells to `uv run …` so the
+toolchain is the project's locked dependencies (see [`parts/python.md`](parts/python.md)
+and [`parts/testing.md`](parts/testing.md)).
 
 - Pre-commit hooks MUST remain active; never bypass them with `--no-verify`
   (hook details: [`parts/shared.md`](parts/shared.md)).
@@ -99,16 +102,16 @@ repository the gate runs `shellcheck`, `shfmt -d` (format check), and the `bats`
 
 ### Configuration is Code
 
-Infrastructure and configuration (hooks, linter/formatter configs, CI, the
-generated `.opencode/opencode-*.jsonc` model assignments, the install scripts
-themselves) are code, and a change to them is not done until it has been
-**verified by exercising it**, not merely edited. Define the success criterion
-as observed behavior and run the config to confirm it: feed a deliberately-bad
-input through the hook and watch it reject; run the installer against a throwaway
-target and confirm it converges; re-run it and confirm it is a no-op. `make
-check` does not exercise every config (it does not run the commit-msg hooks, nor
-a real install), so a silently broken config can pass it — close that gap by
-hand.
+Infrastructure and configuration (hooks, linter/formatter configs, CI,
+`build.ninja`, `danno.toml`, the generated auto-loaded `.opencode/opencode.jsonc`
+model assignments, the install logic itself) are code, and a change to them is
+not done until it has been **verified by exercising it**, not merely edited.
+Define the success criterion as observed behavior and run the config to confirm
+it: feed a deliberately-bad `danno.toml` through the loader and watch it reject;
+run `danno install` against a throwaway target and confirm it converges; re-run
+it and confirm it is a no-op. `ninja check` does not exercise every config (it
+does not run the commit-msg hooks, nor a real install), so a silently broken
+config can pass it — close that gap by hand.
 
 ### Branch & Push Policy
 
@@ -118,7 +121,7 @@ hand.
   `git switch -c <kebab-case-name>`. One branch per logical unit.
 - **The user owns the merge order**; you only push your branch. Do not merge PRs
   on the user's behalf.
-- **Pushing**: Once `make check` is locally green and you're confident CI will
+- **Pushing**: Once `ninja check` is locally green and you're confident CI will
   pass, `git push -u origin <branch>` without asking. Never push to `main`;
   never force-push or rewrite published history without an explicit request.
 - **Merging back**: via PR only.
@@ -157,7 +160,7 @@ do that).
 ADOS is upstream MIT-licensed code we install and configure, not code we own.
 When this tooling vendors or copies ADOS artefacts into a target project, keep
 upstream license headers intact, do not edit upstream agent/command `.md`
-definitions in place (configure via merged `.opencode/opencode-*.jsonc` instead),
+definitions in place (configure via the generated `.opencode/opencode.jsonc` instead),
 and record which ADOS version a target was installed from so re-runs and updates
 are traceable. Details: [`parts/ados-ollama.md`](parts/ados-ollama.md).
 
@@ -167,7 +170,7 @@ Throwaway scripts written to investigate ADOS internals or a target repo SHOULD
 NOT be held to the standards above. They live in `scratch/` (gitignored),
 excluded from lint / format / tests; the hooks SHOULD NOT block on them.
 **Promotion**: if a probe script proves repeatedly useful, port it into
-`scripts/` or `tools/` with full standards applied — do not let useful logic rot
+`src/book_em_danno/` with full standards applied — do not let useful logic rot
 in `scratch/`. This exception is named explicitly so future contributors don't
 "tidy" it away.
 
@@ -175,7 +178,7 @@ in `scratch/`. This exception is named explicitly so future contributors don't
 
 | Work type                              | Read                                                                     |
 | -------------------------------------- | ------------------------------------------------------------------------ |
-| Bash scripts & PATH-able tools         | [`parts/bash.md`](parts/bash.md)                                         |
+| Python CLI code (`danno`)              | [`parts/python.md`](parts/python.md)                                     |
 | ADOS install/adjust + Ollama model cfg | [`parts/ados-ollama.md`](parts/ados-ollama.md)                           |
 | Hooks / CI / changelog / cwd-flags     | [`parts/shared.md`](parts/shared.md)                                     |
 | Writing tests                          | [`parts/testing.md`](parts/testing.md)                                   |
@@ -190,4 +193,4 @@ in `scratch/`. This exception is named explicitly so future contributors don't
   [`parts/constitution-maintenance.md`](parts/constitution-maintenance.md).
   Read that part before changing this file or any other part.
 
-**Version**: 1.1.1 | **Ratified**: 2026-06-05 | **Last amended**: 2026-06-05
+**Version**: 2.0.0 | **Ratified**: 2026-06-05 | **Last amended**: 2026-06-11

@@ -30,7 +30,16 @@
       "Bash(python3 scripts/extract-claude-session.py *)",
       "Bash(./scripts/extract-claude-session.py *)",
       "Bash(./scripts/shapes-from-annotations.jq *)",
-      "Bash(jq *)"
+      "Bash(jq *)",
+      "Bash(uv run ruff *)",
+      "Bash(uv run mypy *)",
+      "Bash(uv run pytest *)",
+      "Bash(uv run danno *)",
+      "Bash(ninja check)",
+      "Bash(ninja check *)",
+      "Bash(command -v ninja)",
+      "Bash(docker info *)",
+      "Bash(git cliff *)"
     ]
   }
 }

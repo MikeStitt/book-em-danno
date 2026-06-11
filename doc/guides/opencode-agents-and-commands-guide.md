@@ -1,0 +1,278 @@
+---
+# Copyright (c) 2025-2026 Juliusz Ćwiąkalski (https://www.cwiakalski.com | https://www.linkedin.com/in/juliusz-cwiakalski/ | https://x.com/cwiakalski)
+# MIT License - see LICENSE file for full terms
+source: https://github.com/juliusz-cwiakalski/agentic-delivery-os/blob/main/doc/guides/opencode-agents-and-commands-guide.md
+id: GUIDE-OPENCODE-AGENTS
+status: Accepted
+created: 2026-01-09
+owners: ["engineering"]
+summary: "Comprehensive guide to Opencode AI agents and commands for manual and autopilot workflows."
+---
+
+# Opencode Agents & Commands Guide
+
+This guide details how to use the Opencode AI ecosystem to plan, implement, and deliver software changes. It covers the
+available tools (agents and commands) and describes two primary workflows: **Manual Orchestration** (for hands-on
+control) and **Autopilot** (for high-level delegation).
+
+<!-- TOC -->
+* [Opencode Agents & Commands Guide](#opencode-agents--commands-guide)
+  * [1. Overview](#1-overview)
+  * [2. Reference: Agents & Commands](#2-reference-agents--commands)
+    * [2.1 Commands (Automation Macros)](#21-commands-automation-macros)
+    * [2.2 Agents (Autonomous Roles)](#22-agents-autonomous-roles)
+  * [3. Workflow 1: Manual Change Orchestration](#3-workflow-1-manual-change-orchestration)
+    * [Step 1: Plan the Change](#step-1-plan-the-change)
+    * [Step 2: Generate the Spec](#step-2-generate-the-spec)
+    * [Step 3: Generate Plans](#step-3-generate-plans)
+    * [Step 4: Implement (Phased Loop)](#step-4-implement-phased-loop)
+    * [Step 5: Review & Refine](#step-5-review--refine)
+    * [Step 6: Reconcile Docs](#step-6-reconcile-docs)
+    * [Step 7: Finalize](#step-7-finalize)
+  * [4. Workflow 2: Autopilot (Product Manager Orchestration)](#4-workflow-2-autopilot-product-manager-orchestration)
+    * [Step 1: High-Level Handoff](#step-1-high-level-handoff)
+    * [Step 2: PM Orchestration (10 Phases)](#step-2-pm-orchestration-10-phases)
+    * [Step 3: User Acceptance](#step-3-user-acceptance)
+  * [5. Best Practices](#5-best-practices)
+  * [6. Related Documentation](#6-related-documentation)
+<!-- TOC -->
+
+## 1. Overview
+
+Opencode provides a **specification-driven** workflow where AI acts as a co-engineer. The core principle is **Traceability**:
+`Business Intent → Change Spec → Implementation Plan → Test Plan → Code → System Spec`
+
+- **Commands** (`/command`): Deterministic macros that perform specific tasks (e.g., generating a file from a template).
+- **Agents** (`@agent`): Autonomous roles that can reason, plan, and orchestrate multiple steps or other agents.
+
+---
+
+## 2. Reference: Agents & Commands
+
+### 2.1 Commands (Automation Macros)
+
+Use these when you want to trigger a specific step in the process.
+
+| Command                  | Description                                                   | When to use                                |
+| :----------------------- | :------------------------------------------------------------ | :----------------------------------------- |
+| `/plan-change`           | Interactive session to define a change (scope, goals, risks). | **Step 1**: To start a new feature or fix. |
+| `/write-spec <ref>`      | Generates the canonical `chg-<ref>-spec.md` file.             | **Step 2**: After planning is complete.    |
+| `/write-test-plan <ref>` | Generates the test strategy `chg-<ref>-test-plan.md`.         | **Step 3**: After the spec is approved.    |
+| `/write-plan <ref>`      | Generates the phased `chg-<ref>-plan.md`.                     | **Step 4**: After the test plan.           |
+| `/run-plan <ref>`        | Launches the **Coder** to code the active phase.              | **Step 5**: To write code.                 |
+| `/review <ref>`          | Launches the **Reviewer** to critique work.                   | **Step 6**: After coding a phase.          |
+| `/review-deep <ref>`     | Deep review with a stronger reasoning model.                  | When thorough analysis is needed.          |
+| `/sync-docs <ref>`       | Reconciles `doc/spec` with the implemented change.            | **Step 7**: Before merging.                |
+| `/commit`                | Creates one Conventional Commit.                              | When saving progress.                      |
+| `/pr`                    | Creates/updates a PR/MR and syncs title + description.        | When preparing for review/merge.           |
+| `/design`                | Generate/update visual identity and UX assets.                | When working on UI/brand assets.           |
+| `/plan-decision`         | Interactive session for architectural decisions.              | When a complex trade-off needs an ADR.     |
+| `/write-decision`        | Generates the formal decision record (ADR/PDR/TDR/BDR/ODR).  | After the decision session.                |
+| `/bootstrap`             | AI-guided project setup for ADOS adoption.                    | When onboarding a new project to ADOS.     |
+| `/check`                 | Runs quality gates and summarizes logs to files.              | When you need clean, shareable results.    |
+| `/check-fix`             | Runs quality gates and auto-fixes failures.                   | When you want automatic remediation.       |
+
+### 2.2 Agents (Autonomous Roles)
+
+Use these when you need intelligent analysis or orchestration.
+
+| Agent             | Role                                                                                       | Usage                                           |
+| :---------------- | :----------------------------------------------------------------------------------------- | :---------------------------------------------- |
+| `@pm`             | **Orchestrator**. Manages tickets (Jira/GitHub) and turns backlog into accepted artifacts. | Use for **Autopilot** (see Section 4).          |
+| `@coder`          | **Implementer**. Writes code per implementation plan phases.                               | Invoked by PM or via `/run-plan`.               |
+| `@architect`      | **Advisor**. CTO-level sparring partner.                                                   | Use for complex design decisions or ADRs.       |
+| `@spec-writer`    | **Spec Author**. Generates canonical change specifications.                                | Invoked by PM or via `/write-spec`.             |
+| `@plan-writer`    | **Plan Author**. Generates phased implementation plans.                                    | Invoked by PM or via `/write-plan`.             |
+| `@test-plan-writer` | **Test Plan Author**. Generates test plans with traceable coverage.                      | Invoked by PM or via `/write-test-plan`.        |
+| `@reviewer`       | **Reviewer**. Reviews code against spec/plan (read-only).                                  | Invoked by PM or via `/review`.                 |
+| `@fixer`          | **Troubleshooter**. Fixes broken tests or quality gates.                                   | Use when tests fail or bugs arise.              |
+| `@designer`       | **Designer**. Implements UI/UX per design system.                                          | Use for frontend work.                          |
+| `@doc-syncer`     | **Doc Syncer**. Reconciles system docs with implemented change.                            | Invoked by PM or via `/sync-docs`.              |
+| `@image-reviewer` | **Visual Reviewer**. Analyzes screenshots for visual bugs.                                 | Use to check UI artifacts or report glitches.   |
+| `@runner`         | **Runner**. Executes commands and summarizes logs to artifacts.                            | Use for log-heavy builds/tests/gates.           |
+| `@editor`         | **Writer**. Reviews, rewrites, and translates content per guidelines.                      | Use for docs/articles/i18n/UI copy.             |
+| `@committer`      | **Scribe**. Creates standardized commits.                                                  | Helper used by other agents/commands.           |
+| `@image-generator` | **Image Generator**. Generates AI images via text-to-image CLI.                            | Use when agents need generated images.          |
+| `@pr-manager`     | **PR/MR Manager**. Creates/updates PR/MR for current branch.                               | Use at the end of delivery; never merges.       |
+| `@toolsmith`      | **Toolsmith**. Creates and tunes OpenCode agents/commands/skills.                          | Use to create or improve tooling.               |
+| `@bootstrapper`   | **Bootstrapper**. Automates ADOS adoption for existing projects.                           | Use when onboarding a new project to ADOS.      |
+| `@external-researcher` | **Researcher**. Researches external sources via MCP servers. | Use when you need external technical research.  |
+
+---
+
+## 3. Workflow 1: Manual Change Orchestration
+
+In this workflow, **you** act as the lead engineer, triggering each step explicitly. This offers maximum control.
+
+### Step 1: Plan the Change
+
+Start an interactive session to clarify requirements.
+
+```bash
+/plan-change [optional-idea-text]
+```
+
+_Output_: A structured planning summary in the chat.
+
+### Step 2: Generate the Spec
+
+Turn the planning summary into a canonical file.
+
+```bash
+/write-spec <ref>
+```
+
+_Output_: `doc/changes/.../chg-<ref>-spec.md`
+
+> **Recommendation**: Open the generated `chg-<ref>-spec.md` file and review it carefully. If the requirements (
+> acceptance criteria, interface definitions) are incorrect, the downstream plans and code will be incorrect. Edit the
+> file directly if needed before proceeding.
+
+### Step 3: Generate Plans
+
+Create the test plan and implementation plan based on the spec.
+
+```bash
+/write-test-plan <ref>
+/write-plan <ref>
+```
+
+_Output_: `chg-<ref>-test-plan.md` and `chg-<ref>-plan.md`
+
+> **Note**: The order is spec → test plan → implementation plan. This ensures the test plan informs implementation priorities.
+
+### Step 4: Implement (Phased Loop)
+
+Execute the plan one phase at a time.
+
+```bash
+/run-plan <ref>
+```
+
+_Action_: The agent reads the plan, implements the current phase, updates the plan checklist, and runs relevant
+validations (for log-heavy runs it may delegate to `@runner`).
+
+### Step 5: Review & Refine
+
+Ask for a code review against the spec.
+
+```bash
+/review <ref>
+```
+
+_Action_: The reviewer checks code vs. spec. If issues are found, it adds a remediation phase to your plan. You then run
+`/run-plan <ref>` again to fix them.
+
+### Step 6: Reconcile Docs
+
+Update the "current truth" documentation.
+
+```bash
+/sync-docs <ref>
+```
+
+_Action_: Updates `doc/spec/**` and `doc/contracts/**`.
+
+### Step 7: Finalize
+
+Commit and prepare for merge.
+
+```bash
+/commit
+/pr
+```
+
+`/pr` will create or update the PR/MR for your current branch and write:
+
+- `tmp/pr/<branch>/description.md`
+
+For large branches it may also create `tmp/pr/<branch>/review-plan.md` + `tmp/pr/<branch>/review-log.md` and reuse them
+incrementally on reruns. It will not merge; review and merge manually.
+
+If there are uncommitted changes, `/pr` will auto-commit via `@committer` and then push the branch.
+
+---
+
+## 4. Workflow 2: Autopilot (Product Manager Orchestration)
+
+In this workflow, you act as the **Stakeholder**. You provide the "What" and "Why", and the **PM Agent**
+orchestrates the "How" by coordinating other agents.
+
+> **Repo configuration**: `@pm` reads `.ai/agent/pm-instructions.md` for tracker configuration, labels, and status mapping.
+> **Lifecycle reference**: See `doc/guides/change-lifecycle.md` for detailed phase-by-phase guidance.
+
+### Step 1: High-Level Handoff
+
+Invoke the PM agent with your requirements or reference a backlog item.
+
+**Direct ticket delivery (recommended):**
+
+```
+@pm deliver change GH-123
+```
+
+Or with a Jira ticket:
+
+```
+@pm deliver change PDEV-456
+```
+
+> **Note:** Requires MCP integration with your issue tracker (GitHub or Jira) configured in `.ai/agent/pm-instructions.md`. The PM agent will fetch ticket details, orchestrate all 10 phases, and create a PR.
+
+**Free-form request (alternative):**
+
+> **User**: "Agent, please act as @pm. I want to add a new 'Dark Mode' feature to the settings page. It
+> should persist in the user profile."
+
+### Step 2: PM Orchestration (10 Phases)
+
+The `@pm` orchestrates these phases (see `doc/guides/change-lifecycle.md` for details):
+
+1. **clarify_scope** — Ensure requirements are unambiguous; record in `chg-<ref>-pm-notes.yaml`
+2. **specification** — Delegate to `@spec-writer` to create `chg-<ref>-spec.md`
+3. **test_planning** — Delegate to `@test-plan-writer` to create `chg-<ref>-test-plan.md`
+4. **delivery_planning** — Delegate to `@plan-writer` to create `chg-<ref>-plan.md`
+5. **delivery** — Invoke `@coder` for implementation (via `/run-plan`)
+6. **system_spec_update** — Delegate to `@doc-syncer` to reconcile system docs
+7. **review_fix** — Run `@reviewer`; if FAIL, fix and repeat until PASS
+8. **quality_gates** — Run builds/tests via `@runner`; fix via `@fixer` if needed
+9. **dod_check** — PM verifies all phases complete and all AC satisfied
+10. **pr_creation** — Create PR/MR via `@pr-manager`, assign to human, STOP
+
+> **Note**: Phases can be reopened. If PM discovers incomplete work in a later phase, PM reopens the relevant phase.
+
+### Step 3: User Acceptance
+
+The `@pm` will report back when the change is ready for final verification and then STOP.
+
+Before creating/updating the PR/MR, `@pm` runs the **dod_check** phase:
+
+1. Verify all phases completed (check `chg-<ref>-pm-notes.yaml`).
+2. Verify all delivery plan tasks complete.
+3. Verify all acceptance criteria satisfied.
+4. If any gap is found, reopen the appropriate phase.
+
+Then `@pm` creates/updates the PR/MR via `@pr-manager` and stops for user approval and manual merge.
+You review and merge manually.
+
+---
+
+## 5. Best Practices
+
+- **Trust the Artifacts**: Don't try to "prompt" your way through complex coding. Generate the Spec and Plan first. The
+  agents work much better when they have a document to follow.
+- **One Change at a Time**: Keep changes scoped. If a change gets too big, split it.
+- **Review the Spec**: The AI writes the spec, but **you** must read it. If the spec is wrong, the code will be wrong.
+- **Use the IDs**: Refer to requirements by ID (e.g., "F-1", "AC-2") when discussing issues with agents.
+- **Filesystem is Memory**: Agents rely on the files in `doc/changes/`. Do not delete them until the change is merged
+  and settled.
+- **Tracker is Source of Truth**: The external tracker (Jira/GitHub) owns workflow status. `@pm` syncs status via MCP;
+  Git artifacts support implementation and auditability but do not replace tracker state.
+- **PM Notes are Mandatory**: Every change must have a `chg-<ref>-pm-notes.yaml` file for tracking phases, decisions, and open questions.
+
+---
+
+## 6. Related Documentation
+
+- **Change Lifecycle**: `doc/guides/change-lifecycle.md` — Detailed phase-by-phase guide with agent responsibilities
+- **Unified Change Convention**: `doc/guides/unified-change-convention-tracker-agnostic-specification.md` — Folder/file naming conventions

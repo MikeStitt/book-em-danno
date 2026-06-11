@@ -1,0 +1,4 @@
+ADOS source:  /Users/mikestitt/projects/fab-ri-na-tor/agentic-delivery-os
+ADOS commit:  c4d631f
+Installed:    2026-06-08T12:12:03Z
+Installed by: claude-setup-agentic-delivery-os/install-ados.sh

@@ -1,54 +1,50 @@
 # Constitution — Testing part
 
-Authoritative testing taxonomy for this repository's Bash tooling. Read this part
-when writing or organizing tests, alongside [`bash.md`](bash.md) and the
-[constitution](../constitution.md). Tests are a first-class artifact; `make
-check` (the constitution's Quality Gate) runs them.
+Authoritative testing taxonomy for the `danno` Python CLI. Read this part when
+writing or organizing tests, alongside [`python.md`](python.md) and the
+[constitution](../constitution.md). Tests are a first-class artifact; the fast
+suite runs in `ninja check` (the Quality Gate).
 
 **Test-Driven Development is strongly encouraged.** Write tests before
-implementation to ensure requirements are met and code is robust — especially for
-the install/adjust flow, where a regression silently corrupts a target repo.
-
-Tests are divided along two axes.
-
-## Purpose
-
-- **Type 1 — Executable documentation**: DAMP (Descriptive And Meaningful
-  Phrases), well-commented, placed "above the fold" in test files. Read like
-  tutorials.
-- **Type 2 — Coverage & reliability**: edge cases, path coverage. Can be DRY but
-  must remain readable; never fail opaquely.
-
-## Scope
-
-- **Unit** — pure functions in isolation (no filesystem, network, or external
-  commands; mock all dependencies).
-- **Integration** — interactions between functions, using temp directories for
-  filesystem operations; may call real external commands.
-- **Smoke** — quick critical-path checks.
-- **Behavior / E2E** — run a script as a user would invoke it (`--help`,
-  `--dry-run`, a full install against a throwaway target repo); assert on exit
-  codes, stdout, stderr, and file side-effects.
-- **Regression** — specific tests added when bugs are found.
-
-The install/adjust flow especially MUST have behavior tests that assert
-**idempotency** (run twice → second run is a no-op) and **preservation** (a
-project-specific file is left untouched), per constitution Working Rule 6.
-
-## What to test
-
-- Public interfaces (CLI surface, exit-code contract) thoroughly.
-- Private helpers only through the public interface.
+implementation — especially for the install flow, where a regression silently
+corrupts a target repo.
 
 ## Framework & homes
 
-- Tests use the embedded Bash test framework from ADOS's bash rules (no external
-  dependency) and/or `bats`.
-- Homes: `scripts/.tests/` and `tools/.tests/`, files named `test-*.sh` and
-  executable, discovered by the `scripts/test-all.sh` aggregator (which `make
-  check` invokes).
+- **`pytest`**, run via `uv run pytest`. Tests live under `tests/`; shared test
+  helpers (e.g. a recording `Runner`) live in `tests/conftest.py`.
+- **Two suites, split by a marker** (registered in `pyproject.toml`):
+  - **fast `tests/`** — the default; no daemon, no network. `ninja check` runs
+    `pytest -q -m "not slow"`.
+  - **slow `tests/slow/`** — `@pytest.mark.slow`; talk to **real** Ollama/Docker.
+    They `skipif` the daemon is down or Ollama is unreachable, so they collect and
+    skip cleanly on a cold host. Run them with `uv run pytest -m slow`.
+
+## What to test (and how)
+
+- **Command construction (fast, mock-free).** Drive `Runner.advise` through a
+  recording `Runner` and assert the **exact** `docker sandbox …` / `ollama pull`
+  command strings and their **ordering** — no Docker/Ollama needed. This is the
+  bulk of the fast suite.
+- **Config gen / loader.** Render `.opencode/opencode.jsonc` from a real-tag
+  `danno.toml`; assert the agent→model map, and that a bad config exits non-zero.
+- **Idempotency & preservation** (constitution Working Rule 6): first-run write,
+  diff-then-stop on change, no-op when identical; a hand-edited config is not
+  clobbered without `--apply`.
+- **Doctor predicates** via monkeypatched probes — assert PASS/FAIL/WARN counts
+  and that loopback-bind is a WARN, not a failure.
+- **Live behavior (slow):** Ollama `/api/generate` responds; the tool-call probe
+  asserts the local model emits `tool_calls`; a guarded end-to-end creates a
+  throwaway sandbox and asserts `docker sandbox exec <n> opencode --version`
+  **in-container**, then tears it down.
+
+## The in-container invariant
+
+Tests **NEVER** invoke host `opencode`. OpenCode only ever runs inside the Docker
+sandbox; any opencode assertion goes through `docker sandbox exec`. The
+interactive TUI is not asserted.
 
 ## See also
 
 - [`../constitution.md`](../constitution.md) — Working Rules + Quality Gates.
-- [`bash.md`](bash.md) — script standards and the testable-main-guard pattern.
+- [`python.md`](python.md) — the Runner, the two-tier policy, and the layout.

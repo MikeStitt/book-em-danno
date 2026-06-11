@@ -40,6 +40,36 @@ checklist for any change to `constitution.md` or a part.
 
 ## Changelog
 
+- **2.0.0 (2026-06-11)** — MAJOR: the Bash→Python pivot. The deliverable is now
+  **`danno`, a Python CLI** (typer/rich/pydantic over `uv`), not Bash-first
+  tooling — an incompatible redefinition of the repository's identity, gate, and
+  parts, hence the major bump. _Why:_ the working Bash toolkit
+  (`tools/ados-*`, `scripts/setup-ollama.sh`, `scripts/install-ados.sh`,
+  `gen-opencode-config`, `common.sh`) reached parity in the ported Python runtime
+  and was removed in the same session; keeping two implementations would violate
+  Simplicity-first and let the Bash logic rot.
+  - **Identity** ("What this repository is"): reframed from "Bash-first ADOS
+    installer" to "a Python `danno` CLI that provisions OpenCode hybrid runtimes
+    in a Docker sandbox, driven by `danno.toml`"; **ADOS is now one configurable
+    tool in the catalog**, not the reason-to-exist.
+  - **Gate** (Quality Gates + Working Rule 11): `make check` (shellcheck +
+    `shfmt -d` + bats) → **`ninja check`** = ruff + ruff-format + mypy + pytest.
+    The runner switched make → **`build.ninja`**; companions updated and exercised
+    in the same commit — `ninja check` green, and a deliberately-bad `danno.toml`
+    fed through the loader exits non-zero (Configuration-is-Code rule).
+  - **Configuration is Code**: now references the single auto-loaded
+    `.opencode/opencode.jsonc` and `danno.toml` (was `opencode-*.jsonc` + install
+    scripts).
+  - **Parts**: **deleted `bash.md`**; added **`python.md`** (uv/typer/rich/
+    pydantic/ruff/mypy/pytest, the two-tier advise-by-default policy, the
+    docker-sandbox-only invariant); rewrote **`testing.md`** for pytest (fast +
+    `slow` markers, mock-free command-construction assertions, the never-run-host-
+    opencode rule); reframed **`ados-ollama.md`** (knowledge — network model,
+    tool-call caveat, OpenCode config gotcha — kept; toolkit table now the `danno`
+    commands; macOS Seatbelt path dropped); updated **`shared.md`** hooks/CI to the
+    ruff/markdownlint pre-commit subset + `ninja check` CI.
+  - Kept unchanged: the non-destructive/idempotent target-install rule (still
+    true of danno installs) and the ADOS-provenance discipline.
 - **1.1.1 (2026-06-05)** — PATCH: DRY the networking docs. The Docker-sandbox
   network model (egress allow/deny, `host.docker.internal`→`localhost` rewrite,
   `OLLAMA_HOST=0.0.0.0` bind, baseURL) now lives **once** in the README's "Network

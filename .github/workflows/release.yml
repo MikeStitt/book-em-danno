@@ -1,0 +1,36 @@
+name: release
+
+# Pushing a vX.Y.Z tag publishes a GitHub Release whose notes are generated from
+# the conventional-commit history by git-cliff, reusing the repo's cliff.toml.
+# See .specify/memory/parts/shared.md ("Cutting a release").
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # required for `gh release create`
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history + tags so git-cliff can group by tag
+
+      - name: Install git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+
+      - name: Generate release notes for ${{ github.ref_name }}
+        run: git cliff --latest --strip header -o RELEASE_NOTES.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file RELEASE_NOTES.md

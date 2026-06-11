@@ -1,0 +1,60 @@
+# danno.toml — declarative source of truth for book-em-danno.
+# Edit this file; `danno install` / `danno config generate` derive
+# .opencode/opencode.jsonc from it. Copy to danno.toml to use.
+
+[project]
+target = "."                       # project to configure
+
+[defaults]
+default_agent = "pm"               # OpenCode default_agent
+profile       = "hybrid"           # hybrid | cloud-only | local-only
+
+# --- Backends: where models run. `kind` selects the runtime. ---
+[backends.ollama]                  # IMPLEMENTED
+kind     = "ollama"
+base_url = "http://host.docker.internal:11434/v1"   # use http://localhost:11434/v1 for host-only runs
+num_ctx  = 32000
+
+[backends.cloud]                   # IMPLEMENTED
+kind     = "cloud"
+provider = "anthropic"             # API key stays in the env / OpenCode provider — never written here
+
+[backends.llamacpp]                # STUBBED (generator raises "not yet implemented" if used)
+kind     = "llamacpp"
+base_url = "http://host.docker.internal:8080/v1"
+
+# --- Models: a named (backend, tag/id) pair. ---
+[models.gemma]
+backend   = "ollama"
+tag       = "gemma3:27b"           # local models MUST support tool-calling (gemma3:1b does NOT)
+tool_call = true
+
+[models.sonnet]
+backend = "cloud"
+id      = "anthropic/claude-sonnet-4-6"
+
+# --- Agent -> model. Unlisted agents fall back to the profile tier default (Phase 2). ---
+[agents]
+architect           = "sonnet"
+reviewer            = "sonnet"
+pm                  = "sonnet"
+coder               = "sonnet"
+committer           = "gemma"
+runner              = "gemma"
+external-researcher = "gemma"
+
+# --- Tool catalog: each tool installs per-tool into the sandbox or project-local. ---
+[[tools]]
+name       = "ados"
+source     = "https://github.com/juliusz-cwiakalski/agentic-delivery-os"
+install_to = "sandbox"
+
+[[tools]]
+name       = "opencode-planner"
+source     = "https://github.com/timrichardson/opencode-planner"
+install_to = "sandbox"
+
+[[tools]]
+name       = "plannotator"
+source     = "https://plannotator.ai/"
+install_to = "project"             # TODO: confirm plannotator's local install mechanism (hosted/web tool)

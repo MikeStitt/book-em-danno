@@ -1,10 +1,11 @@
 # Constitution — ADOS + Ollama integration part
 
-Authoritative knowledge for installing/adjusting Agentic Delivery OS (ADOS) on a
-target project and wiring its hybrid local+cloud model runtime. Read this part
-when a task touches the install/adjust flow or generates `.opencode/` model
-configuration. Read together with the [constitution](../constitution.md) and
-[`bash.md`](bash.md).
+Authoritative knowledge for how `danno` wires an OpenCode hybrid local+cloud
+model runtime, and for the special case of installing Agentic Delivery OS (ADOS)
+— one tool in danno's catalog. Read this part when a task touches the install
+flow, the network model, or generates `.opencode/` model configuration. Read
+together with the [constitution](../constitution.md) and
+[`python.md`](python.md).
 
 ## What ADOS is and where it lives
 
@@ -24,14 +25,17 @@ configuration. Read together with the [constitution](../constitution.md) and
     `.ai/agent/pm-instructions.md`. **It does NOT copy the agent/command defs** —
     those go only to the global dir.
 
-## This repository's job
+## danno's job (and where ADOS fits)
 
-Install/adjust ADOS on a target project (e.g. `mesh-atlas`, a `bench-*` run) and
-**generate the hybrid local+cloud model configuration that stock ADOS does not
-ship.** We do **not** fork ADOS agent/command behavior — per constitution Working
-Rule 6 and the _ADOS provenance_ rule, we configure model assignment and provide
-the install glue only, and we record which ADOS version a target was installed
-from.
+`danno` provisions a target project from `danno.toml`: generate the hybrid
+local+cloud `.opencode/opencode.jsonc`, pull the local Ollama models, install the
+declared tool catalog, and create the Docker sandbox. **ADOS is one tool in that
+catalog** — `danno install` runs its `--local` installer and copies its
+agent/command defs project-local (the sandbox can't see host
+`~/.config/opencode`). We do **not** fork ADOS agent/command behavior — per
+constitution Working Rule 6 and the _ADOS provenance_ rule, we configure model
+assignment and provide the install glue only, and record which ADOS version a
+target was installed from.
 
 ## OpenCode config activation (the gotcha)
 
@@ -58,7 +62,7 @@ agent to **local Ollama Gemma** or **cloud**, by ADOS tier:
 | 1–2 — high-stakes / core   | `architect`, `bootstrapper`, `reviewer`, `review-feedback-applier`, `pm`, `coder`, `fixer`, `plan-writer`, `spec-writer`, `test-plan-writer`, `toolsmith`, `designer`, `doc-syncer`, `pr-manager`, `editor` | **Cloud**                |
 | 3–5 — well-scoped / cheap  | `committer`, `runner`, `external-researcher`, `image-generator`, `image-reviewer`              | **Local — Ollama/Gemma** |
 
-The split is a table at the top of `tools/gen-opencode-config` (one-line retune).
+The split is the `[agents]` table in `danno.toml` (one-line retune per agent).
 
 **Tool-calling caveat (empirical):** every ADOS agent uses OpenCode tools, so a
 local model that cannot tool-call is unusable for that agent. `gemma3:1b` does
@@ -86,32 +90,35 @@ in the [README "Network model" section][readme-net]. Do not duplicate it here.
 ## Docker sandbox runtime
 
 Agents run in Docker's `docker sandbox` (Linux microVM), configured by
-`tools/ados-sandbox`: `docker sandbox create --name <n> opencode <workspace>`.
-**There is no per-sandbox CPU/memory flag** — size the VM in Docker Desktop ▸
-Resources. Heavy builds run Linux-target inside the VM; GPU inference stays on the
-host (Ollama on Metal). The macOS `sandbox-exec` path (`tools/ados-sandbox-macos`)
-is a weaker, experimental write-confinement alternative for macOS-native work
-only. Network egress + isolation specifics: the
+`commands/sandbox.py` (the `danno sandbox` command):
+`docker sandbox create --name <n> opencode <workspace>`. **There is no
+per-sandbox CPU/memory flag** — size the VM in Docker Desktop ▸ Resources. Heavy
+builds run Linux-target inside the VM; GPU inference stays on the host (Ollama on
+Metal). **OpenCode is provided by the prebuilt `opencode` sandbox image and only
+ever runs in-container** — never on the host (no host `opencode` dependency, no
+macOS Seatbelt path). Network egress + isolation specifics: the
 [README "Network model"][readme-net].
 
 [readme-net]: ../../../README.md#network-model-docker-sandbox
 
-## As-built: the toolkit
+## As-built: the danno CLI
 
-| Command | Role |
+Three commands; the rest are internals orchestrated by `install`.
+
+| Surface | Role |
 | --- | --- |
-| `tools/ados-ollama-doctor` | read-only preflight |
-| `scripts/setup-ollama.sh` | ensure Ollama + pull/verify a Gemma model |
-| `scripts/install-ados.sh` | ADOS `--local` + project-local agent/command copy + provenance |
-| `tools/gen-opencode-config` | write the hybrid `.opencode/opencode.jsonc` |
-| `tools/ados-sandbox` | launch OpenCode in the Docker sandbox |
-| `tools/ados-sandbox-macos` | experimental Seatbelt write-confinement |
-| `tools/ados-ollama` | orchestrator: `doctor\|install\|setup\|configure\|sandbox\|all` |
+| `danno install` | orchestrator: validate → config → Ollama models → tools → sandbox-create, then prints the launch hint (stops before the TUI) |
+| `danno doctor` | read-only preflight (`commands/doctor.py`) |
+| `danno sandbox <start\|shell\|stop\|rebuild\|update>` | operate the Docker sandbox (`commands/sandbox.py`) |
+| `commands/ollama.py` (internal) | reachability + ensure/verify models + tool-call probe |
+| `commands/tools.py` (internal) | install the tool catalog; ADOS `--local` + project-local agent/command copy + provenance |
+| `config/generate.py` (internal) | write the hybrid `.opencode/opencode.jsonc` |
 
 ## Idempotency & preservation
 
 - Re-running the generator MUST converge: it regenerates `.opencode/opencode.jsonc`
-  deterministically and **preserves** an existing differing file unless `--force`.
+  deterministically and **preserves** an existing differing file (shows a diff and
+  stops) unless `--apply`.
 - Never overwrite a developer's hand-edited config or `pm-instructions.md`.
 - Record the source ADOS git SHA (`.opencode/ados-provenance.txt`) so a later
   update knows what it is upgrading from.
@@ -120,4 +127,4 @@ only. Network egress + isolation specifics: the
 
 - [`../constitution.md`](../constitution.md) — Working Rule 6 (non-destructive
   installs) and the ADOS-provenance rule.
-- [`bash.md`](bash.md) — how the install/generate scripts must be written.
+- [`python.md`](python.md) — the Runner, two-tier policy, and CLI layout.
