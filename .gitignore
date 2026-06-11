@@ -306,3 +306,7 @@ __marimo__/
 .streamlit/secrets.toml
 
 .ai/local/
+
+# Throwaway probe/demo artefacts (constitution: scratch/ is gitignored)
+scratch/
+.ninja_log

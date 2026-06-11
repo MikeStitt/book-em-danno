@@ -7,15 +7,16 @@ rule. Read together with the [constitution](../constitution.md).
 
 ## Cross-cutting tooling
 
-- **Hooks**: a shared `.pre-commit-config.yaml` at the repo root runs hooks
-  across the repo (shellcheck, shfmt, markdownlint, gitleaks, actionlint,
-  gitlint). The runner is `prek` — a fast drop-in replacement for the
+- **Hooks**: a shared `.pre-commit-config.yaml` at the repo root runs the fast
+  subset across the repo (`ruff`, `ruff-format --check`, `markdownlint`, plus
+  generic hygiene hooks — trailing-whitespace, end-of-file, merge-conflict,
+  check-yaml). The runner is `prek` — a fast drop-in replacement for the
   `pre-commit` Python package. Hooks MUST remain active; never bypass with
-  `--no-verify` (see the constitution's Quality Gates). (Hooks/CI land with the
-  tooling; this records the intended shape.)
-- **CI**: GitHub Actions (`.github/workflows/check.yml`) reproduces the local
-  `make check` (shellcheck + `shfmt -d` + the bats suites) on **macOS and Linux**
-  on every pull request.
+  `--no-verify` (see the constitution's Quality Gates). The heavier gate (`mypy`,
+  `pytest`) runs via `ninja check`, not in pre-commit, to keep the hook fast.
+- **CI**: GitHub Actions (`.github/workflows/check.yml`) installs `uv` + `ninja`
+  and runs `ninja check` (ruff + ruff-format + mypy + pytest) on **macOS and
+  Linux** on every pull request.
 - **`.docs/` is exempt from document-quality checks.** The living plan/status
   tracker and working notes under `.docs/` are committed frequently as work
   proceeds, so markdownlint and Prettier MUST skip them — see `.markdownlintignore`
@@ -36,11 +37,12 @@ Prefer the tool's built-in cwd flag over `cd <dir> && <tool>`: `git -C <dir>`,
 `make -C <dir>`, `gh -R <owner/repo>`. The `cd … && …` form defeats per-command
 Bash allowlists (the leading token becomes `cd`, not the wrapped tool), which
 triggers permission prompts that stall AI-agent sessions and adds no clarity for
-human readers. Inside a script, use a subshell `(cd "${dir}" && …)` or
-`pushd`/`popd` to avoid leaking directory state (see [`bash.md`](bash.md)).
+human readers. In Python, pass the directory to the tool (`git -C`, `cwd=` on
+`subprocess.run`, or a `subprocess` `cwd` kwarg) rather than `os.chdir`, to avoid
+leaking process-wide directory state.
 
 ## See also
 
 - [`../constitution.md`](../constitution.md) — Working Rules + discipline.
-- [`bash.md`](bash.md), [`ados-ollama.md`](ados-ollama.md) — what the tooling is
-  and how it's written.
+- [`python.md`](python.md), [`ados-ollama.md`](ados-ollama.md) — what the tooling
+  is and how it's written.

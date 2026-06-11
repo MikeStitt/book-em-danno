@@ -1,6 +1,7 @@
-"""The `danno` CLI. Phase 1 scaffold: config generation is real; host/Docker
-commands are stubs that honor the two-tier automation policy (advise by default,
-execute only under --apply)."""
+"""The `danno` CLI. Three commands — `install`, `doctor`, `sandbox` — over the
+two-tier automation policy: advise by default, execute under `--apply`, never
+under `--dry-run`. `install` is the one provisioning path; `sandbox` operates the
+provisioned VM; `doctor` is a read-only preflight."""
 
 from __future__ import annotations
 
@@ -8,13 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import typer
-from rich.console import Console
 
-from .config.generate import Action, generate
+from .commands import doctor as doctor_cmd
+from .commands import install as install_cmd
+from .commands import sandbox as sandbox_cmd
 from .config.loader import DannoConfigError, load_config
 from .config.schema import DannoConfig
-
-console = Console()
+from .core.exec import CommandNotFoundError, Runner, console, log_err
 
 
 @dataclass
@@ -24,6 +25,9 @@ class State:
     dry_run: bool = False
     verbose: bool = False
 
+    def runner(self) -> Runner:
+        return Runner(apply=self.apply, dry_run=self.dry_run, verbose=self.verbose)
+
 
 state = State()
 
@@ -31,10 +35,8 @@ app = typer.Typer(
     no_args_is_help=True,
     help="Declarative, transparent OpenCode hybrid-runtime setup driven by danno.toml.",
 )
-config_app = typer.Typer(no_args_is_help=True, help="Generate the OpenCode config from danno.toml.")
-tools_app = typer.Typer(no_args_is_help=True, help="List or install the agentic tool catalog.")
-app.add_typer(config_app, name="config")
-app.add_typer(tools_app, name="tools")
+sandbox_app = typer.Typer(no_args_is_help=True, help="Operate the provisioned Docker sandbox.")
+app.add_typer(sandbox_app, name="sandbox")
 
 
 @app.callback()
@@ -58,82 +60,103 @@ def _load() -> DannoConfig:
     try:
         return load_config(state.config_path)
     except DannoConfigError as exc:
-        console.print(f"[red][ERROR][/red] {exc}")
+        log_err(str(exc))
         raise typer.Exit(code=2) from exc
-
-
-def _run_generate(target: Path) -> None:
-    cfg = _load()
-    try:
-        result = generate(cfg, target, apply=state.apply, dry_run=state.dry_run)
-    except (NotImplementedError, ValueError) as exc:
-        console.print(f"[red][ERROR][/red] {exc}")
-        raise typer.Exit(code=3) from exc
-
-    if result.action is Action.WROTE:
-        console.print(f"[green][SUCCESS][/green] wrote {result.path}")
-    elif result.action is Action.UNCHANGED:
-        console.print(f"[INFO] config unchanged: {result.path}")
-    else:  # DIFF
-        console.print(result.diff or result.content)
-        console.print(
-            "[yellow][INFO][/yellow] differs from the existing config; "
-            "re-run with --apply to write it."
-        )
 
 
 @app.command()
 def install(
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
+    ados_repo: str = typer.Option(
+        None, "--ados-repo", help="ADOS checkout to install from (else auto-detected)."
+    ),
 ) -> None:
-    """Read danno.toml and write the OpenCode config into a target project."""
-    _run_generate(target)
+    """Provision a target project: config + Ollama models + tools + sandbox.
 
-
-@config_app.command("generate")
-def config_generate(
-    target: Path = typer.Option(Path("."), "--target", help="Target project."),
-) -> None:
-    """Generate .opencode/opencode.jsonc from danno.toml."""
-    _run_generate(target)
-
-
-@tools_app.command("list")
-def tools_list() -> None:
-    """List the agentic tool catalog declared in danno.toml."""
+    Default prints the host/Docker commands to run yourself; `--dry-run` previews
+    everything (writing nothing); `--apply` executes. Stops before the TUI —
+    launch with `danno sandbox start`.
+    """
     cfg = _load()
-    if not cfg.tools:
-        console.print("[INFO] no tools declared in danno.toml")
-        return
-    for tool in cfg.tools:
-        console.print(f"  {tool.name:20} {tool.install_to:8} {tool.source}")
-
-
-@tools_app.command("install")
-def tools_install() -> None:
-    """Show (or with --apply, run) the per-tool install commands."""
-    cfg = _load()
-    for tool in cfg.tools:
-        console.print(f"[INFO] {tool.name} -> {tool.install_to}: install from {tool.source}")
-    console.print(
-        "[yellow][INFO][/yellow] tool install is advisory; "
-        "execution with --apply is not yet implemented (Phase 2)."
-    )
+    try:
+        install_cmd.run_install(cfg, target, state.runner(), ados_repo=ados_repo)
+    except (install_cmd.InstallError, NotImplementedError, ValueError) as exc:
+        log_err(str(exc))
+        raise typer.Exit(code=3) from exc
+    except CommandNotFoundError as exc:
+        log_err(str(exc))
+        raise typer.Exit(code=4) from exc
 
 
 @app.command()
 def doctor() -> None:
-    """Diagnostics: report environment readiness with copy-paste fixes."""
-    console.print("[INFO] doctor is not yet implemented in the Python port (Phase 2).")
+    """Read-only preflight: report environment readiness with copy-paste fixes."""
+    failed = doctor_cmd.run_doctor()
+    if failed:
+        raise typer.Exit(code=1)
 
 
-@app.command()
-def ollama(action: str = typer.Argument(..., help="e.g. 'pull gemma3:27b'")) -> None:
-    """Advise how to manage the Ollama server and models (run with --apply)."""
-    console.print(f"[INFO] would manage Ollama: {action} (Phase 2; advisory by default).")
+def _sandbox_target(target: Path, name: str | None) -> tuple[Path, str]:
+    abs_target = Path(target).resolve()
+    if not abs_target.is_dir():
+        log_err(f"target directory not found: {target}")
+        raise typer.Exit(code=3)
+    return abs_target, (name or sandbox_cmd.default_name(abs_target))
 
 
-@app.command()
-def sandbox(action: str = typer.Argument(..., help="start | shell | config")) -> None:
-    """Advise how to create/operate the Docker sandbox (run with --apply)."""
-    console.print(f"[INFO] would run sandbox '{action}' (Phase 2; copy-paste by default).")
+@sandbox_app.command("start")
+def sandbox_start(
+    target: Path = typer.Option(Path("."), "--target", help="Target project."),
+    name: str = typer.Option(None, "--name", help="Sandbox name (default danno-<dir>)."),
+    env: list[str] = typer.Option(None, "--env", help="KEY=VAL to inject (repeatable)."),
+    env_file: list[str] = typer.Option(None, "--env-file", help="File of KEY=VAL to inject."),
+) -> None:
+    """Provision (if needed) and launch the in-container OpenCode TUI."""
+    abs_target, sandbox_name = _sandbox_target(target, name)
+    sandbox_cmd.start(
+        state.runner(), sandbox_name, abs_target, env_pairs=env or [], env_files=env_file or []
+    )
+
+
+@sandbox_app.command("shell")
+def sandbox_shell(
+    target: Path = typer.Option(Path("."), "--target", help="Target project."),
+    name: str = typer.Option(None, "--name", help="Sandbox name."),
+) -> None:
+    """Open an interactive bash shell inside the sandbox VM."""
+    _, sandbox_name = _sandbox_target(target, name)
+    sandbox_cmd.shell(state.runner(), sandbox_name)
+
+
+@sandbox_app.command("stop")
+def sandbox_stop(
+    target: Path = typer.Option(Path("."), "--target", help="Target project."),
+    name: str = typer.Option(None, "--name", help="Sandbox name."),
+) -> None:
+    """Stop the sandbox VM."""
+    _, sandbox_name = _sandbox_target(target, name)
+    sandbox_cmd.stop(state.runner(), sandbox_name)
+
+
+@sandbox_app.command("rebuild")
+def sandbox_rebuild(
+    target: Path = typer.Option(Path("."), "--target", help="Target project."),
+    name: str = typer.Option(None, "--name", help="Sandbox name."),
+) -> None:
+    """Remove and re-provision the sandbox from scratch."""
+    abs_target, sandbox_name = _sandbox_target(target, name)
+    sandbox_cmd.rebuild(state.runner(), sandbox_name, abs_target)
+
+
+@sandbox_app.command("update")
+def sandbox_update(
+    target: Path = typer.Option(Path("."), "--target", help="Target project."),
+    name: str = typer.Option(None, "--name", help="Sandbox name."),
+) -> None:
+    """Advise how to update OpenCode inside the sandbox."""
+    _, sandbox_name = _sandbox_target(target, name)
+    sandbox_cmd.update(state.runner(), sandbox_name)
+
+
+# Re-exported so tests and `from book_em_danno.cli import console` keep working.
+__all__ = ["app", "console", "state"]

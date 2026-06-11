@@ -39,6 +39,12 @@ select = ["E", "F", "I", "UP", "B"]
 # typer's documented pattern puts Option/Argument in argument defaults.
 extend-immutable-calls = ["typer.Option", "typer.Argument"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: live tests that talk to real Ollama/Docker; skip when those are down",
+]
+
 [tool.mypy]
 python_version = "3.13"
 files = ["src"]
