@@ -11,7 +11,7 @@
 - Analyze current Bash tool behavior and identify all necessary features.
 - Create a comprehensive UX document (Commands, Responses, OS-specific guidance).
 - Document the end-to-end user story for "Zero to AI Coding":
-  - Provisioning (`danno install`, `danno doctor`) -> Configure OpenCode environment (strictly no ADOS assets) and must adhere to [docs/ux-requirements.md](docs/ux-requirements.md).
+  - Provisioning (`danno install`, `danno doctor`)
   - Isolation (`danno sandbox start` -> Docker Sandbox)
   - Operation (OpenCode TUI interaction)
   - Debugging (`danno sandbox shell`)
@@ -20,28 +20,22 @@
 
 ### Phase 1: Foundation
 - Initialize `uv` project (Python 3.13).
-- Configure `pyproject.toml` for package distribution (with `typer`, `rich`, `pydantic`, `pytest`).
+- Configure `pyproject.toml` for package distribution.
 - Set up quality gates (`ruff`, `mypy`, `prek`).
 
 ### Phase 2: Core Implementation
-- Cross-platform core library (I/O, logging, command execution) using `pathlib`.
-- Port Bash tools to Python entry points under the `danno` CLI (`install`, `doctor`, `hall`, `sandbox`, and `config`).
+- Cross-platform core library (I/O, logging, command execution).
+- Port Bash tools to Python entry points under the `danno` CLI.
 - Implement OS-aware guidance for Docker and Ollama setup.
 - Standardize on **Docker Sandbox** as the primary isolation method across all 3 supported OSs.
 
 ### Phase 3: Testing & Validation
 - Migrate tests to `pytest`.
 - Create cross-platform test matrices (Win/Mac/Lin).
-- Implement "Mock mode" for testing without Docker/Ollama dependencies.
 - Verify parity with original functionality without ADOS dependencies.
 
-### Phase 4: Finalization
+### Phase de 4: Finalization
 - Update documentation and `Makefile`.
-  - Rewrite `README.md` to reflect the name change (ADOS Toolkit $\rightarrow$ book-em-danno / OpenCode Orchestrator).
-  - Refocus value proposition: emphasize the tool as the bridge between local Ollama (GPU) and an isolated Docker sandbox for OpenCode.
-  - Remove all ADOS installation requirements, including references to `~/.ados` and script-based asset copying.
-  - Update Quickstart guides: replace legacy paths like `tools/ados-ollama install` with the new `danno install` flow.
-  - Simplify "What it puts on your Mac" table by removing ADOS as a dependency.
 - Validate package installation via `uv`.
 - Remove legacy `.sh` files.
 

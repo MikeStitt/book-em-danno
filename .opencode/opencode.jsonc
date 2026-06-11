@@ -6,8 +6,8 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "default_agent": "pm",
-  "model": "ollama/gemma4:31b-mlx",
-  "small_model": "ollama/gemma4:31b-mlx",
+  "model": "ollama/gemma4:26b",
+  "small_model": "ollama/gemma4:26b",
   "provider": {
     "ollama": {
       "npm": "@ai-sdk/openai-compatible",
@@ -20,32 +20,32 @@
         "thinking": true
       },
       "models": {
-        "gemma4:31b-mlx": {
-          "name": "Gemma (local via Ollama)",
+        "gemma4:26b": {
+          "name": "gemma4:26b (local via Ollama)",
           "tool_call": true,
           "limit": { "context": 262144, "output": 8192 } } }
     }
   },
   "agent": {
-    "architect": { "model": "ollama/gemma4:31b-mlx" },
-    "bootstrapper": { "model": "ollama/gemma4:31b-mlx" },
-    "reviewer": { "model": "ollama/gemma4:31b-mlx" },
-    "review-feedback-applier": { "model": "ollama/gemma4:31b-mlx" },
-    "pm": { "model": "ollama/gemma4:31b-mlx" },
-    "coder": { "model": "ollama/gemma4:31b-mlx" },
-    "fixer": { "model": "ollama/gemma4:31b-mlx" },
-    "plan-writer": { "model": "ollama/gemma4:31b-mlx" },
-    "spec-writer": { "model": "ollama/gemma4:31b-mlx" },
-    "test-plan-writer": { "model": "ollama/gemma4:31b-mlx" },
-    "toolsmith": { "model": "ollama/gemma4:31b-mlx" },
-    "designer": { "model": "ollama/gemma4:31b-mlx" },
-    "doc-syncer": { "model": "ollama/gemma4:31b-mlx" },
-    "pr-manager": { "model": "ollama/gemma4:31b-mlx" },
-    "editor": { "model": "ollama/gemma4:31b-mlx" },
-    "committer": { "model": "ollama/gemma4:31b-mlx" },
-    "runner": { "model": "ollama/gemma4:31b-mlx" },
-    "external-researcher": { "model": "ollama/gemma4:31b-mlx" },
-    "image-generator": { "model": "ollama/gemma4:31b-mlx" },
-    "image-reviewer": { "model": "ollama/gemma4:31b-mlx" }
+    "architect": { "model": "ollama/gemma4:26b" },
+    "bootstrapper": { "model": "ollama/gemma4:26b" },
+    "reviewer": { "model": "ollama/gemma4:26b" },
+    "review-feedback-applier": { "model": "ollama/gemma4:26b" },
+    "pm": { "model": "ollama/gemma4:26b" },
+    "coder": { "model": "ollama/gemma4:26b" },
+    "fixer": { "model": "ollama/gemma4:26b" },
+    "plan-writer": { "model": "ollama/gemma4:26b" },
+    "spec-writer": { "model": "ollama/gemma4:26b" },
+    "test-plan-writer": { "model": "ollama/gemma4:26b" },
+    "toolsmith": { "model": "ollama/gemma4:26b" },
+    "designer": { "model": "ollama/gemma4:26b" },
+    "doc-syncer": { "model": "ollama/gemma4:26b" },
+    "pr-manager": { "model": "ollama/gemma4:26b" },
+    "editor": { "model": "ollama/gemma4:26b" },
+    "committer": { "model": "ollama/gemma4:26b" },
+    "runner": { "model": "ollama/gemma4:26b" },
+    "external-researcher": { "model": "ollama/gemma4:26b" },
+    "image-generator": { "model": "ollama/gemma4:26b" },
+    "image-reviewer": { "model": "ollama/gemma4:26b" }
   }
 }
