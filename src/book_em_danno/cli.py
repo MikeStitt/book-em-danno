@@ -5,6 +5,7 @@ provisioned VM; `doctor` is a read-only preflight."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from .commands import install as install_cmd
 from .commands import sandbox as sandbox_cmd
 from .config.loader import DannoConfigError, load_config
 from .config.schema import DannoConfig
-from .core.exec import CommandNotFoundError, Runner, console, log_err
+from .core.exec import CommandFailedError, CommandNotFoundError, Runner, console, log_err
 
 
 @dataclass
@@ -64,6 +65,16 @@ def _load() -> DannoConfig:
         raise typer.Exit(code=2) from exc
 
 
+def _guard(action: Callable[[], object]) -> None:
+    """Run a Tier-2 action, turning a failed/missing external command into a clean
+    exit 4 instead of a traceback."""
+    try:
+        action()
+    except (CommandFailedError, CommandNotFoundError) as exc:
+        log_err(str(exc))
+        raise typer.Exit(code=4) from exc
+
+
 @app.command()
 def install(
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
@@ -83,7 +94,7 @@ def install(
     except (install_cmd.InstallError, NotImplementedError, ValueError) as exc:
         log_err(str(exc))
         raise typer.Exit(code=3) from exc
-    except CommandNotFoundError as exc:
+    except (CommandNotFoundError, CommandFailedError) as exc:
         log_err(str(exc))
         raise typer.Exit(code=4) from exc
 
@@ -113,8 +124,10 @@ def sandbox_start(
 ) -> None:
     """Provision (if needed) and launch the in-container OpenCode TUI."""
     abs_target, sandbox_name = _sandbox_target(target, name)
-    sandbox_cmd.start(
-        state.runner(), sandbox_name, abs_target, env_pairs=env or [], env_files=env_file or []
+    _guard(
+        lambda: sandbox_cmd.start(
+            state.runner(), sandbox_name, abs_target, env_pairs=env or [], env_files=env_file or []
+        )
     )
 
 
@@ -125,7 +138,7 @@ def sandbox_shell(
 ) -> None:
     """Open an interactive bash shell inside the sandbox VM."""
     _, sandbox_name = _sandbox_target(target, name)
-    sandbox_cmd.shell(state.runner(), sandbox_name)
+    _guard(lambda: sandbox_cmd.shell(state.runner(), sandbox_name))
 
 
 @sandbox_app.command("stop")
@@ -135,7 +148,7 @@ def sandbox_stop(
 ) -> None:
     """Stop the sandbox VM."""
     _, sandbox_name = _sandbox_target(target, name)
-    sandbox_cmd.stop(state.runner(), sandbox_name)
+    _guard(lambda: sandbox_cmd.stop(state.runner(), sandbox_name))
 
 
 @sandbox_app.command("rebuild")
@@ -145,7 +158,7 @@ def sandbox_rebuild(
 ) -> None:
     """Remove and re-provision the sandbox from scratch."""
     abs_target, sandbox_name = _sandbox_target(target, name)
-    sandbox_cmd.rebuild(state.runner(), sandbox_name, abs_target)
+    _guard(lambda: sandbox_cmd.rebuild(state.runner(), sandbox_name, abs_target))
 
 
 @sandbox_app.command("update")
@@ -155,7 +168,7 @@ def sandbox_update(
 ) -> None:
     """Advise how to update OpenCode inside the sandbox."""
     _, sandbox_name = _sandbox_target(target, name)
-    sandbox_cmd.update(state.runner(), sandbox_name)
+    _guard(lambda: sandbox_cmd.update(state.runner(), sandbox_name))
 
 
 # Re-exported so tests and `from book_em_danno.cli import console` keep working.

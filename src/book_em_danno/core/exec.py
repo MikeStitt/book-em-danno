@@ -45,6 +45,10 @@ class CommandNotFoundError(Exception):
     """A required external command is not on PATH (fail loud, Working Rule 8)."""
 
 
+class CommandFailedError(Exception):
+    """An advised command was executed under --apply and exited non-zero."""
+
+
 def require_cmd(name: str, *, fix: str | None = None) -> str:
     """Return the resolved path to `name`, or fail loud with a fix hint."""
     path = shutil.which(name)
@@ -69,10 +73,20 @@ class Runner:
     verbose: bool = False
 
     def advise(self, cmd: list[str], why: str) -> list[str]:
-        """Advise (and under --apply, run) a single command. Returns `cmd`."""
+        """Advise (and under --apply, run) a single command. Returns `cmd`.
+
+        A non-zero exit under --apply raises `CommandFailedError` (a clean,
+        CLI-catchable error) rather than letting `CalledProcessError` surface as a
+        traceback.
+        """
         log_info(why)
         console.print(f"  $ {shlex.join(cmd)}")
         if self.apply and not self.dry_run:
             log_debug(f"executing: {shlex.join(cmd)}", verbose=self.verbose)
-            subprocess.run(cmd, check=True)
+            try:
+                subprocess.run(cmd, check=True)
+            except subprocess.CalledProcessError as exc:
+                raise CommandFailedError(
+                    f"command failed (exit {exc.returncode}): {shlex.join(cmd)}"
+                ) from exc
         return cmd

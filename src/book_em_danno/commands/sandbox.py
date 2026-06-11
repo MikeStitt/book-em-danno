@@ -13,6 +13,7 @@ testable without a daemon.
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -28,12 +29,32 @@ def default_name(target_abs: Path) -> str:
     return f"danno-{target_abs.name}"
 
 
+def sandbox_exists(name: str) -> bool:
+    """True if a sandbox named `name` is listed by `docker sandbox ls`."""
+    try:
+        out = subprocess.run(
+            ["docker", "sandbox", "ls"], capture_output=True, text=True, check=False
+        ).stdout
+    except (FileNotFoundError, OSError):
+        return False
+    return any(line.split() and line.split()[0] == name for line in out.splitlines()[1:])
+
+
+def _live(runner: Runner) -> bool:
+    """True when we are actually executing (so existence checks are meaningful)."""
+    return runner.apply and not runner.dry_run
+
+
 def create(runner: Runner, name: str, target_abs: Path) -> list[str]:
-    """Create the sandbox, mounting the project at the same path inside the VM."""
-    return runner.advise(
-        ["docker", "sandbox", "create", "--name", name, "opencode", str(target_abs)],
-        why=f"create the OpenCode sandbox '{name}' for {target_abs}",
-    )
+    """Create the sandbox, mounting the project at the same path inside the VM.
+
+    Idempotent under --apply: an already-existing sandbox is left in place.
+    """
+    cmd = ["docker", "sandbox", "create", "--name", name, "opencode", str(target_abs)]
+    if _live(runner) and sandbox_exists(name):
+        log_info(f"sandbox '{name}' already exists — skipping create")
+        return cmd
+    return runner.advise(cmd, why=f"create the OpenCode sandbox '{name}' for {target_abs}")
 
 
 def configure_proxy(
@@ -149,9 +170,20 @@ def rebuild(
     *,
     allow_hosts: tuple[str, ...] = DEFAULT_ALLOW_HOSTS,
 ) -> list[list[str]]:
-    """Recycle the sandbox: remove it, then re-provision from scratch."""
-    rm = runner.advise(["docker", "sandbox", "rm", "-f", name], why=f"remove sandbox '{name}'")
-    return [rm, *provision(runner, name, target_abs, allow_hosts=allow_hosts)]
+    """Recycle the sandbox: remove it (if present), then re-provision from scratch.
+
+    `docker sandbox rm` takes no force flag and errors on a missing sandbox, so
+    under --apply we stop-then-remove only when it actually exists.
+    """
+    cmds: list[list[str]] = []
+    if not _live(runner) or sandbox_exists(name):
+        # Stop first so rm doesn't trip on a running VM, then remove.
+        cmds.append(stop(runner, name))
+        cmds.append(
+            runner.advise(["docker", "sandbox", "rm", name], why=f"remove sandbox '{name}'")
+        )
+    cmds += provision(runner, name, target_abs, allow_hosts=allow_hosts)
+    return cmds
 
 
 def update(runner: Runner, name: str) -> list[str]:

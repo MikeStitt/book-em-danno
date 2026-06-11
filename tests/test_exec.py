@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from book_em_danno.core import exec as exec_mod
-from book_em_danno.core.exec import CommandNotFoundError, Runner, require_cmd
+from book_em_danno.core.exec import (
+    CommandFailedError,
+    CommandNotFoundError,
+    Runner,
+    require_cmd,
+)
 
 
 def _patch_run(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
@@ -29,6 +36,15 @@ def test_apply_executes(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _patch_run(monkeypatch)
     Runner(apply=True).advise(["echo", "hi"], why="greet")
     assert calls == [["echo", "hi"]]
+
+
+def test_apply_failure_raises_clean_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(cmd, **kw):  # type: ignore[no-untyped-def]
+        raise subprocess.CalledProcessError(125, cmd)
+
+    monkeypatch.setattr(exec_mod.subprocess, "run", boom)
+    with pytest.raises(CommandFailedError):
+        Runner(apply=True).advise(["docker", "sandbox", "rm", "ghost"], why="remove")
 
 
 def test_require_cmd_found() -> None:
