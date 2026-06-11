@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as pkg_version
 from pathlib import Path
 
 import typer
@@ -40,9 +42,27 @@ sandbox_app = typer.Typer(no_args_is_help=True, help="Operate the provisioned Do
 app.add_typer(sandbox_app, name="sandbox")
 
 
+def _version_callback(value: bool) -> None:
+    if not value:
+        return
+    try:
+        ver = pkg_version("book-em-danno")
+    except PackageNotFoundError:
+        ver = "unknown (dev)"
+    console.print(f"danno {ver}")
+    raise typer.Exit()
+
+
 @app.callback()
 def main(
     config: Path = typer.Option(Path("danno.toml"), "--config", help="Path to danno.toml."),
+    version: bool = typer.Option(
+        False,
+        "--version",
+        help="Show the danno version and exit.",
+        callback=_version_callback,
+        is_eager=True,
+    ),
     apply: bool = typer.Option(
         False, "--apply", help="Execute host/Docker/Ollama commands instead of only printing them."
     ),

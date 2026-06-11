@@ -10,6 +10,12 @@ runner = CliRunner()
 EXAMPLE = Path(__file__).resolve().parents[1] / "danno.toml.example"
 
 
+def test_version_prints_package_version() -> None:
+    result = runner.invoke(app, ["--version"])
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "danno 0.1.0"
+
+
 def test_help_shows_three_commands() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0

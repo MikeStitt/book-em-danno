@@ -17,6 +17,7 @@ without touching anything; `--apply` executes.
 ```bash
 uv sync            # install danno + its locked deps
 uv run danno --help
+uv run danno --version
 ```
 
 `danno` is the entry point (`book-em-danno` is an alias).
