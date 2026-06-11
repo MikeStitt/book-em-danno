@@ -28,3 +28,12 @@ repos:
     hooks:
       - id: markdownlint
         exclude: ^\.docs/
+
+  # Python gate for the book-em-danno conversion (src/ + tests/). Self-contained;
+  # mypy + pytest run via `make py-check` / `uv run` (not in pre-commit).
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+      - id: ruff-format
+        args: [--check]

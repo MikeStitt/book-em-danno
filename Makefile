@@ -45,3 +45,11 @@ cli-reference-check: ## Fail if docs/cli-reference.md is out of date
 .PHONY: develop
 develop: ## Install dev dependencies via Homebrew
 	@scripts/setup-dev.sh
+
+.PHONY: py-check
+py-check: ## Python gate (book-em-danno conversion): ruff + mypy + pytest via uv
+	@command -v uv >/dev/null || { echo "uv missing — see https://docs.astral.sh/uv/"; exit 1; }
+	@uv run ruff check .
+	@uv run ruff format --check .
+	@uv run mypy
+	@uv run pytest -q
