@@ -36,14 +36,20 @@ rule. Read together with the [constitution](../constitution.md).
 
 ### Cutting a release
 
-Releases are tagged manually (a human action — danno does not self-release):
+Releases are tagged manually (a human action — danno does not self-release), but
+**publishing the GitHub Release is automated**: pushing a `vX.Y.Z` tag triggers
+[`.github/workflows/release.yml`](../../../.github/workflows/release.yml), which
+runs `git-cliff` (reusing `cliff.toml`) and creates the GitHub Release with the
+latest section as its notes. So the whole release is:
 
 1. Bump `version` in `pyproject.toml` (this is what `danno --version` reports).
 2. Regenerate the changelog: `git cliff -o CHANGELOG.md` (or
    `git cliff --tag vX.Y.Z -o CHANGELOG.md` to render the new version's heading).
 3. Commit: `git commit -am "chore(release): vX.Y.Z"`.
-4. Tag an annotated release: `git tag -a vX.Y.Z -m "vX.Y.Z"` and `git push --tags`.
+4. Tag an annotated release and push commit + tag:
+   `git tag -a vX.Y.Z -m "vX.Y.Z"` then `git push origin main --follow-tags`.
 
+The tag push is the only manual trigger — the workflow does the GitHub Release.
 `cliff.toml`'s `tag_pattern = "v[0-9]*"` makes `git-cliff` group commits under
 each `vX.Y.Z` tag; untagged commits land under `## [unreleased]`.
 

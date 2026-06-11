@@ -185,7 +185,9 @@ tool-call is unusable for an agent (keep `num_ctx ≈ 32000`).
   `pyproject.toml`. `CHANGELOG.md` is generated from conventional commits by
   [`git-cliff`](https://git-cliff.org) (`brew install git-cliff`,
   `git cliff -o CHANGELOG.md`). Cut a release by bumping the version, regenerating
-  the changelog, then tagging `vX.Y.Z` — full steps in
+  the changelog, then pushing a `vX.Y.Z` tag — the tag push triggers
+  [`release.yml`](.github/workflows/release.yml), which publishes the GitHub
+  Release from the changelog. Full steps in
   [`.specify/memory/parts/shared.md`](.specify/memory/parts/shared.md).
 
 ## Where the docs live
