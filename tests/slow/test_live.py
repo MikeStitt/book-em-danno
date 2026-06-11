@@ -38,7 +38,6 @@ def test_model_can_tool_call() -> None:
     )
 
 
-@pytest.mark.skipif(docker_down, reason="Docker daemon down")
 def _teardown_sandbox(name: str) -> None:
     # `docker sandbox rm` has no force flag and won't remove a running VM, so stop
     # first, then remove. Both are best-effort (the sandbox may not exist).
