@@ -68,6 +68,33 @@ uv run danno --apply sandbox rebuild --target ./my-project   # recycle from scra
 
 OpenCode **only ever runs inside the sandbox** — never on your host.
 
+#### Other agents (`--agent`)
+
+`docker sandbox` ships prebuilt agents (`opencode`, `claude`, …). Pass `--agent`
+to run a different one; non-default agents get their **own** sandbox
+(`danno-<dir>-<agent>`) so they coexist with the opencode sandbox.
+
+```bash
+uv run danno --apply sandbox start --target ./my-project --agent claude
+```
+
+**Claude Code auth** is read from danno's host environment and injected into the
+sandbox through a chmod-600 `--env-file` (never on the command line). danno
+prefers the subscription token; set one of:
+
+```bash
+# Max/Pro subscription (preferred, no per-token billing): mint a long-lived token
+claude setup-token            # opens a browser; OAuth against your Max/Pro account
+export CLAUDE_CODE_OAUTH_TOKEN=...
+
+# or API billing (pay-per-token via the Console)
+export ANTHROPIC_API_KEY=...
+```
+
+If neither is set, `sandbox start --agent claude` **fails loud** with the
+`claude setup-token` hint rather than launching unauthenticated. The token is
+re-injected on every `start`, so it survives `sandbox rebuild`.
+
 ## `danno.toml` quickstart
 
 `danno.toml` is the single source of truth. See [`danno.toml.example`](danno.toml.example)

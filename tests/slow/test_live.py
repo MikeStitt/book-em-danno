@@ -46,6 +46,7 @@ def _teardown_sandbox(name: str) -> None:
     subprocess.run(["docker", "sandbox", "rm", name], capture_output=True, check=False)
 
 
+@pytest.mark.skipif(docker_down, reason="Docker daemon down")
 def test_opencode_only_runs_in_container() -> None:
     # A throwaway sandbox proves OpenCode is reachable in-container — never on host.
     name = "danno-livetest"
@@ -59,6 +60,30 @@ def test_opencode_only_runs_in_container() -> None:
         assert created.returncode == 0, created.stderr
         ver = subprocess.run(
             ["docker", "sandbox", "exec", name, "opencode", "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert ver.returncode == 0 and ver.stdout.strip()
+    finally:
+        _teardown_sandbox(name)
+
+
+@pytest.mark.skipif(docker_down, reason="Docker daemon down")
+def test_claudecode_runs_in_container() -> None:
+    # Claude Code is a Docker prebuilt agent like opencode; prove it runs
+    # in-container. Auth-free (`--version` only) so it's green on a cold host.
+    name = "danno-claudetest"
+    _teardown_sandbox(name)
+    try:
+        created = subprocess.run(
+            ["docker", "sandbox", "create", "--name", name, "claude", "."],
+            capture_output=True,
+            check=False,
+        )
+        assert created.returncode == 0, created.stderr
+        ver = subprocess.run(
+            ["docker", "sandbox", "exec", name, "claude", "--version"],
             capture_output=True,
             text=True,
             check=False,
