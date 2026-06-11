@@ -24,12 +24,28 @@ rule. Read together with the [constitution](../constitution.md).
   in `.pre-commit-config.yaml`. A noisy git history under `.docs/` is accepted by
   design. This is the same spirit as the scratch escape-hatch: working artefacts
   are not held to publication standards.
-- **Changelog**: `git-cliff` auto-generates from conventional commits. Do not
-  hand-maintain `## [Unreleased]` (regenerate via `git cliff --unreleased`).
-  Manual edits are limited to released sections for light curation, factual
-  corrections, or formatting cleanup. This is the source-code `CHANGELOG.md` —
-  separate from the constitution's own version history in
+- **Changelog**: `git-cliff` auto-generates `CHANGELOG.md` from conventional
+  commits, configured by [`cliff.toml`](../../../cliff.toml) at the repo root.
+  `git-cliff` is a Rust binary (not a pip dep) → install it once with
+  `brew install git-cliff`. Regenerate the unreleased section with
+  `git cliff -o CHANGELOG.md`; do not hand-maintain `## [unreleased]`. Manual
+  edits are limited to released sections for light curation, factual corrections,
+  or formatting cleanup. This is the source-code `CHANGELOG.md` — separate from
+  the constitution's own version history in
   [`constitution-maintenance.md`](constitution-maintenance.md).
+
+### Cutting a release
+
+Releases are tagged manually (a human action — danno does not self-release):
+
+1. Bump `version` in `pyproject.toml` (this is what `danno --version` reports).
+2. Regenerate the changelog: `git cliff -o CHANGELOG.md` (or
+   `git cliff --tag vX.Y.Z -o CHANGELOG.md` to render the new version's heading).
+3. Commit: `git commit -am "chore(release): vX.Y.Z"`.
+4. Tag an annotated release: `git tag -a vX.Y.Z -m "vX.Y.Z"` and `git push --tags`.
+
+`cliff.toml`'s `tag_pattern = "v[0-9]*"` makes `git-cliff` group commits under
+each `vX.Y.Z` tag; untagged commits land under `## [unreleased]`.
 
 ## Tool-invocation working directory
 

@@ -181,6 +181,12 @@ tool-call is unusable for an agent (keep `num_ctx ≈ 32000`).
 - **Layout:** `src/book_em_danno/` — `config/` (schema, loader, generator),
   `core/exec.py` (the advise-by-default `Runner`), `commands/` (doctor, ollama,
   sandbox, tools, install), `cli.py`.
+- **Releasing:** the version reported by `danno --version` comes from
+  `pyproject.toml`. `CHANGELOG.md` is generated from conventional commits by
+  [`git-cliff`](https://git-cliff.org) (`brew install git-cliff`,
+  `git cliff -o CHANGELOG.md`). Cut a release by bumping the version, regenerating
+  the changelog, then tagging `vX.Y.Z` — full steps in
+  [`.specify/memory/parts/shared.md`](.specify/memory/parts/shared.md).
 
 ## Where the docs live
 
