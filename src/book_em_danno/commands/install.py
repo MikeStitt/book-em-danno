@@ -10,7 +10,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..config.generate import Action, generate
+from ..config.loader import DannoConfigError
 from ..config.schema import DannoConfig, OllamaBackend
+from ..core import registry
 from ..core.exec import Runner, log_err, log_info
 from . import ollama, sandbox, tools
 
@@ -65,6 +67,13 @@ def run_install(
     loader; this orchestrates config, models, tools, and sandbox creation."""
     target_abs = _resolve_target(target)
     name = sandbox.default_name(target_abs)
+    # Resolve the agent home the same way `sandbox start` does, so install creates
+    # the sandbox with the home mount already in place — otherwise a later `start`
+    # finds the sandbox existing, skips create, and the home is never mounted.
+    try:
+        home = sandbox.resolve_home(target_abs, name)
+    except DannoConfigError as exc:
+        raise InstallError(str(exc)) from exc
 
     log_info(f"provisioning {target_abs}")
     log_info("step 1/5 — config")
@@ -82,7 +91,7 @@ def run_install(
             log_err(f"tool '{tool.name}': {exc}")
 
     log_info("step 4/5 — sandbox")
-    sandbox.provision(runner, name, target_abs)
+    sandbox.provision(runner, name, target_abs, home=home, registry_path=registry.default_path())
 
     log_info("step 5/5 — ready")
     log_info(f"[green]ready[/green] — launch with: danno sandbox start --target {target}")

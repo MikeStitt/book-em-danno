@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from book_em_danno.commands import install, ollama
+from book_em_danno.commands import install, ollama, sandbox
 from book_em_danno.config.schema import (
     CloudBackend,
     DannoConfig,
@@ -12,6 +12,7 @@ from book_em_danno.config.schema import (
     OllamaBackend,
     Tool,
 )
+from book_em_danno.core import registry
 from conftest import RecordingRunner
 
 
@@ -38,13 +39,20 @@ def _config() -> DannoConfig:
 
 def test_install_orchestration_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ollama, "loopback_warning", lambda **k: None)
+    # Keep agent-home + registry off real host state (tmp_path has no danno.toml,
+    # so the default per-project home is mounted — same as `sandbox start`).
+    home_root = tmp_path / "agent-home"
+    monkeypatch.setattr(sandbox, "_agent_home_root", lambda: home_root)
+    monkeypatch.setattr(registry, "default_path", lambda: tmp_path / "sandboxes.json")
     r = RecordingRunner()
     install.run_install(_config(), tmp_path, r)
     name = f"danno-{tmp_path.parent.name}-{tmp_path.name}"
+    home = home_root / name
     assert r.joined() == [
         "ollama pull gemma4:26b",  # step 2: models
         "git clone https://github.com/x/opencode-planner",  # step 3: tools
-        f"docker sandbox create --name {name} opencode {tmp_path}",  # step 4
+        f"mkdir -p {home}",  # step 4: ensure the agent-home mount source exists
+        f"docker sandbox create --name {name} opencode {tmp_path} {home}",  # 2-mount create
         f"docker sandbox network proxy {name} --policy allow --allow-host localhost:11434",
         f"docker sandbox stop {name}",
     ]
