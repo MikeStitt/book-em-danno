@@ -40,13 +40,13 @@ def test_install_orchestration_order(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(ollama, "loopback_warning", lambda **k: None)
     r = RecordingRunner()
     install.run_install(_config(), tmp_path, r)
+    name = f"danno-{tmp_path.parent.name}-{tmp_path.name}"
     assert r.joined() == [
         "ollama pull gemma4:26b",  # step 2: models
         "git clone https://github.com/x/opencode-planner",  # step 3: tools
-        f"docker sandbox create --name danno-{tmp_path.name} opencode {tmp_path}",  # step 4
-        f"docker sandbox network proxy danno-{tmp_path.name} --policy allow "
-        "--allow-host localhost:11434",
-        f"docker sandbox stop danno-{tmp_path.name}",
+        f"docker sandbox create --name {name} opencode {tmp_path}",  # step 4
+        f"docker sandbox network proxy {name} --policy allow --allow-host localhost:11434",
+        f"docker sandbox stop {name}",
     ]
 
 

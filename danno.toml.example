@@ -9,6 +9,14 @@ target = "."                       # project to configure
 default_agent = "pm"               # OpenCode default_agent
 profile       = "hybrid"           # hybrid | cloud-only | local-only
 
+# --- Sandbox: where the agent's home (chat history, settings, onboarding) lives. ---
+[sandbox]
+# agent_home is an IDENTITY KEY: sandboxes whose key resolves to the same path share
+# one home. Forms: per-project (default, keyed on the sandbox name) | per-repo (one
+# home across a repo's worktrees) | shared (one home for all sandboxes) | ephemeral
+# (VM-local, wiped on rebuild) | "group:<name>" | "<host path>". See SAMPLE_README.md.
+agent_home = "per-project"
+
 # --- Backends: where models run. `kind` selects the runtime. ---
 [backends.ollama]                  # IMPLEMENTED
 kind     = "ollama"

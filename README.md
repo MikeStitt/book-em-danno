@@ -56,23 +56,48 @@ diff and needs `--apply`.
 
 ### 3. Launch and operate the sandbox
 
-```bash
-# launch the in-container OpenCode TUI, wired to host Ollama
-uv run danno --apply sandbox start --target ./my-project \
-    --env ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
+The confusion-resistant flow is to `cd` into the project and omit `--target`: it
+defaults to `.`, so danno derives the same sandbox name every time.
 
-uv run danno --apply sandbox shell   --target ./my-project   # bash in the VM
-uv run danno --apply sandbox stop    --target ./my-project
-uv run danno --apply sandbox rebuild --target ./my-project   # recycle from scratch
+```bash
+cd ./my-project
+# launch the in-container OpenCode TUI, wired to host Ollama
+uv run danno --apply sandbox start
+uv run danno --apply sandbox shell      # bash in the VM
+uv run danno --apply sandbox stop
+uv run danno --apply sandbox rebuild    # recycle from scratch (agent home survives)
+uv run danno sandbox ls                 # which sandbox maps to which project?
 ```
 
-OpenCode **only ever runs inside the sandbox** — never on your host.
+`--target ./my-project` works too. The sandbox name is `danno-<parent>-<dir>` (the
+parent dir is included so same-basename checkouts and worktrees never collide), and
+`sandbox ls` reads `~/.danno/sandboxes.json` to print each `name → target` plus live
+status. OpenCode **only ever runs inside the sandbox** — never on your host.
+
+### Where the agent's history lives (`[sandbox] agent_home`)
+
+danno launches the agent **in your mounted repo** (so it sees `CLAUDE.md` and edits
+land on the host) and gives each sandbox a durable **agent home** on the host —
+chat history, settings, onboarding — that survives `rebuild`. One knob in
+`danno.toml` chooses where it lives:
+
+```toml
+[sandbox]
+agent_home = "per-project"   # per-project (default) | per-repo | shared | ephemeral
+                             #   | "group:<name>" | "<host path>"
+```
+
+`per-project` (the default) gives each sandbox its own home keyed on the sandbox
+name; `per-repo` shares one home across a repo's worktrees; `shared` is one home for
+all sandboxes; `ephemeral` keeps it VM-local (wiped on rebuild). danno translates
+the knob to `CLAUDE_CONFIG_DIR` for Claude and `XDG_CONFIG_HOME`/`XDG_DATA_HOME` for
+opencode. See [`SAMPLE_README.md`](SAMPLE_README.md) for the full model.
 
 #### Other agents (`--agent`)
 
 `docker sandbox` ships prebuilt agents (`opencode`, `claude`, …). Pass `--agent`
 to run a different one; non-default agents get their **own** sandbox
-(`danno-<dir>-<agent>`) so they coexist with the opencode sandbox.
+(`danno-<parent>-<dir>-<agent>`) so they coexist with the opencode sandbox.
 
 ```bash
 uv run danno --apply sandbox start --target ./my-project --agent claude

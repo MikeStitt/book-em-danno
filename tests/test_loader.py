@@ -50,3 +50,21 @@ def test_malformed_toml_fails_loud(tmp_path: Path) -> None:
     bad.write_text("[defaults\n", encoding="utf-8")
     with pytest.raises(DannoConfigError, match="invalid TOML"):
         load_config(bad)
+
+
+def test_sandbox_defaults_to_per_project() -> None:
+    assert load_config(EXAMPLE).sandbox.agent_home == "per-project"
+
+
+def test_bad_agent_home_fails_loud(tmp_path: Path) -> None:
+    bad = tmp_path / "danno.toml"
+    bad.write_text("[sandbox]\nagent_home = 'bogus'\n", encoding="utf-8")
+    with pytest.raises(DannoConfigError, match="invalid agent_home"):
+        load_config(bad)
+
+
+def test_sandbox_unknown_key_fails_loud(tmp_path: Path) -> None:
+    bad = tmp_path / "danno.toml"
+    bad.write_text("[sandbox]\nagent_home = 'shared'\nbogus = 1\n", encoding="utf-8")
+    with pytest.raises(DannoConfigError, match="invalid danno.toml"):
+        load_config(bad)
