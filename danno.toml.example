@@ -14,14 +14,19 @@ profile       = "hybrid"           # hybrid | cloud-only | local-only
 # agent_home is an IDENTITY KEY: sandboxes whose key resolves to the same path share
 # one home. Forms: per-project (default, keyed on the sandbox name) | per-repo (one
 # home across a repo's worktrees) | shared (one home for all sandboxes) | ephemeral
-# (VM-local, wiped on rebuild) | "group:<name>" | "<host path>". See SAMPLE_README.md.
+# (VM-local, wiped on rebuild) | "group:<name>" | "<host path>". See README "Sandboxed agents".
 agent_home = "per-project"
 
 # --- Backends: where models run. `kind` selects the runtime. ---
 [backends.ollama]                  # IMPLEMENTED
-kind     = "ollama"
-base_url = "http://host.docker.internal:11434/v1"   # use http://localhost:11434/v1 for host-only runs
-num_ctx  = 32000
+kind         = "ollama"
+base_url     = "http://host.docker.internal:11434/v1"   # use http://localhost:11434/v1 for host-only runs
+num_ctx      = 32000   # Ollama's REAL context window (the KV-cache it loads); costs RAM/VRAM.
+                       #   Mirrored into OpenCode's models.<tag>.limit.context so OpenCode won't
+                       #   overpack and trigger a silent truncation. Keep the two in sync.
+stream       = true    # stream tokens from Ollama (runtime-significant; keep true)
+thinking     = false   # enable the model's "thinking" channel (runtime-significant)
+output_limit = 8192    # tokens OpenCode reserves for the reply (usable input ≈ num_ctx - output_limit)
 
 [backends.cloud]                   # IMPLEMENTED
 kind     = "cloud"

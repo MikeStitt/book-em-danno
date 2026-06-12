@@ -23,12 +23,25 @@ class Defaults(BaseModel):
 
 
 class OllamaBackend(BaseModel):
-    """Local models via OpenCode's @ai-sdk/openai-compatible provider. IMPLEMENTED."""
+    """Local models via OpenCode's @ai-sdk/openai-compatible provider. IMPLEMENTED.
+
+    Field semantics (see README "Editing the generated opencode.jsonc"):
+      num_ctx      -> Ollama's REAL context window (the KV-cache it loads); costs
+                      RAM/VRAM. Mirrored into OpenCode's models.<tag>.limit.context
+                      so OpenCode won't overpack and trigger a silent truncation.
+      stream       -> stream tokens from Ollama (runtime-significant; keep true).
+      thinking     -> enable the model's "thinking" channel (runtime-significant).
+      output_limit -> tokens OpenCode reserves for the reply (models.<tag>.limit.output);
+                      usable input is roughly num_ctx - output_limit.
+    """
 
     model_config = ConfigDict(extra="forbid")
     kind: Literal["ollama"]
     base_url: str
     num_ctx: int = 32000
+    stream: bool = True
+    thinking: bool = False
+    output_limit: int = 8192
 
 
 class CloudBackend(BaseModel):
@@ -100,7 +113,7 @@ _AGENT_HOME_KEYWORDS = frozenset({"per-project", "per-repo", "shared", "ephemera
 
 
 class Sandbox(BaseModel):
-    """The `[sandbox]` block. `agent_home` is an identity key (see SAMPLE_README):
+    """The `[sandbox]` block. `agent_home` is an identity key (see README "Sandboxed agents"):
     a keyword, `group:<name>`, or an explicit host path. Sandboxes whose key
     resolves to the same path share one agent home."""
 
