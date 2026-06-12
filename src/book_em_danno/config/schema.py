@@ -6,9 +6,9 @@ references fail loud rather than producing a subtly wrong opencode.jsonc.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Project(BaseModel):
@@ -74,6 +74,54 @@ class Tool(BaseModel):
     install_to: Literal["sandbox", "project"]
 
 
+class NpmPlugin(BaseModel):
+    """An OpenCode npm plugin, declared in opencode.jsonc's `"plugin"` array and
+    auto-installed by OpenCode (Bun) in the sandbox at startup. Unlike `[[tools]]`
+    (imperative installs like ADOS), these are declarative config.
+
+    `config` (when set) renders as the documented `[package, config]` tuple form.
+    `setup` is an optional list of in-container shell commands run post-create via
+    `docker sandbox exec` (e.g. a plugin's slash-command installer)."""
+
+    model_config = ConfigDict(extra="forbid")
+    package: str
+    config: dict[str, Any] | None = None
+    setup: list[str] = Field(default_factory=list)
+
+    @field_validator("package")
+    @classmethod
+    def _check_package(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("npm plugin 'package' must be non-empty")
+        return v
+
+
+_AGENT_HOME_KEYWORDS = frozenset({"per-project", "per-repo", "shared", "ephemeral"})
+
+
+class Sandbox(BaseModel):
+    """The `[sandbox]` block. `agent_home` is an identity key (see SAMPLE_README):
+    a keyword, `group:<name>`, or an explicit host path. Sandboxes whose key
+    resolves to the same path share one agent home."""
+
+    model_config = ConfigDict(extra="forbid")
+    agent_home: str = "per-project"
+
+    @field_validator("agent_home")
+    @classmethod
+    def _check_agent_home(cls, v: str) -> str:
+        if v in _AGENT_HOME_KEYWORDS:
+            return v
+        if v.startswith("group:") and len(v) > len("group:"):
+            return v
+        if v.startswith(("/", "~", ".")) or "/" in v:
+            return v
+        raise ValueError(
+            f"invalid agent_home {v!r}: expected one of {sorted(_AGENT_HOME_KEYWORDS)}, "
+            "'group:<name>', or a host path"
+        )
+
+
 class DannoConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project: Project = Field(default_factory=Project)
@@ -82,6 +130,8 @@ class DannoConfig(BaseModel):
     models: dict[str, Model] = Field(default_factory=dict)
     agents: dict[str, str] = Field(default_factory=dict)
     tools: list[Tool] = Field(default_factory=list)
+    npm: list[NpmPlugin] = Field(default_factory=list)
+    sandbox: Sandbox = Field(default_factory=Sandbox)
 
     @model_validator(mode="after")
     def _check_references(self) -> DannoConfig:

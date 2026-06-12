@@ -42,11 +42,30 @@ Docker daemon up, `docker sandbox` present, Ollama installed/reachable, a model
 pulled, and the loopback-bind WARN. Non-zero exit on any required FAIL. **No host
 `opencode` check** — OpenCode runs only in the sandbox. Changes nothing.
 
-### `danno sandbox <start|shell|stop|rebuild|update> [--target .] [--name N] [--env K=V] [--env-file F]`
+### `danno sandbox <start|shell|stop|rebuild|update|ls> [--target .] [--name N] [--env K=V] [--env-file F]`
 
 Operate the provisioned sandbox. `start` provisions (if needed) and launches the
-in-container OpenCode TUI wired to host Ollama; `shell` opens bash in the VM;
-`stop`/`rebuild` recycle it; `update` advises updating OpenCode in the container.
+in-container agent **in the mounted repo** (`-w <target>`) wired to host Ollama;
+`shell` opens bash in the VM; `stop`/`rebuild` recycle it (the agent home survives);
+`update` advises updating the agent; `ls` is read-only and lists recorded sandboxes
+(`name → target`, live status) from `~/.danno/sandboxes.json`.
+
+The default sandbox name is `danno-<parent>-<dir>[-<agent>]` — the parent dir is
+included so same-basename checkouts and worktrees never collide. The recommended
+flow is `cd <project> && danno sandbox <cmd>` (no `--target`/`--name`): `--target`
+defaults to `.`, so the name is recomputed identically each time. The registry warns
+loudly if a `--name` would bind to a different target than one already recorded.
+
+**Agent home (`[sandbox] agent_home`):** each sandbox gets a durable host folder
+(chat history, settings, onboarding) keyed by `agent_home`, mounted as a second
+workspace and relocated per agent (`CLAUDE_CONFIG_DIR` for claude; `XDG_CONFIG_HOME`
++ `XDG_DATA_HOME` for opencode). It survives `rebuild`. `per-project` (default) keys
+on the sandbox name; `per-repo` keys on the shared `.git` common dir (worktrees
+share); `shared` is one home for all; `ephemeral` is VM-local (None mounted); a
+`group:<name>` or explicit `<path>` lets a chosen set share. A relative path inherited
+from a `danno.workspace.toml` resolves against that file's directory. For claude,
+onboarding is pre-seeded into `<home>/.claude.json` so the wizard can't mask the env
+auth token. Full model: [`SAMPLE_README.md`](../SAMPLE_README.md).
 
 ### Global flags
 
@@ -94,6 +113,10 @@ at the boundary (unknown keys and dangling references fail).
   `tool_call`.
 - `[agents]` — `agent = model-name`.
 - `[[tools]]` — `name`, `source`, `install_to` (`sandbox` | `project`).
+- `[sandbox]` — `agent_home` (identity key: `per-project` (default) | `per-repo` |
+  `shared` | `ephemeral` | `group:<name>` | `<host path>`). Validated at the boundary:
+  an unrecognized bare word fails loud. A `danno.workspace.toml` carrying only
+  `[sandbox]` may sit at a parent dir; a project with no `[sandbox]` inherits it.
 
 ## 5. Out of scope / stubbed
 

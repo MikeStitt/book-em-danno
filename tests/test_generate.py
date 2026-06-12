@@ -8,10 +8,12 @@ import pytest
 from book_em_danno.config.generate import Action, generate, render_config
 from book_em_danno.config.loader import load_config
 from book_em_danno.config.schema import (
+    CloudBackend,
     DannoConfig,
     Defaults,
     LlamacppBackend,
     Model,
+    NpmPlugin,
 )
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "danno.toml.example"
@@ -76,6 +78,36 @@ def test_llamacpp_backend_is_stubbed(tmp_path: Path) -> None:
     )
     with pytest.raises(NotImplementedError, match="llama.cpp"):
         generate(cfg, tmp_path)
+
+
+def _npm_config(plugins: list[NpmPlugin]) -> DannoConfig:
+    return DannoConfig(
+        defaults=Defaults(default_agent="pm"),
+        backends={"cloud": CloudBackend(kind="cloud", provider="anthropic")},
+        models={"sonnet": Model(backend="cloud", id="anthropic/claude-sonnet-4-6")},
+        agents={"pm": "sonnet"},
+        npm=plugins,
+    )
+
+
+def test_npm_plugins_render_plugin_array() -> None:
+    cfg = _npm_config(
+        [
+            NpmPlugin(package="opencode-planner"),
+            NpmPlugin(package="@plannotator/opencode@latest", config={"workflow": "plan-agent"}),
+        ]
+    )
+    doc = json.loads(_strip_comments(render_config(cfg)))
+    # bare string for a config-less plugin; [package, config] tuple otherwise.
+    assert doc["plugin"] == [
+        "opencode-planner",
+        ["@plannotator/opencode@latest", {"workflow": "plan-agent"}],
+    ]
+
+
+def test_no_plugin_key_when_npm_empty() -> None:
+    doc = json.loads(_strip_comments(render_config(_npm_config([]))))
+    assert "plugin" not in doc
 
 
 def _strip_comments(text: str) -> str:

@@ -38,6 +38,23 @@ def test_apply_executes(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == [["echo", "hi"]]
 
 
+def test_apply_forwards_cwd_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(exec_mod.subprocess, "run", lambda cmd, **kw: captured.update(kw))
+    Runner(apply=True).advise(
+        ["bash", "install.sh"], why="run", cwd="/tmp/x", env={"ADOS_SOURCE_DIR": "/src"}
+    )
+    assert captured["cwd"] == "/tmp/x"
+    assert captured["env"] == {"ADOS_SOURCE_DIR": "/src"}
+
+
+def test_advise_default_cwd_env_are_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(exec_mod.subprocess, "run", lambda cmd, **kw: captured.update(kw))
+    Runner(apply=True).advise(["echo", "hi"], why="greet")
+    assert captured["cwd"] is None and captured["env"] is None
+
+
 def test_apply_failure_raises_clean_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def boom(cmd, **kw):  # type: ignore[no-untyped-def]
         raise subprocess.CalledProcessError(125, cmd)

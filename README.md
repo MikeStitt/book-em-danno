@@ -56,23 +56,48 @@ diff and needs `--apply`.
 
 ### 3. Launch and operate the sandbox
 
-```bash
-# launch the in-container OpenCode TUI, wired to host Ollama
-uv run danno --apply sandbox start --target ./my-project \
-    --env ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
+The confusion-resistant flow is to `cd` into the project and omit `--target`: it
+defaults to `.`, so danno derives the same sandbox name every time.
 
-uv run danno --apply sandbox shell   --target ./my-project   # bash in the VM
-uv run danno --apply sandbox stop    --target ./my-project
-uv run danno --apply sandbox rebuild --target ./my-project   # recycle from scratch
+```bash
+cd ./my-project
+# launch the in-container OpenCode TUI, wired to host Ollama
+uv run danno --apply sandbox start
+uv run danno --apply sandbox shell      # bash in the VM
+uv run danno --apply sandbox stop
+uv run danno --apply sandbox rebuild    # recycle from scratch (agent home survives)
+uv run danno sandbox ls                 # which sandbox maps to which project?
 ```
 
-OpenCode **only ever runs inside the sandbox** — never on your host.
+`--target ./my-project` works too. The sandbox name is `danno-<parent>-<dir>` (the
+parent dir is included so same-basename checkouts and worktrees never collide), and
+`sandbox ls` reads `~/.danno/sandboxes.json` to print each `name → target` plus live
+status. OpenCode **only ever runs inside the sandbox** — never on your host.
+
+### Where the agent's history lives (`[sandbox] agent_home`)
+
+danno launches the agent **in your mounted repo** (so it sees `CLAUDE.md` and edits
+land on the host) and gives each sandbox a durable **agent home** on the host —
+chat history, settings, onboarding — that survives `rebuild`. One knob in
+`danno.toml` chooses where it lives:
+
+```toml
+[sandbox]
+agent_home = "per-project"   # per-project (default) | per-repo | shared | ephemeral
+                             #   | "group:<name>" | "<host path>"
+```
+
+`per-project` (the default) gives each sandbox its own home keyed on the sandbox
+name; `per-repo` shares one home across a repo's worktrees; `shared` is one home for
+all sandboxes; `ephemeral` keeps it VM-local (wiped on rebuild). danno translates
+the knob to `CLAUDE_CONFIG_DIR` for Claude and `XDG_CONFIG_HOME`/`XDG_DATA_HOME` for
+opencode. See [`SAMPLE_README.md`](SAMPLE_README.md) for the full model.
 
 #### Other agents (`--agent`)
 
 `docker sandbox` ships prebuilt agents (`opencode`, `claude`, …). Pass `--agent`
 to run a different one; non-default agents get their **own** sandbox
-(`danno-<dir>-<agent>`) so they coexist with the opencode sandbox.
+(`danno-<parent>-<dir>-<agent>`) so they coexist with the opencode sandbox.
 
 ```bash
 uv run danno --apply sandbox start --target ./my-project --agent claude
@@ -129,11 +154,55 @@ architect = "sonnet"
 runner    = "gemma4"
 committer = "gemma4"
 
-[[tools]]                         # tool catalog; each installs to sandbox or project
+[[tools]]                         # imperative tools (see "Two install lanes" below)
 name       = "ados"
 source     = "https://github.com/juliusz-cwiakalski/agentic-delivery-os"
 install_to = "sandbox"
 ```
+
+### Two install lanes: `[[tools]]` vs `[[npm]]`
+
+danno installs catalog tools two different ways, and a tool belongs in exactly one
+lane:
+
+- **`[[tools]]` — imperative.** A tool with its own installer. danno runs it (for
+  ADOS: copies its agent/command `.md` defs project-local and runs its `--local`
+  step in the target, with `cwd=<target>` and `ADOS_SOURCE_DIR` set). Use this for
+  anything that is *not* an OpenCode npm plugin.
+- **`[[npm]]` — declarative.** An [OpenCode npm plugin](https://opencode.ai/docs/plugins/).
+  danno just lists it in the generated `opencode.jsonc` `"plugin"` array; **OpenCode
+  (Bun) auto-installs it inside the sandbox at startup** — danno never clones or
+  installs it on the host.
+
+```toml
+# A bare plugin (no options):
+[[npm]]
+package = "opencode-planner"
+
+# A configured plugin, plus an optional in-container setup step:
+[[npm]]
+package = "@plannotator/opencode@latest"
+setup   = ["curl -fsSL https://plannotator.ai/install.sh | bash"]   # run via docker sandbox exec, post-create
+
+[npm.config]                       # renders as the [package, config] tuple OpenCode documents
+workflow       = "plan-agent"
+planningAgents = ["plan"]
+```
+
+That `[[npm]]` block generates this in `.opencode/opencode.jsonc`:
+
+```jsonc
+"plugin": [
+  "opencode-planner",
+  ["@plannotator/opencode@latest", { "workflow": "plan-agent", "planningAgents": ["plan"] }]
+]
+```
+
+**End to end:** `danno --dry-run install` previews the `"plugin"` array and any
+in-container `docker sandbox exec … bash -lc …` setup line; `danno --apply install`
+writes the config and runs the setup step post-create; then `danno sandbox start`
+launches OpenCode, which installs the plugins in-sandbox on first run. A `package`
+with no `config`/`setup` is the minimum — `config` and `setup` are both optional.
 
 ## Network model (Docker sandbox)
 

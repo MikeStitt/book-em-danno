@@ -115,6 +115,13 @@ def render_config(config: DannoConfig) -> str:
     if providers:
         doc["provider"] = providers
     doc["agent"] = agent_block
+    # OpenCode npm plugins: a bare package string, or the documented
+    # [package, config] tuple when the plugin takes options. Omitted entirely for
+    # plugin-less projects to keep the output minimal/stable.
+    if config.npm:
+        doc["plugin"] = [
+            p.package if p.config is None else [p.package, p.config] for p in config.npm
+        ]
     return _HEADER + json.dumps(doc, indent=2) + "\n"
 
 

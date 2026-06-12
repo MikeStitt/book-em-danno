@@ -18,6 +18,7 @@ import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 from rich.console import Console
 
@@ -72,8 +73,20 @@ class Runner:
     dry_run: bool = False
     verbose: bool = False
 
-    def advise(self, cmd: list[str], why: str) -> list[str]:
+    def advise(
+        self,
+        cmd: list[str],
+        why: str,
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+    ) -> list[str]:
         """Advise (and under --apply, run) a single command. Returns `cmd`.
+
+        `cwd`/`env` apply only when executing under --apply: the printed
+        copy-paste line stays the bare command (host cwd/env aren't part of it —
+        document them in `why=` as the ADOS installer does). `env=None` keeps the
+        inherited environment; callers that set it pass `{**os.environ, …}`.
 
         A non-zero exit under --apply raises `CommandFailedError` (a clean,
         CLI-catchable error) rather than letting `CalledProcessError` surface as a
@@ -84,7 +97,7 @@ class Runner:
         if self.apply and not self.dry_run:
             log_debug(f"executing: {shlex.join(cmd)}", verbose=self.verbose)
             try:
-                subprocess.run(cmd, check=True)
+                subprocess.run(cmd, check=True, cwd=cwd, env=env)
             except subprocess.CalledProcessError as exc:
                 raise CommandFailedError(
                     f"command failed (exit {exc.returncode}): {shlex.join(cmd)}"

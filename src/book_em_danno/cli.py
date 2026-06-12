@@ -18,6 +18,7 @@ from .commands import install as install_cmd
 from .commands import sandbox as sandbox_cmd
 from .config.loader import DannoConfigError, load_config
 from .config.schema import DannoConfig
+from .core import registry
 from .core.exec import CommandFailedError, CommandNotFoundError, Runner, console, log_err
 
 
@@ -142,16 +143,33 @@ def _sandbox_target(target: Path, name: str | None, agent: str) -> tuple[Path, s
     return abs_target, (name or sandbox_cmd.default_name(abs_target, agent))
 
 
+def _resolve_home(abs_target: Path, sandbox_name: str) -> Path | None:
+    """Resolve the agent-home dir (loud exit 2 on a malformed config)."""
+    try:
+        return sandbox_cmd.resolve_home(abs_target, sandbox_name)
+    except DannoConfigError as exc:
+        log_err(str(exc))
+        raise typer.Exit(code=2) from exc
+
+
+_NAME_OPT_HELP = "Sandbox name (default danno-<parent>-<dir>)."
+
+
 @sandbox_app.command("start")
 def sandbox_start(
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
-    name: str = typer.Option(None, "--name", help="Sandbox name (default danno-<dir>)."),
+    name: str = typer.Option(None, "--name", help=_NAME_OPT_HELP),
     agent: str = _AGENT_OPT,
     env: list[str] = typer.Option(None, "--env", help="KEY=VAL to inject (repeatable)."),
     env_file: list[str] = typer.Option(None, "--env-file", help="File of KEY=VAL to inject."),
 ) -> None:
-    """Provision (if needed) and launch the in-container agent."""
+    """Provision (if needed) and launch the in-container agent.
+
+    Tip: `cd <project> && danno sandbox start` (no --target/--name) recomputes the
+    same name every time — stand in the sandbox's directory rather than naming it.
+    """
     abs_target, sandbox_name = _sandbox_target(target, name, agent)
+    home = _resolve_home(abs_target, sandbox_name)
     _guard(
         lambda: sandbox_cmd.start(
             state.runner(),
@@ -160,6 +178,8 @@ def sandbox_start(
             agent=agent,
             env_pairs=env or [],
             env_files=env_file or [],
+            home=home,
+            registry_path=registry.default_path(),
         )
     )
 
@@ -167,7 +187,7 @@ def sandbox_start(
 @sandbox_app.command("shell")
 def sandbox_shell(
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
-    name: str = typer.Option(None, "--name", help="Sandbox name."),
+    name: str = typer.Option(None, "--name", help=_NAME_OPT_HELP),
     agent: str = _AGENT_OPT,
 ) -> None:
     """Open an interactive bash shell inside the sandbox VM."""
@@ -178,7 +198,7 @@ def sandbox_shell(
 @sandbox_app.command("stop")
 def sandbox_stop(
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
-    name: str = typer.Option(None, "--name", help="Sandbox name."),
+    name: str = typer.Option(None, "--name", help=_NAME_OPT_HELP),
     agent: str = _AGENT_OPT,
 ) -> None:
     """Stop the sandbox VM."""
@@ -189,23 +209,39 @@ def sandbox_stop(
 @sandbox_app.command("rebuild")
 def sandbox_rebuild(
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
-    name: str = typer.Option(None, "--name", help="Sandbox name."),
+    name: str = typer.Option(None, "--name", help=_NAME_OPT_HELP),
     agent: str = _AGENT_OPT,
 ) -> None:
-    """Remove and re-provision the sandbox from scratch."""
+    """Remove and re-provision the sandbox from scratch (the agent home survives)."""
     abs_target, sandbox_name = _sandbox_target(target, name, agent)
-    _guard(lambda: sandbox_cmd.rebuild(state.runner(), sandbox_name, abs_target, agent=agent))
+    home = _resolve_home(abs_target, sandbox_name)
+    _guard(
+        lambda: sandbox_cmd.rebuild(
+            state.runner(),
+            sandbox_name,
+            abs_target,
+            agent=agent,
+            home=home,
+            registry_path=registry.default_path(),
+        )
+    )
 
 
 @sandbox_app.command("update")
 def sandbox_update(
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
-    name: str = typer.Option(None, "--name", help="Sandbox name."),
+    name: str = typer.Option(None, "--name", help=_NAME_OPT_HELP),
     agent: str = _AGENT_OPT,
 ) -> None:
     """Advise how to update the agent inside the sandbox."""
     _, sandbox_name = _sandbox_target(target, name, agent)
     _guard(lambda: sandbox_cmd.update(state.runner(), sandbox_name, agent))
+
+
+@sandbox_app.command("ls")
+def sandbox_ls() -> None:
+    """Read-only: list recorded sandboxes (name → target) and their live status."""
+    sandbox_cmd.ls(registry.default_path())
 
 
 # Re-exported so tests and `from book_em_danno.cli import console` keep working.

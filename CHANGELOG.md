@@ -3,6 +3,18 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.2.0] - 2026-06-12
+
+### Bug Fixes
+
+- *(install)* Mount agent home at create so it agrees with sandbox start
+- *(install)* Honor cwd/env in advise() and clone generic tools to a temp dir
+
+### Features
+
+- *(sandbox)* Durable per-key agent home, cwd -w fix, name registry
+- *(config)* Add [[npm]] OpenCode plugin lane
+
 ## [0.1.0] - 2026-06-11
 
 ### Bug Fixes

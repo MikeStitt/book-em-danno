@@ -9,6 +9,14 @@ target = "."                       # project to configure
 default_agent = "pm"               # OpenCode default_agent
 profile       = "hybrid"           # hybrid | cloud-only | local-only
 
+# --- Sandbox: where the agent's home (chat history, settings, onboarding) lives. ---
+[sandbox]
+# agent_home is an IDENTITY KEY: sandboxes whose key resolves to the same path share
+# one home. Forms: per-project (default, keyed on the sandbox name) | per-repo (one
+# home across a repo's worktrees) | shared (one home for all sandboxes) | ephemeral
+# (VM-local, wiped on rebuild) | "group:<name>" | "<host path>". See SAMPLE_README.md.
+agent_home = "per-project"
+
 # --- Backends: where models run. `kind` selects the runtime. ---
 [backends.ollama]                  # IMPLEMENTED
 kind     = "ollama"
@@ -43,18 +51,27 @@ committer           = "gemma"
 runner              = "gemma"
 external-researcher = "gemma"
 
-# --- Tool catalog: each tool installs per-tool into the sandbox or project-local. ---
+# --- Tool catalog: IMPERATIVE installs. Each entry runs its own installer (ADOS
+#     copies agent/command defs project-local + runs its --local step). For OpenCode
+#     npm plugins use [[npm]] below, not here. ---
 [[tools]]
 name       = "ados"
 source     = "https://github.com/juliusz-cwiakalski/agentic-delivery-os"
 install_to = "sandbox"
 
-[[tools]]
-name       = "opencode-planner"
-source     = "https://github.com/timrichardson/opencode-planner"
-install_to = "sandbox"
+# --- OpenCode npm plugins: DECLARATIVE. Each becomes an entry in the generated
+#     opencode.jsonc "plugin" array; OpenCode (Bun) auto-installs them in the sandbox
+#     at startup — danno does not clone or install them on the host. ---
+[[npm]]
+package = "opencode-planner"       # bare plugin → the string "opencode-planner"
 
-[[tools]]
-name       = "plannotator"
-source     = "https://plannotator.ai/"
-install_to = "project"             # TODO: confirm plannotator's local install mechanism (hosted/web tool)
+[[npm]]
+package = "@plannotator/opencode@latest"
+# Optional in-container post-create steps (e.g. a slash-command installer), run via
+# `docker sandbox exec <name> bash -lc …` after the sandbox is created.
+setup   = ["curl -fsSL https://plannotator.ai/install.sh | bash"]
+
+# A configured plugin renders as the [package, config] tuple OpenCode documents.
+[npm.config]
+workflow       = "plan-agent"
+planningAgents = ["plan"]
