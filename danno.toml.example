@@ -14,14 +14,20 @@ profile       = "hybrid"           # hybrid | cloud-only | local-only
 # agent_home is an IDENTITY KEY: sandboxes whose key resolves to the same path share
 # one home. Forms: per-project (default, keyed on the sandbox name) | per-repo (one
 # home across a repo's worktrees) | shared (one home for all sandboxes) | ephemeral
-# (VM-local, wiped on rebuild) | "group:<name>" | "<host path>". See SAMPLE_README.md.
+# (VM-local, wiped on rebuild) | "group:<name>" | "<host path>". See README "Sandboxed agents".
 agent_home = "per-project"
 
 # --- Backends: where models run. `kind` selects the runtime. ---
 [backends.ollama]                  # IMPLEMENTED
-kind     = "ollama"
-base_url = "http://host.docker.internal:11434/v1"   # use http://localhost:11434/v1 for host-only runs
-num_ctx  = 32000
+kind           = "ollama"
+base_url       = "http://host.docker.internal:11434/v1"   # use http://localhost:11434/v1 for host-only runs
+context_budget = 32000   # OpenCode's CLIENT-SIDE belief of the window (models.<tag>.limit.context);
+                         #   used to trim/compact. It does NOT set Ollama's real window: under /v1
+                         #   Ollama loads the model at its FULL context (a body num_ctx is ignored).
+                         #   The real window / RAM lever is an Ollama Modelfile variant, not set here.
+output_limit   = 8192    # tokens OpenCode reserves for the reply (usable input ≈ context_budget - output_limit)
+# Note: there is no stream/thinking knob — opencode always streams, and those keys
+# never reached Ollama. Reasoning control is per-model (see reasoning_effort below).
 
 [backends.cloud]                   # IMPLEMENTED
 kind     = "cloud"
@@ -33,9 +39,14 @@ base_url = "http://host.docker.internal:8080/v1"
 
 # --- Models: a named (backend, tag/id) pair. ---
 [models.gemma]
-backend   = "ollama"
-tag       = "gemma3:27b"           # local models MUST support tool-calling (gemma3:1b does NOT)
-tool_call = true
+backend          = "ollama"
+tag              = "gemma3:27b"    # local models MUST support tool-calling (gemma3:1b does NOT)
+tool_call        = true
+reasoning_effort = "none"          # forwarded as model-level options.reasoningEffort into the /v1
+                                   #   body. "none" disables the thinking trace — faster for
+                                   #   high-volume local agents, and sidesteps opencode hang #21903.
+                                   #   Omit to forward nothing. gpt-oss-style models reject "none"
+                                   #   (use low/medium/high). Values: none | low | medium | high.
 
 [models.sonnet]
 backend = "cloud"

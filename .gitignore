@@ -309,4 +309,5 @@ __marimo__/
 
 # Throwaway probe/demo artefacts (constitution: scratch/ is gitignored)
 scratch/
+temp/
 .ninja_log
