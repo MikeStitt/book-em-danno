@@ -1,6 +1,6 @@
 [project]
 name = "book-em-danno"
-version = "0.2.0"
+version = "0.2.1"
 description = "Declarative, transparent setup of OpenCode hybrid local/cloud model runtimes in a Docker sandbox, driven by danno.toml."
 readme = "README.md"
 requires-python = ">=3.13"
