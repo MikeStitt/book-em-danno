@@ -6,7 +6,7 @@ references fail loud rather than producing a subtly wrong opencode.jsonc.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -74,6 +74,28 @@ class Tool(BaseModel):
     install_to: Literal["sandbox", "project"]
 
 
+class NpmPlugin(BaseModel):
+    """An OpenCode npm plugin, declared in opencode.jsonc's `"plugin"` array and
+    auto-installed by OpenCode (Bun) in the sandbox at startup. Unlike `[[tools]]`
+    (imperative installs like ADOS), these are declarative config.
+
+    `config` (when set) renders as the documented `[package, config]` tuple form.
+    `setup` is an optional list of in-container shell commands run post-create via
+    `docker sandbox exec` (e.g. a plugin's slash-command installer)."""
+
+    model_config = ConfigDict(extra="forbid")
+    package: str
+    config: dict[str, Any] | None = None
+    setup: list[str] = Field(default_factory=list)
+
+    @field_validator("package")
+    @classmethod
+    def _check_package(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("npm plugin 'package' must be non-empty")
+        return v
+
+
 _AGENT_HOME_KEYWORDS = frozenset({"per-project", "per-repo", "shared", "ephemeral"})
 
 
@@ -108,6 +130,7 @@ class DannoConfig(BaseModel):
     models: dict[str, Model] = Field(default_factory=dict)
     agents: dict[str, str] = Field(default_factory=dict)
     tools: list[Tool] = Field(default_factory=list)
+    npm: list[NpmPlugin] = Field(default_factory=list)
     sandbox: Sandbox = Field(default_factory=Sandbox)
 
     @model_validator(mode="after")

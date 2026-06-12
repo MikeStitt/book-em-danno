@@ -23,7 +23,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from ..config.loader import DannoConfigError
-from ..config.schema import Sandbox
+from ..config.schema import NpmPlugin, Sandbox
 from ..core import registry
 from ..core.exec import CommandFailedError, Runner, log_info, log_warn
 from . import ollama
@@ -455,6 +455,33 @@ def start(
         env_files=env_files,
         home=home,
     )
+
+
+def exec_in_container(runner: Runner, name: str, command: str, *, why: str) -> list[str]:
+    """Advise (and under --apply, run) a shell command inside the sandbox VM.
+
+    Non-tty (`bash -lc`, no `-it`) so it works headless / under --apply. `exec`
+    auto-starts a created-but-stopped sandbox, so this needs no explicit `start`.
+    """
+    return runner.advise(["docker", "sandbox", "exec", name, "bash", "-lc", command], why=why)
+
+
+def run_npm_setup(runner: Runner, name: str, plugins: list[NpmPlugin]) -> list[list[str]]:
+    """Run each `[[npm]]` plugin's optional in-container `setup` commands.
+
+    The plugins themselves are auto-installed by OpenCode from the generated
+    opencode.jsonc `"plugin"` array; only a plugin's extra `setup` steps (e.g.
+    plannotator's slash-command installer) need an in-container exec.
+    """
+    cmds: list[list[str]] = []
+    for plugin in plugins:
+        for command in plugin.setup:
+            cmds.append(
+                exec_in_container(
+                    runner, name, command, why=f"run {plugin.package} setup in sandbox '{name}'"
+                )
+            )
+    return cmds
 
 
 def shell(runner: Runner, name: str) -> list[str]:

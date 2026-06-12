@@ -37,6 +37,14 @@ constitution Working Rule 6 and the _ADOS provenance_ rule, we configure model
 assignment and provide the install glue only, and record which ADOS version a
 target was installed from.
 
+**Two install lanes.** `[[tools]]` is for **imperative** tools that have their own
+installer (ADOS is the archetype). OpenCode **npm plugins** (e.g. `opencode-planner`,
+`@plannotator/opencode`) belong in the separate **`[[npm]]`** table instead: they are
+**declarative** — danno only lists them in the generated `opencode.jsonc` `"plugin"`
+array and OpenCode auto-installs them in the sandbox at startup. A plugin's optional
+`setup` commands run post-create via `docker sandbox exec <name> bash -lc …`. Do not
+put npm plugins in `[[tools]]`, and do not give an imperative tool an `[[npm]]` entry.
+
 ## OpenCode config activation (the gotcha)
 
 OpenCode **merges** configs, but it only **auto-loads** `.opencode/opencode.jsonc`
@@ -107,7 +115,7 @@ Three commands; the rest are internals orchestrated by `install`.
 
 | Surface | Role |
 | --- | --- |
-| `danno install` | orchestrator: validate → config → Ollama models → tools → sandbox-create, then prints the launch hint (stops before the TUI) |
+| `danno install` | orchestrator: validate → config → Ollama models → tools → sandbox-create → npm plugin setup, then prints the launch hint (stops before the TUI) |
 | `danno doctor` | read-only preflight (`commands/doctor.py`) |
 | `danno sandbox <start\|shell\|stop\|rebuild\|update>` | operate the Docker sandbox (`commands/sandbox.py`) |
 | `commands/ollama.py` (internal) | reachability + ensure/verify models + tool-call probe |

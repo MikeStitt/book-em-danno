@@ -17,8 +17,10 @@ def test_load_example_ok() -> None:
     assert cfg.models["gemma"].tag == "gemma3:27b"
     assert cfg.models["sonnet"].id == "anthropic/claude-sonnet-4-6"
     assert cfg.agents["architect"] == "sonnet"
-    assert [t.name for t in cfg.tools] == ["ados", "opencode-planner", "plannotator"]
+    assert [t.name for t in cfg.tools] == ["ados"]
     assert cfg.tools[0].install_to == "sandbox"
+    assert [p.package for p in cfg.npm] == ["opencode-planner", "@plannotator/opencode@latest"]
+    assert cfg.npm[1].config == {"workflow": "plan-agent", "planningAgents": ["plan"]}
 
 
 def test_missing_file_fails_loud(tmp_path: Path) -> None:
@@ -67,4 +69,27 @@ def test_sandbox_unknown_key_fails_loud(tmp_path: Path) -> None:
     bad = tmp_path / "danno.toml"
     bad.write_text("[sandbox]\nagent_home = 'shared'\nbogus = 1\n", encoding="utf-8")
     with pytest.raises(DannoConfigError, match="invalid danno.toml"):
+        load_config(bad)
+
+
+def test_npm_plugins_load(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "danno.toml"
+    cfg_path.write_text(
+        "[[npm]]\npackage = 'opencode-planner'\n\n"
+        "[[npm]]\npackage = '@plannotator/opencode@latest'\n"
+        "setup = ['curl -fsSL https://plannotator.ai/install.sh | bash']\n"
+        "[npm.config]\nworkflow = 'plan-agent'\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(cfg_path)
+    assert [p.package for p in cfg.npm] == ["opencode-planner", "@plannotator/opencode@latest"]
+    assert cfg.npm[0].config is None
+    assert cfg.npm[1].config == {"workflow": "plan-agent"}
+    assert cfg.npm[1].setup == ["curl -fsSL https://plannotator.ai/install.sh | bash"]
+
+
+def test_empty_npm_package_fails_loud(tmp_path: Path) -> None:
+    bad = tmp_path / "danno.toml"
+    bad.write_text("[[npm]]\npackage = ''\n", encoding="utf-8")
+    with pytest.raises(DannoConfigError, match="non-empty"):
         load_config(bad)

@@ -92,6 +92,9 @@ def run_install(
 
     log_info("step 4/5 — sandbox")
     sandbox.provision(runner, name, target_abs, home=home, registry_path=registry.default_path())
+    # OpenCode npm plugins install themselves from the generated opencode.jsonc;
+    # only their optional in-container `setup` steps need an exec, post-create.
+    sandbox.run_npm_setup(runner, name, cfg.npm)
 
     log_info("step 5/5 — ready")
     log_info(f"[green]ready[/green] — launch with: danno sandbox start --target {target}")
