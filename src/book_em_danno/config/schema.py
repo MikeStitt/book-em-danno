@@ -25,22 +25,25 @@ class Defaults(BaseModel):
 class OllamaBackend(BaseModel):
     """Local models via OpenCode's @ai-sdk/openai-compatible provider. IMPLEMENTED.
 
-    Field semantics (see README "Editing the generated opencode.jsonc"):
-      num_ctx      -> Ollama's REAL context window (the KV-cache it loads); costs
-                      RAM/VRAM. Mirrored into OpenCode's models.<tag>.limit.context
-                      so OpenCode won't overpack and trigger a silent truncation.
-      stream       -> stream tokens from Ollama (runtime-significant; keep true).
-      thinking     -> enable the model's "thinking" channel (runtime-significant).
-      output_limit -> tokens OpenCode reserves for the reply (models.<tag>.limit.output);
-                      usable input is roughly num_ctx - output_limit.
+    Field semantics (see README "Ollama context & runtime knobs"). Note what is
+    deliberately absent: there is NO knob here for Ollama's REAL context window or
+    for streaming/thinking. Under the OpenAI-compatible `/v1` API a body `num_ctx`
+    is ignored — Ollama loads the model at its FULL context — and opencode always
+    streams (it hardcodes `stream: true`). The real window / RAM lever is an Ollama
+    Modelfile variant, out of scope here. Reasoning is per-model (see Model).
+
+      context_budget -> OpenCode's CLIENT-SIDE belief of the window
+                        (models.<tag>.limit.context); used to trim/compact the
+                        conversation. It does NOT change what Ollama loads.
+      output_limit   -> tokens OpenCode reserves for the reply
+                        (models.<tag>.limit.output); usable input ≈ context_budget
+                        - output_limit.
     """
 
     model_config = ConfigDict(extra="forbid")
     kind: Literal["ollama"]
     base_url: str
-    num_ctx: int = 32000
-    stream: bool = True
-    thinking: bool = False
+    context_budget: int = 32000
     output_limit: int = 8192
 
 
@@ -71,13 +74,21 @@ Backend = Annotated[
 
 
 class Model(BaseModel):
-    """A named (backend, tag/id) pair. `tag` for ollama/llamacpp, `id` for cloud."""
+    """A named (backend, tag/id) pair. `tag` for ollama/llamacpp, `id` for cloud.
+
+    `reasoning_effort` (ollama only) is emitted as the model-level camelCase
+    `options.reasoningEffort`, which @ai-sdk/openai-compatible spreads raw into the
+    `/v1` request body where Ollama honors it. "none" disables the thinking trace
+    (faster, and avoids the opencode #21903 reasoning-field hang); leave unset to
+    forward nothing. Note: gpt-oss-style models reject "none" — use low/medium/high
+    for those (documented here, not validated, since the model id isn't known)."""
 
     model_config = ConfigDict(extra="forbid")
     backend: str
     tag: str | None = None
     id: str | None = None
     tool_call: bool = False
+    reasoning_effort: Literal["none", "low", "medium", "high"] | None = None
 
 
 class Tool(BaseModel):

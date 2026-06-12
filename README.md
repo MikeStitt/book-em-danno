@@ -132,21 +132,20 @@ default_agent = "pm"
 profile       = "hybrid"          # hybrid | cloud-only | local-only
 
 [backends.ollama]                 # local models (OpenAI-compatible provider)
-kind         = "ollama"
-base_url     = "http://host.docker.internal:11434/v1"
-num_ctx      = 32000              # see "Ollama context & runtime knobs" below
-stream       = true
-thinking     = false
-output_limit = 8192
+kind           = "ollama"
+base_url       = "http://host.docker.internal:11434/v1"
+context_budget = 32000            # OpenCode's client-side window belief; see knobs below
+output_limit   = 8192
 
 [backends.cloud]
 kind     = "cloud"
 provider = "anthropic"            # API keys stay in the env, never in this file
 
 [models.gemma4]
-backend   = "ollama"
-tag       = "gemma4:26b"          # local models MUST be tool-capable (gemma3:1b is NOT)
-tool_call = true
+backend          = "ollama"
+tag              = "gemma4:26b"   # local models MUST be tool-capable (gemma3:1b is NOT)
+tool_call        = true
+reasoning_effort = "none"         # disable the thinking trace; see knobs below
 
 [models.sonnet]
 backend = "cloud"
@@ -166,23 +165,32 @@ install_to = "sandbox"
 
 ### Ollama context & runtime knobs
 
-`[backends.ollama]` carries four fields that danno translates into the generated
-`opencode.jsonc`. They look similar but live on different sides of the wire:
+danno translates two `[backends.ollama]` fields and one per-model field into the
+generated `opencode.jsonc`. The shape was verified at the wire (Ollama 0.30.6,
+opencode dev) — see [`docs/research/2026-06-12-ollama-thinking-and-opencode-passthrough.md`](docs/research/2026-06-12-ollama-thinking-and-opencode-passthrough.md):
 
-- **`num_ctx`** — Ollama's *real* context window: the KV-cache the model is loaded
-  with. It costs RAM/VRAM, and if a prompt exceeds it Ollama **silently truncates**
-  the oldest tokens. danno emits it as `provider.ollama.options.num_ctx`.
-- **`limit.context`** (generated, *not* a separate knob) — OpenCode's *client-side
-  belief* about the window. OpenCode uses it to trim/compact the conversation and
-  show usage; it does not change what Ollama does. danno sets it **equal to
-  `num_ctx`** on purpose: if OpenCode's belief is larger than the real window it
-  overpacks the prompt and Ollama truncates → silent context loss.
-- **`output_limit`** — tokens OpenCode reserves for the reply
-  (`models.<tag>.limit.output`). Usable input is roughly `num_ctx − output_limit`.
-- **`stream`** / **`thinking`** — runtime-significant provider options
-  (`provider.ollama.options.*`). `stream` streams tokens from Ollama (keep `true`);
-  `thinking` toggles the model's thinking channel. Both were validated against live
-  opencode runs, which is why danno emits them explicitly.
+- **`context_budget`** (backend) → `models.<tag>.limit.context` — OpenCode's
+  *client-side belief* of the window. OpenCode uses it to trim/compact the
+  conversation and show usage; it **does not** change what Ollama loads. It is *not*
+  Ollama's real window: under the OpenAI-compatible `/v1` API a body `num_ctx` is
+  **ignored** and Ollama loads the model at its **full** context (gemma4:26b and
+  qwen3.6:27b are both 262144). The cost there is **RAM, not truncation** — at 262k,
+  gemma4:26b ≈ 16.9 GiB (sliding-window attention → tiny KV) but qwen3.6:27b ≈ 31.5
+  GiB. The real-window / RAM lever is an **Ollama Modelfile variant** (`num_ctx`
+  baked in via `ollama create`), not an `opencode.jsonc` key.
+- **`output_limit`** (backend) → `models.<tag>.limit.output` — tokens OpenCode
+  reserves for the reply. Usable input is roughly `context_budget − output_limit`.
+- **`reasoning_effort`** (per-model, ollama only) → `models.<tag>.options.reasoningEffort`
+  — forwarded **raw into the `/v1` request body**, where Ollama honors
+  `none`/`low`/`medium`/`high`. `"none"` disables the model's thinking trace: it's
+  **faster for high-volume local agents** and **sidesteps the opencode `#21903`
+  hang** (opencode spins forever when an Ollama model returns a generic `reasoning`
+  field — which gemma4:26b does emit by default). Omit it to forward nothing.
+  gpt-oss-style models reject `"none"` — use `low`/`medium`/`high` for those.
+
+There is deliberately **no `stream` or `thinking` knob**: opencode **always streams**
+(`stream: true` is hardcoded), and a provider-level `thinking`/`stream`/`num_ctx`
+never reached Ollama through `@ai-sdk/openai-compatible`.
 
 ### Editing the generated `opencode.jsonc`
 
@@ -282,7 +290,7 @@ the rule must name `localhost:11434`. The agent's config baseURL still uses
 **Prerequisite:** host Ollama must listen on `0.0.0.0` (`OLLAMA_HOST=0.0.0.0:11434`),
 not the default `127.0.0.1`, or the VM can't reach it. **Local models must be
 tool-capable** — every agent uses tools, and a model like `gemma3:1b` that cannot
-tool-call is unusable for an agent (keep `num_ctx ≈ 32000`).
+tool-call is unusable for an agent (keep `context_budget ≈ 32000`).
 
 ## Sandboxed agents: repo, agent-home, auth
 
