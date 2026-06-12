@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib.metadata import version as pkg_version
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -13,7 +14,8 @@ EXAMPLE = Path(__file__).resolve().parents[1] / "danno.toml.example"
 def test_version_prints_package_version() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert result.stdout.strip() == "danno 0.1.0"
+    # Derive from package metadata so a version bump doesn't break this test.
+    assert result.stdout.strip() == f"danno {pkg_version('book-em-danno')}"
 
 
 def test_help_shows_three_commands() -> None:
