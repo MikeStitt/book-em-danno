@@ -15,6 +15,7 @@ import filecmp
 import os
 import shutil
 import subprocess
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -105,6 +106,8 @@ def install_ados(
     runner.advise(
         ["bash", str(installer), "--local", "--no-fetch"],
         why=f"run ADOS's local install in {target_abs} (cwd=target, ADOS_SOURCE_DIR={ados})",
+        cwd=target_abs,
+        env={**os.environ, "ADOS_SOURCE_DIR": str(ados)},
     )
     _copy_md_dir(runner, ados / ".opencode" / "agent", target_abs / ".opencode" / "agent", "agent")
     _copy_md_dir(
@@ -117,10 +120,17 @@ def install_ados(
 
 
 def install_generic_git(runner: Runner, tool: Tool, target_abs: Path) -> None:
-    """Clone a git-sourced tool and run its detected installer (advisory)."""
+    """Clone a git-sourced tool into a temp dir and run its installer (advisory).
+
+    Clones into a fresh temp dir, never the CWD: under --apply a bare
+    `git clone <source>` would pollute the repo root. (No in-scope tool uses this
+    path now — OpenCode plugins go through `[[npm]]`, not here — but it stays a
+    fixed, non-footgun fallback for a future non-plugin git tool.)
+    """
+    dest = Path(tempfile.mkdtemp(prefix="danno-tool-")) / tool.name
     runner.advise(
-        ["git", "clone", tool.source],
-        why=f"clone tool '{tool.name}' from {tool.source}",
+        ["git", "clone", tool.source, str(dest)],
+        why=f"clone tool '{tool.name}' from {tool.source} into a temp dir",
     )
     log_info(
         f"after clone, run {tool.name}'s installer per its README; for install_to="
