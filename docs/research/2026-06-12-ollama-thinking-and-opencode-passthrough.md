@@ -1,7 +1,7 @@
 # Research: Ollama `thinking`/`think`, and whether danno's `opencode.jsonc` passes it through
 
 **Date:** 2026-06-12
-**Status:** Draft for peer review
+**Status:** Verified — amended with empirical results (2026-06-12, same day)
 **Author:** Claude (Opus 4.8) session, at Mike Stitt's request
 **Scope:** Two linked questions that arose while reviewing danno's generated
 `opencode.jsonc` against a hand-written reference (`temp/opencode.jsonc`):
@@ -197,6 +197,62 @@ the most robust mitigation today.
    deepseek) and a **string** `think` (gpt-oss) unchanged through `extraBody`.
 
 ---
+
+## 6. Verification addendum (2026-06-12)
+
+The §5 open questions were taken to source and to a live host (Ollama 0.30.6,
+opencode dev branch, stock `@ai-sdk/openai-compatible`) the same day. Results are
+recorded here; the dated sections above are left intact as the original record
+and corrected only by this addendum.
+
+- **§5.1 (request-body capture) — answered from source.** Model-level options are
+  spread **raw** into the HTTP request body by `@ai-sdk/openai-compatible`
+  (`...providerOptions[name]` in `getArgs`). There is **no `extraBody` wrapper** in
+  current builds — §2's "worked, proven `extraBody` mechanism" is **outdated**; an
+  `extraBody` key would itself land verbatim in the body, not be unwrapped. The
+  load-bearing detail: use **camelCase `reasoningEffort`** at model level. A
+  snake_case `reasoning_effort` placed via options gets **clobbered** by an explicit
+  `reasoning_effort:` key the model builds *after* the spread.
+- **§5.3 (`stream` semantics) — answered.** opencode **always streams**: `streamText`
+  → `doStream` hardcodes `stream: true` *after* spreading args. No config (provider
+  or model level) can turn it off. We stop emitting any `stream` key. (The remaining
+  question — whether stream-vs-not changes the *wire* in a way Mike observed — is
+  settled empirically by test T1 in this branch, not on docs alone.)
+- **§5.4 (`num_ctx` strategy) — answered empirically.** `/v1` **ignores a body
+  `num_ctx`** and loads the model at its **full model context** (qwen3.6 and gemma4
+  both 262144). The risk is **RAM, not truncation**: qwen3.6:27b ≈ 31.5 GiB at 262k
+  (≈15 GiB KV); gemma4:26b ≈ 16.9 GiB (sliding-window attention → tiny KV). The real
+  context/RAM lever is an **Ollama Modelfile variant** (`num_ctx` baked in, then
+  `ollama create`), which is **out of scope** for this generator change. danno
+  therefore drops `num_ctx` from the provider block and keeps only the client-side
+  `limit.context` belief, renamed in config to `context_budget` to stop it claiming
+  to set Ollama's real window.
+- **§5.5 (gemma reality check) — answered and INVERTED.** `gemma4:26b` **does emit a
+  non-empty `reasoning` field via `/v1`** (the original §2/§3 assumed it was safe).
+  That field is exactly the #21903 hang trigger, so a non-reasoning backend is *not*
+  automatically safe. `reasoning_effort: "none"` suppresses the field (verified:
+  qwen3.6 206→4 completion tokens, `reasoning` gone; same on gemma4) and is the
+  recommended setting for high-volume local agents.
+- **§5.6 (`extraBody` value typing) — moot.** No `extraBody` mechanism exists (see
+  §5.1), so there is nothing to type-check through it. Reasoning control is a single
+  model-level `reasoningEffort` string.
+- **§5.2 (opencode version sensitivity) + the decisive wire capture — still open,
+  now as tests.** Whether danno's **sandboxed** opencode build carries the upstream
+  #21903 `reasoning`-field fix is build-dependent and unknown. Tests **T1** (in-sandbox
+  wire capture: `reasoningEffort`/`stream`/no `thinking`/no `num_ctx` on the actual
+  body) and **T2** (#21903 regression: gemma4 with the `reasoning` field present
+  completes without hanging) live in this branch and pin the build; T1 also settles
+  Mike's stream observation at the wire. The sandbox's `opencode --version` is
+  recorded in any failure message.
+
+### Sources (verification addendum)
+
+- vercel/ai — `packages/openai-compatible/src/chat/openai-compatible-chat-language-model.ts`
+  (raw model-option spread in `getArgs`; the `reasoning` Zod-schema fix for #21903).
+- Ollama — OpenAI compatibility (`/v1`): https://docs.ollama.com/api/openai-compatibility
+- anomalyco/opencode (dev) — `packages/opencode/src/session/llm.ts`,
+  `session/llm/request.ts`, `provider/transform.ts`, `provider/provider.ts`
+  (hardcoded `stream: true`; provider/model option handling).
 
 ## Sources
 
