@@ -14,6 +14,7 @@ from book_em_danno.config.schema import (
     LlamacppBackend,
     Model,
     NpmPlugin,
+    OllamaBackend,
 )
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "danno.toml.example"
@@ -32,6 +33,64 @@ def test_render_maps_agents_to_backends() -> None:
     assert doc["agent"]["committer"]["model"] == "ollama/gemma3:27b"
     # an ollama provider block is emitted for the local model
     assert doc["provider"]["ollama"]["models"]["gemma3:27b"]["tool_call"] is True
+    # provider options carry ONLY baseURL/apiKey — no inert stream/thinking/num_ctx.
+    opts = doc["provider"]["ollama"]["options"]
+    assert set(opts) == {"baseURL", "apiKey"}
+    assert doc["provider"]["ollama"]["models"]["gemma3:27b"]["limit"]["output"] == 8192
+
+
+def test_no_inert_runtime_keys_anywhere() -> None:
+    # The verified-inert keys (provider-level stream/thinking, body num_ctx) must
+    # not appear in the emitted JSON — they never reach Ollama. (The header comment
+    # names them while explaining their absence, so check the comment-stripped body.)
+    body = _strip_comments(render_config(_example()))
+    for inert in ("stream", "thinking", "num_ctx"):
+        assert inert not in body, f"{inert!r} should not be emitted"
+
+
+def test_ollama_context_and_output_budget() -> None:
+    cfg = DannoConfig(
+        defaults=Defaults(default_agent="pm"),
+        backends={
+            "ollama": OllamaBackend(
+                kind="ollama",
+                base_url="http://host.docker.internal:11434/v1",
+                context_budget=262144,
+                output_limit=4096,
+            )
+        },
+        models={"gemma": Model(backend="ollama", tag="gemma4:26b", tool_call=True)},
+        agents={"pm": "gemma"},
+    )
+    doc = json.loads(_strip_comments(render_config(cfg)))
+    limit = doc["provider"]["ollama"]["models"]["gemma4:26b"]["limit"]
+    assert limit["context"] == 262144
+    assert limit["output"] == 4096
+    # No reasoning_effort configured -> no model-level options block.
+    assert "options" not in doc["provider"]["ollama"]["models"]["gemma4:26b"]
+
+
+def test_reasoning_effort_emitted_as_camelcase_when_set() -> None:
+    cfg = DannoConfig(
+        defaults=Defaults(default_agent="pm"),
+        backends={
+            "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1")
+        },
+        models={
+            "gemma": Model(
+                backend="ollama", tag="gemma4:26b", tool_call=True, reasoning_effort="none"
+            )
+        },
+        agents={"pm": "gemma"},
+    )
+    rendered = render_config(cfg)
+    # camelCase is load-bearing (see generate.py); snake_case would be clobbered.
+    assert "reasoningEffort" in rendered
+    assert "reasoning_effort" not in rendered
+    doc = json.loads(_strip_comments(rendered))
+    assert doc["provider"]["ollama"]["models"]["gemma4:26b"]["options"] == {
+        "reasoningEffort": "none"
+    }
 
 
 def test_first_run_writes(tmp_path: Path) -> None:

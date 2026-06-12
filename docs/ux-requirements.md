@@ -65,7 +65,7 @@ share); `shared` is one home for all; `ephemeral` is VM-local (None mounted); a
 `group:<name>` or explicit `<path>` lets a chosen set share. A relative path inherited
 from a `danno.workspace.toml` resolves against that file's directory. For claude,
 onboarding is pre-seeded into `<home>/.claude.json` so the wizard can't mask the env
-auth token. Full model: [`SAMPLE_README.md`](../SAMPLE_README.md).
+auth token. Full model: README "Sandboxed agents: repo, agent-home, auth".
 
 ### Global flags
 

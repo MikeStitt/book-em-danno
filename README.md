@@ -91,7 +91,8 @@ agent_home = "per-project"   # per-project (default) | per-repo | shared | ephem
 name; `per-repo` shares one home across a repo's worktrees; `shared` is one home for
 all sandboxes; `ephemeral` keeps it VM-local (wiped on rebuild). danno translates
 the knob to `CLAUDE_CONFIG_DIR` for Claude and `XDG_CONFIG_HOME`/`XDG_DATA_HOME` for
-opencode. See [`SAMPLE_README.md`](SAMPLE_README.md) for the full model.
+opencode. See [Sandboxed agents: repo, agent-home, auth](#sandboxed-agents-repo-agent-home-auth)
+for the full model.
 
 #### Other agents (`--agent`)
 
@@ -131,18 +132,20 @@ default_agent = "pm"
 profile       = "hybrid"          # hybrid | cloud-only | local-only
 
 [backends.ollama]                 # local models (OpenAI-compatible provider)
-kind     = "ollama"
-base_url = "http://host.docker.internal:11434/v1"
-num_ctx  = 32000
+kind           = "ollama"
+base_url       = "http://host.docker.internal:11434/v1"
+context_budget = 32000            # OpenCode's client-side window belief; see knobs below
+output_limit   = 8192
 
 [backends.cloud]
 kind     = "cloud"
 provider = "anthropic"            # API keys stay in the env, never in this file
 
 [models.gemma4]
-backend   = "ollama"
-tag       = "gemma4:26b"          # local models MUST be tool-capable (gemma3:1b is NOT)
-tool_call = true
+backend          = "ollama"
+tag              = "gemma4:26b"   # local models MUST be tool-capable (gemma3:1b is NOT)
+tool_call        = true
+reasoning_effort = "none"         # disable the thinking trace; see knobs below
 
 [models.sonnet]
 backend = "cloud"
@@ -159,6 +162,53 @@ name       = "ados"
 source     = "https://github.com/juliusz-cwiakalski/agentic-delivery-os"
 install_to = "sandbox"
 ```
+
+### Ollama context & runtime knobs
+
+danno translates two `[backends.ollama]` fields and one per-model field into the
+generated `opencode.jsonc`. The shape was verified at the wire (Ollama 0.30.6,
+opencode dev) — see [`docs/research/2026-06-12-ollama-thinking-and-opencode-passthrough.md`](docs/research/2026-06-12-ollama-thinking-and-opencode-passthrough.md):
+
+- **`context_budget`** (backend) → `models.<tag>.limit.context` — OpenCode's
+  *client-side belief* of the window. OpenCode uses it to trim/compact the
+  conversation and show usage; it **does not** change what Ollama loads. It is *not*
+  Ollama's real window: under the OpenAI-compatible `/v1` API a body `num_ctx` is
+  **ignored** and Ollama loads the model at its **full** context (gemma4:26b and
+  qwen3.6:27b are both 262144). The cost there is **RAM, not truncation** — at 262k,
+  gemma4:26b ≈ 16.9 GiB (sliding-window attention → tiny KV) but qwen3.6:27b ≈ 31.5
+  GiB. The real-window / RAM lever is an **Ollama Modelfile variant** (`num_ctx`
+  baked in via `ollama create`), not an `opencode.jsonc` key.
+- **`output_limit`** (backend) → `models.<tag>.limit.output` — tokens OpenCode
+  reserves for the reply. Usable input is roughly `context_budget − output_limit`.
+- **`reasoning_effort`** (per-model, ollama only) → `models.<tag>.options.reasoningEffort`
+  — forwarded **raw into the `/v1` request body**, where Ollama honors
+  `none`/`low`/`medium`/`high`. `"none"` disables the model's thinking trace: it's
+  **faster for high-volume local agents** and **sidesteps the opencode `#21903`
+  hang** (opencode spins forever when an Ollama model returns a generic `reasoning`
+  field — which gemma4:26b does emit by default). Omit it to forward nothing.
+  gpt-oss-style models reject `"none"` — use `low`/`medium`/`high` for those.
+
+There is deliberately **no `stream` or `thinking` knob**: opencode **always streams**
+(`stream: true` is hardcoded), and a provider-level `thinking`/`stream`/`num_ctx`
+never reached Ollama through `@ai-sdk/openai-compatible`.
+
+### Editing the generated `opencode.jsonc`
+
+danno generates `.opencode/opencode.jsonc` from `danno.toml` — **the happy path is
+to edit `danno.toml`, not the generated file.** When you do hand-edit it:
+
+- **Only `danno install` regenerates it.** The first run writes it automatically. On
+  a re-run, danno compares the proposed output to what's on disk: if they differ it
+  prints a unified diff and **refuses to write unless you pass `--apply`**. So plain
+  `danno install` will *not* clobber your edits (it shows the diff);
+  **`danno --apply install` overwrites them.** `--dry-run` never writes, and
+  `sandbox`/`doctor`/etc. never touch the file.
+- **It's already diff-friendly.** danno emits one key per line (no dense single-line
+  objects), so edits and diffs stay readable.
+- **Edits reach the sandbox on the next launch.** The project is bind-mounted
+  read-write at the same path, so the in-container agent reads the same file. An edit
+  takes effect on the next `danno sandbox start` (the agent reads it at startup) —
+  **no `rebuild` or container recreation needed.**
 
 ### Two install lanes: `[[tools]]` vs `[[npm]]`
 
@@ -240,7 +290,195 @@ the rule must name `localhost:11434`. The agent's config baseURL still uses
 **Prerequisite:** host Ollama must listen on `0.0.0.0` (`OLLAMA_HOST=0.0.0.0:11434`),
 not the default `127.0.0.1`, or the VM can't reach it. **Local models must be
 tool-capable** — every agent uses tools, and a model like `gemma3:1b` that cannot
-tool-call is unusable for an agent (keep `num_ctx ≈ 32000`).
+tool-call is unusable for an agent (keep `context_budget ≈ 32000`).
+
+## Sandboxed agents: repo, agent-home, auth
+
+danno runs your coding agent — **Claude Code** or **opencode** — inside an isolated
+Docker Desktop microVM, wired to your local Ollama models and your repo. You get a
+real agent on your code without giving it your laptop. The whole system is **three
+layers**; once you see them, everything else follows.
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  YOUR MAC (host)                                                       │
+│                                                                        │
+│   ~/work/acme/                ← your repo (the "workspace")            │
+│     ├── src/ …                                                         │
+│     ├── CLAUDE.md             ← ① REPO layer: agent instructions       │
+│     └── .claude/  /.opencode/    (committed, shared, travels w/ git)   │
+│                                                                        │
+│   ~/.danno/agent-home/        ← ② AGENT-HOME layer: chat history,      │
+│     └── danno-work-acme-claude/   settings, onboarding (per sandbox)   │
+│                                                                        │
+│   $CLAUDE_CODE_OAUTH_TOKEN    ← ③ AUTH layer: a token in your env      │
+└───────────────┬───────────────────────────────────────────────────────┘
+                │  danno mounts ① + ②, injects ③, launches the agent
+                ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  SANDBOX microVM  (disposable; `rebuild` wipes everything inside it)   │
+│   /Users/you/work/acme   ← ① mounted at the SAME path, read-write      │
+│   agent home (relocated to ②)  ← survives rebuild because it's on host │
+│   token in env only      ← ③ never written to the VM's disk            │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+| Layer | What's in it | Where it lives | Survives `rebuild`? |
+|---|---|---|---|
+| ① **Repo** | code + agent instructions (`CLAUDE.md`, `.claude/`, generated `.opencode/`) | your repo on the host, mounted in | ✅ (it's your repo) |
+| ② **Agent home** | chat history, settings, onboarding/theme | a host folder, one per sandbox | ✅ |
+| ③ **Auth** | the API/subscription token | your shell env → injected per launch | ✅ (re-injected) |
+
+The microVM itself is **disposable**. Nothing important should live only inside it.
+All three layers are durable: ① is your repo, ③ is re-injected each launch, and ②
+lives in a host folder keyed by `agent_home` (configured under `[sandbox]`, see the
+[agent_home quickstart](#where-the-agents-history-lives-sandbox-agent_home) above).
+
+### The scenario: one repo, several worktrees
+
+Say you keep a main checkout plus two `git worktree` siblings on different branches:
+
+```
+~/work/acme           branch: main
+~/work/acme-login     branch: feature/login      (git worktree)
+~/work/acme-billing   branch: feature/billing    (git worktree)
+```
+
+Each directory is a **separate workspace**, so danno gives each its **own sandbox**
+and its **own agent home**. Sandbox names are `danno-<parent>-<dir>[-<agent>]` — the
+parent dir is included so same-basename checkouts (and worktrees) never collide:
+
+| Directory | Sandbox | Agent home (`per-project`) |
+|---|---|---|
+| `~/work/acme` | `danno-work-acme-claude` | `~/.danno/agent-home/danno-work-acme-claude/` |
+| `~/work/acme-login` | `danno-work-acme-login-claude` | `~/.danno/agent-home/danno-work-acme-login-claude/` |
+| `~/work/acme-billing` | `danno-work-acme-billing-claude` | `~/.danno/agent-home/danno-work-acme-billing-claude/` |
+
+What you get:
+
+- **Shared instructions, separate minds.** `CLAUDE.md` and `.claude/commands/` are
+  committed, so all three branches inherit the same project rules via git. But each
+  agent has its **own chat history and todos**, scoped to its branch. The login
+  agent never sees the billing agent's conversation.
+- **Run them at once.** Three sandboxes, three agent homes — no two processes write
+  the same history file, so parallel work can't corrupt state.
+- **Rebuild one freely.** `rebuild` on `acme-login` resets only that VM; its history
+  persists on the host, and the other two are untouched.
+
+### Why separate "User Global" is the default (and the best practice)
+
+In normal use, Claude Code keeps one global home (`~/.claude`) shared across every
+project on your machine. In danno, each sandbox gets its **own**. That is deliberate:
+
+1. **It matches how you actually work.** A worktree exists to isolate a branch's
+   changes; isolating that branch's *agent context* is the same instinct. No
+   cross-branch memory bleed.
+2. **Security.** A sandbox can only ever see its own home. A prompt-injection or a
+   malicious dependency in one repo can't read another project's history — and can
+   never touch your real `~/.claude` (it isn't mounted at all).
+3. **Reproducibility.** A sandbox's behavior is a function of its repo + its own home.
+   No invisible global state leaking in from unrelated projects.
+4. **No corruption.** Parallel agents never contend over one history db.
+
+To make every danno sandbox share a single home, set `agent_home = "shared"`. Reach
+for it only when you want one continuous memory across all your work; the trade-offs
+are the exact inverse of the four points above. (Never choose to share your real
+`~/.claude` — see Security notes.)
+
+### Sharing a home across a *set* of projects (the middle ground)
+
+Between "every sandbox isolated" and "everything shares one brain" is the common real
+case: **a family of related checkouts that should share a home, while staying private
+from the rest of your work.** The rule is always the same — *`agent_home` is an
+identity key; equal keys share a home* — so you just choose how the key is set.
+
+**Worktrees of one repo → `per-repo` (zero config).** Every `git worktree` shares one
+git dir (`git rev-parse --git-common-dir`), so danno keys the home on it automatically:
+
+```toml
+[sandbox]
+agent_home = "per-repo"   # acme, acme-login, acme-billing share ONE home; other repos don't
+```
+
+**Any arbitrary set → name a group.** When the projects aren't worktrees of one repo
+(or live anywhere on disk), give them a shared label:
+
+```toml
+[sandbox]
+agent_home = "group:acme"   # → ~/.danno/agent-home/groups/acme/ — same name = same home
+```
+
+**Pick the folder yourself → an explicit path** at a midpoint:
+
+```toml
+[sandbox]
+agent_home = "~/work/acme/.shared/agent-home"
+```
+
+**Avoiding repetition (`danno.workspace.toml`).** Rather than copy the line into every
+toml, drop a workspace file at the midpoint and let children inherit it; a *relative*
+`agent_home` resolves against that midpoint directory:
+
+```
+~/work/acme/
+├── danno.workspace.toml   ← [sandbox] agent_home = ".shared/agent-home"
+├── main/      (worktree)  ─┐
+├── login/     (worktree)   ├─ inherit the parent; all resolve to ONE home
+└── billing/   (worktree)  ─┘   at ~/work/acme/.shared/agent-home/
+```
+
+danno walks up from `--target` to the nearest `danno.workspace.toml` and inherits its
+`[sandbox]`. (Inheritance covers *nested* layouts; sibling checkouts use `per-repo` or
+`group:` instead.)
+
+| You have… | Use | Result |
+|---|---|---|
+| Worktrees of one repo | `per-repo` | shared across worktrees, isolated from other repos — automatic |
+| A named set anywhere | `group:<name>` | shared by every toml with that name |
+| A specific folder in mind | `"<path>"` | shared by every toml pointing there |
+| A nested tree, DRY | `danno.workspace.toml` + relative path | one declaration, inherited downward |
+
+### opencode: same story, different drawers
+
+opencode follows the **same three layers** — only the agent-home plumbing differs, and
+danno hides it for you.
+
+| | Claude Code | opencode |
+|---|---|---|
+| ① Repo config | `CLAUDE.md`, `.claude/` (you commit it) | `.opencode/opencode.jsonc` (**danno generates it from `danno.toml`**) |
+| ② Agent home | one dir: `~/.claude/` (+`~/.claude.json`) | XDG dirs: `~/.config/opencode/`, `~/.local/share/opencode/` (sessions in a sqlite `opencode.db`) |
+| ② Relocated by | `CLAUDE_CONFIG_DIR` | `XDG_CONFIG_HOME` + `XDG_DATA_HOME` |
+| ③ Auth | `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` in env | local Ollama needs none (baked `baseURL`); cloud providers via env keys |
+
+You set the **same** `agent_home` knob; danno translates it for both agents. The one
+conceptual difference: with Claude you *write* the repo config (`CLAUDE.md`); with
+opencode danno *generates* it (`.opencode/opencode.jsonc`) from `danno.toml`, so you
+edit `danno.toml`, not the generated file (see
+[Editing the generated `opencode.jsonc`](#editing-the-generated-opencodejsonc)).
+
+### Security notes
+
+- danno mounts **only your repo** (and, with `per-project`/`shared`, a dedicated
+  agent-home folder). Your real `~/.claude` is **never** mounted — your global
+  credentials, MCP secrets, and every project's history stay off the sandbox.
+- Auth is injected as an env token through a `chmod 600` file that's deleted right
+  after launch. It never lands on the VM's disk.
+- Don't `docker sandbox save` a VM whose agent home holds credentials — that bakes
+  secrets into an image.
+
+### Quick reference
+
+| You want… | Do this |
+|---|---|
+| Per-branch agents that don't share memory | default (`agent_home = "per-project"`) |
+| Worktrees of one repo to share a home | `agent_home = "per-repo"` |
+| A named set of projects to share a home | `agent_home = "group:<name>"` |
+| A specific shared folder you pick | `agent_home = "<path>"` |
+| One assistant with one memory everywhere | `agent_home = "shared"` |
+| A throwaway agent, no persistence | `agent_home = "ephemeral"` |
+| Project rules every agent follows | commit `CLAUDE.md` / edit `danno.toml` (opencode) |
+| Change auth | `export` a token in your shell; never in `danno.toml` |
+| Start fresh but keep history + rules | `danno --apply sandbox rebuild` |
 
 ## Development
 
