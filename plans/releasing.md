@@ -6,10 +6,19 @@ clicks.
 
 ## TL;DR — cutting a release
 
-1. **Actions tab → `release-prepare` → "Run workflow"** (on `main`). Leave the
-   version blank to auto-compute it from your conventional commits, or type an
-   override.
-2. The bot opens a **`chore(release): vX.Y.Z`** PR that bumps `pyproject.toml`
+1. **Land the work you want to release on `main` first** — via normal PR(s), as
+   usual. **Do not** bump the `version` in `pyproject.toml` or edit `CHANGELOG.md`
+   in those PRs: the release step does both automatically, and a manual bump
+   collides with it. Just merge your feature/fix commits.
+2. Go to the **Actions** tab (upstream:
+   [MikeStitt/book-em-danno](https://github.com/MikeStitt/book-em-danno/actions);
+   **on a fork that link won't apply** — use your own copy at
+   `https://github.com/<your-org>/<your-repo>/actions`) and open **`release-prepare`
+   → "Run workflow"**. In the **"Use workflow from"** branch dropdown, **keep
+   `main`** (it defaults there) — release off `main`, never off a feature branch.
+   Leave the version input blank to auto-compute it from your conventional commits,
+   or type an override.
+3. The bot opens a **`chore(release): vX.Y.Z`** PR that bumps `pyproject.toml`
    and regenerates `CHANGELOG.md`. Review it, let CI go green, and **Merge** it.
 
 That's it. Merging the PR triggers publishing — a `vX.Y.Z` tag and a GitHub
