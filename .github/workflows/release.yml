@@ -1,15 +1,25 @@
 name: release
 
-# Pushing a vX.Y.Z tag publishes a GitHub Release whose notes are generated from
-# the conventional-commit history by git-cliff, reusing the repo's cliff.toml.
-# See .specify/memory/parts/shared.md ("Cutting a release").
+# Lane B, step 2 of 2 — publishes automatically, no manual tag push.
+#
+# Runs on every push to main and asks one question: does the version in
+# pyproject.toml already have a `vX.Y.Z` tag? If yes, no-op. If no (the release
+# PR from release-prepare.yml just merged), it creates the tag and the GitHub
+# Release in the SAME job — git-cliff (reusing cliff.toml) supplies the notes.
+#
+# Tag creation and publishing live in one job on purpose: a tag pushed by
+# GITHUB_TOKEN does NOT trigger other workflows, so we must not rely on a
+# separate tag-triggered run. If the v* tag ref is locked by a ruleset, add
+# `github-actions[bot]` (or this repo's Actions identity) as a bypass actor.
+#
+# Full process + prerequisites: plans/releasing.md.
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
 
 permissions:
-  contents: write # required for `gh release create`
+  contents: write # required for tag push + `gh release create`
 
 jobs:
   release:
@@ -17,20 +27,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # full history + tags so git-cliff can group by tag
+          fetch-depth: 0 # full history + tags so we can detect "already released"
+
+      - name: Decide whether this version needs releasing
+        id: gate
+        run: |
+          set -euo pipefail
+          VERSION="$(awk -F'"' '/^version = /{print $2; exit}' pyproject.toml)"
+          TAG="v${VERSION}"
+          if [ -z "${VERSION}" ]; then
+            echo "::error::Could not read version from pyproject.toml" >&2
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "release=false" >>"${GITHUB_OUTPUT}"
+            echo "${TAG} already tagged — nothing to publish."
+          else
+            echo "release=true" >>"${GITHUB_OUTPUT}"
+            echo "version=${VERSION}" >>"${GITHUB_OUTPUT}"
+            echo "tag=${TAG}" >>"${GITHUB_OUTPUT}"
+            echo "Publishing ${TAG}."
+          fi
 
       - name: Install git-cliff
+        if: steps.gate.outputs.release == 'true'
         uses: taiki-e/install-action@v2
         with:
           tool: git-cliff
 
-      - name: Generate release notes for ${{ github.ref_name }}
-        run: git cliff --latest --strip header -o RELEASE_NOTES.md
-
-      - name: Create GitHub Release
+      - name: Tag, generate notes, and publish
+        if: steps.gate.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.gate.outputs.tag }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "${GITHUB_REF_NAME}" \
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Create the tag first so `git cliff --latest` resolves to this release.
+          git tag -a "${TAG}" -m "${TAG}"
+          git cliff --latest --strip header -o RELEASE_NOTES.md
+          git push origin "${TAG}"
+          gh release create "${TAG}" \
+            --title "${TAG}" \
             --notes-file RELEASE_NOTES.md
