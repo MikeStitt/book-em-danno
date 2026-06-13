@@ -6,7 +6,12 @@ clicks.
 
 ## TL;DR — cutting a release
 
-1. **Actions tab → `release-prepare` → "Run workflow"** (on `main`). Leave the
+Open the **Actions** tab. For the upstream repo that's
+[MikeStitt/book-em-danno](https://github.com/MikeStitt/book-em-danno/actions);
+**on a fork that link won't apply** — use your own copy at
+`https://github.com/<your-org>/<your-repo>/actions`. Then:
+
+1. **`release-prepare` → "Run workflow"** (on `main`). Leave the
    version blank to auto-compute it from your conventional commits, or type an
    override.
 2. The bot opens a **`chore(release): vX.Y.Z`** PR that bumps `pyproject.toml`

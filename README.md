@@ -488,14 +488,11 @@ edit `danno.toml`, not the generated file (see
 - **Layout:** `src/book_em_danno/` — `config/` (schema, loader, generator),
   `core/exec.py` (the advise-by-default `Runner`), `commands/` (doctor, ollama,
   sandbox, tools, install), `cli.py`.
-- **Releasing:** automated — you never bump the version, write the changelog, or
-  push a tag by hand. The version reported by `danno --version` comes from
-  `pyproject.toml`, and `CHANGELOG.md` is generated from conventional commits by
-  [`git-cliff`](https://git-cliff.org). To cut a release, run the
-  [`release-prepare`](.github/workflows/release-prepare.yml) workflow and merge the
-  `chore(release): vX.Y.Z` PR it opens;
-  [`release.yml`](.github/workflows/release.yml) then tags and publishes the GitHub
-  Release. Full process, prerequisites, and caveats in
+- **Releasing:** automated and bot-driven — you never bump the version, write the
+  changelog, push a tag, or run any command. You click two buttons in GitHub's web
+  UI: on the **Actions** tab, start the `release-prepare` workflow; then **Merge**
+  the `chore(release): vX.Y.Z` PR it opens for you. The workflows do everything
+  else. Full process, prerequisites, and caveats:
   [`plans/releasing.md`](plans/releasing.md).
 
 ## Where the docs live
