@@ -36,22 +36,29 @@ rule. Read together with the [constitution](../constitution.md).
 
 ### Cutting a release
 
-Releases are tagged manually (a human action — danno does not self-release), but
-**publishing the GitHub Release is automated**: pushing a `vX.Y.Z` tag triggers
-[`.github/workflows/release.yml`](../../../.github/workflows/release.yml), which
-runs `git-cliff` (reusing `cliff.toml`) and creates the GitHub Release with the
-latest section as its notes. So the whole release is:
+Releases are **bot-driven** — no human edits the version, writes the changelog,
+or pushes a tag. Two workflows split the work; your only actions are running one
+workflow and merging one PR. The full how-to, prerequisites (the `RELEASE_TOKEN`
+secret, optional tag-ruleset bypass), and caveats live in
+[`plans/releasing.md`](../../../plans/releasing.md). In brief:
 
-1. Bump `version` in `pyproject.toml` (this is what `danno --version` reports).
-2. Regenerate the changelog: `git cliff -o CHANGELOG.md` (or
-   `git cliff --tag vX.Y.Z -o CHANGELOG.md` to render the new version's heading).
-3. Commit: `git commit -am "chore(release): vX.Y.Z"`.
-4. Tag an annotated release and push commit + tag:
-   `git tag -a vX.Y.Z -m "vX.Y.Z"` then `git push origin main --follow-tags`.
+1. **Run [`release-prepare.yml`](../../../.github/workflows/release-prepare.yml)**
+   from the Actions tab. `git cliff --bumped-version` computes the next semver
+   from the conventional-commit history, bumps `version` in `pyproject.toml` (what
+   `danno --version` reports), regenerates `CHANGELOG.md`, and opens a
+   `chore(release): vX.Y.Z` PR. No tag is created here.
+2. **Merge that PR.** [`release.yml`](../../../.github/workflows/release.yml) runs
+   on every push to `main`; when it sees a `pyproject.toml` version with no
+   matching `vX.Y.Z` tag (i.e. the release PR just merged) it creates the tag and
+   publishes the GitHub Release — notes from `git-cliff` (reusing `cliff.toml`) —
+   in one job. Ordinary merges are a no-op.
 
-The tag push is the only manual trigger — the workflow does the GitHub Release.
-`cliff.toml`'s `tag_pattern = "v[0-9]*"` makes `git-cliff` group commits under
-each `vX.Y.Z` tag; untagged commits land under `## [unreleased]`.
+The version-bump commit still reaches `main` only through a reviewed PR, so the
+`protect-main` "no direct commits" rule holds. `cliff.toml`'s
+`tag_pattern = "v[0-9]*"` makes `git-cliff` group commits under each `vX.Y.Z`
+tag; untagged commits land under `## [unreleased]`. Do **not** run
+`gh release create` or push a tag by hand — that collides with the workflow
+(`422 tag_name already exists`).
 
 ## Tool-invocation working directory
 
