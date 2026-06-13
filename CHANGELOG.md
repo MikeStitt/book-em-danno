@@ -3,6 +3,36 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.2.4] - 2026-06-13
+
+### Documentation
+
+- Clarify release steps are GitHub UI clicks, add fork guidance
+- Spell out the land-on-main-first step and branch dropdown
+
+## [0.2.3] - 2026-06-13
+
+### CI
+
+- Automate releases via prepare-PR + publish-on-merge (Lane B)
+
+## [0.2.2] - 2026-06-13
+
+### Documentation
+
+- *(research)* Verify ollama passthrough findings; amend with §6 addendum
+
+### Features
+
+- *(config)* Make ollama stream/thinking/output_limit configurable; consolidate docs
+- *(config)* Restructure ollama runtime knobs from verified passthrough
+
+### Testing
+
+- *(slow)* Live e2e tests for the [[npm]] plugin + ADOS permutations
+- *(slow)* Pin Ollama /v1 contract (reasoning_effort, think, num_ctx)
+- *(slow)* In-sandbox wire capture of the opencode->ollama contract
+
 ## [0.2.0] - 2026-06-12
 
 ### Bug Fixes
