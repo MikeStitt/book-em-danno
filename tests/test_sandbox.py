@@ -171,11 +171,12 @@ def test_agent_env_claude_relocates_config_dir(monkeypatch: pytest.MonkeyPatch) 
     ]
 
 
-def test_agent_env_opencode_relocates_xdg() -> None:
+def test_agent_env_opencode_relocates_config_not_data() -> None:
+    # Config goes on the mounted home; the sqlite data dir is left VM-local so WAL
+    # works (the mounted home is virtiofs, which can't do WAL). See agent_env docs.
     assert sandbox.agent_env("opencode", "http://h:11434/v1", Path("/h")) == [
         "OLLAMA_BASE_URL=http://h:11434/v1",
         "XDG_CONFIG_HOME=/h/config",
-        "XDG_DATA_HOME=/h/data",
     ]
 
 

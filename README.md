@@ -92,8 +92,10 @@ agent_home = "per-project"   # per-project (default) | per-repo | shared | ephem
 `per-project` (the default) gives each sandbox its own home keyed on the sandbox
 name; `per-repo` shares one home across a repo's worktrees; `shared` is one home for
 all sandboxes; `ephemeral` keeps it VM-local (wiped on rebuild). danno translates
-the knob to `CLAUDE_CONFIG_DIR` for Claude and `XDG_CONFIG_HOME`/`XDG_DATA_HOME` for
-opencode. See [Sandboxed agents: repo, agent-home, auth](#sandboxed-agents-repo-agent-home-auth)
+the knob to `CLAUDE_CONFIG_DIR` for Claude and `XDG_CONFIG_HOME` for opencode
+(opencode's sqlite session store stays VM-local — the virtiofs mount can't run its
+WAL journal — so sessions reset on rebuild). See
+[Sandboxed agents: repo, agent-home, auth](#sandboxed-agents-repo-agent-home-auth)
 for the full model.
 
 #### Other agents (`--agent`)
@@ -449,7 +451,7 @@ danno hides it for you.
 |---|---|---|
 | ① Repo config | `CLAUDE.md`, `.claude/` (you commit it) | `.opencode/opencode.jsonc` (**danno generates it from `danno.toml`**) |
 | ② Agent home | one dir: `~/.claude/` (+`~/.claude.json`) | XDG dirs: `~/.config/opencode/`, `~/.local/share/opencode/` (sessions in a sqlite `opencode.db`) |
-| ② Relocated by | `CLAUDE_CONFIG_DIR` | `XDG_CONFIG_HOME` + `XDG_DATA_HOME` |
+| ② Relocated by | `CLAUDE_CONFIG_DIR` | `XDG_CONFIG_HOME` only — the data dir / sqlite stays VM-local because virtiofs can't run WAL, so opencode sessions reset on rebuild |
 | ③ Auth | `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` in env | local Ollama needs none (baked `baseURL`); cloud providers via env keys |
 
 You set the **same** `agent_home` knob; danno translates it for both agents. The one
