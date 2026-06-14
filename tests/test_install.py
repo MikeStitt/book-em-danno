@@ -4,13 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from book_em_danno.commands import install, ollama, sandbox
+from book_em_danno.commands import install, ollama, sandbox, tools
 from book_em_danno.config.schema import (
     CloudBackend,
     DannoConfig,
     Model,
     NpmPlugin,
     OllamaBackend,
+    Tool,
 )
 from book_em_danno.core import registry
 from conftest import RecordingRunner
@@ -38,6 +39,8 @@ def _config() -> DannoConfig:
 
 def test_install_orchestration_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ollama, "loopback_warning", lambda **k: None)
+    # Deterministic: pretend no models are present so every tag is pulled.
+    monkeypatch.setattr(ollama, "installed_tags", lambda **k: set())
     # Keep agent-home + registry off real host state (tmp_path has no danno.toml,
     # so the default per-project home is mounted — same as `sandbox start`).
     home_root = tmp_path / "agent-home"
@@ -64,6 +67,51 @@ def test_ollama_tags_deduped_and_only_ollama(monkeypatch: pytest.MonkeyPatch) ->
     cfg = _config()
     cfg.agents["committer"] = "gemma"
     assert install._ollama_tags(cfg) == ["gemma4:26b"]
+
+
+def test_ollama_tags_includes_unassigned_models() -> None:
+    # Every defined ollama model is pulled, even if no agent references it.
+    cfg = _config()
+    cfg.models["spare"] = Model(backend="ollama", tag="qwen3-coder-next", tool_call=True)
+    assert install._ollama_tags(cfg) == ["gemma4:26b", "qwen3-coder-next"]
+
+
+def test_install_skips_already_present_ollama_models(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A model already in `ollama list` is not re-pulled; an absent one is.
+    monkeypatch.setattr(ollama, "loopback_warning", lambda **k: None)
+    monkeypatch.setattr(sandbox, "_agent_home_root", lambda: tmp_path / "agent-home")
+    monkeypatch.setattr(registry, "default_path", lambda: tmp_path / "sandboxes.json")
+    # gemma4:26b is the only defined ollama model; mark it present (bare tag → :latest
+    # normalization is exercised by adding a second model below).
+    monkeypatch.setattr(ollama, "installed_tags", lambda **k: {"gemma4:26b"})
+    cfg = _config()
+    cfg.models["spare"] = Model(backend="ollama", tag="spare-model", tool_call=True)
+    r = RecordingRunner()
+    install.run_install(cfg, tmp_path, r)
+    pulls = [c for c in r.joined() if c.startswith("ollama pull")]
+    assert pulls == ["ollama pull spare-model"]  # gemma4:26b present → skipped
+
+
+def test_install_fails_loud_when_a_tool_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A failed tool installer must raise (no silent "ready") and must abort before
+    # the sandbox is provisioned.
+    monkeypatch.setattr(ollama, "loopback_warning", lambda **k: None)
+    monkeypatch.setattr(ollama, "installed_tags", lambda **k: set())
+
+    def _boom(*a: object, **k: object) -> None:
+        raise tools.ToolInstallError("kaboom")
+
+    monkeypatch.setattr(tools, "install_tool", _boom)
+    cfg = _config()
+    cfg.tools = [Tool(name="ados", source="https://example/ados", install_to="sandbox")]
+    r = RecordingRunner()
+    with pytest.raises(install.InstallError, match="ados"):
+        install.run_install(cfg, tmp_path, r)
+    assert not any("docker sandbox create" in c for c in r.joined())  # aborted pre-sandbox
 
 
 def test_install_missing_target_fails_loud() -> None:

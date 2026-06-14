@@ -39,6 +39,23 @@ def test_render_maps_agents_to_backends() -> None:
     assert doc["provider"]["ollama"]["models"]["gemma3:27b"]["limit"]["output"] == 8192
 
 
+def test_all_defined_ollama_models_emitted_even_when_unassigned() -> None:
+    # The whole catalog must reach opencode's picker, not just agent-assigned models.
+    cfg = DannoConfig(
+        defaults=Defaults(default_agent="pm"),
+        backends={
+            "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1")
+        },
+        models={
+            "assigned": Model(backend="ollama", tag="gemma3:27b", tool_call=True),
+            "spare": Model(backend="ollama", tag="qwen3-coder-next", tool_call=True),
+        },
+        agents={"pm": "assigned"},  # 'spare' is defined but unassigned
+    )
+    models = json.loads(_strip_comments(render_config(cfg)))["provider"]["ollama"]["models"]
+    assert set(models) == {"gemma3:27b", "qwen3-coder-next"}
+
+
 def test_no_inert_runtime_keys_anywhere() -> None:
     # The verified-inert keys (provider-level stream/thinking, body num_ctx) must
     # not appear in the emitted JSON — they never reach Ollama. (The header comment

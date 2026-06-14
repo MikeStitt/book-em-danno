@@ -9,14 +9,13 @@ from typer.testing import CliRunner
 from book_em_danno.cli import app
 
 runner = CliRunner()
-EXAMPLE = Path(__file__).resolve().parents[1] / "danno.toml.example"
 
 
 def test_version_prints_package_version() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
     # Derive from package metadata so a version bump doesn't break this test.
-    assert result.stdout.strip() == f"danno {pkg_version('book-em-danno')}"
+    assert result.stdout.strip() == f"danno {pkg_version('danno')}"
 
 
 def test_help_shows_three_commands() -> None:
@@ -50,8 +49,25 @@ def test_dry_run_flag_is_gone() -> None:
 
 def test_install_default_writes_config_without_executing(tmp_path: Path) -> None:
     # Default (advise) mode: the owned config file is written on first run, and
-    # nothing is executed (no Docker/Ollama present, yet it exits clean).
-    result = runner.invoke(app, ["install", "--config", str(EXAMPLE), "--target", str(tmp_path)])
+    # nothing is executed (no Docker/Ollama present, yet it exits clean). Use a
+    # tool-less config so the test doesn't depend on an ADOS checkout being present
+    # (install now fails loud when a configured tool can't be installed).
+    cfg = tmp_path / "danno.toml"
+    cfg.write_text(
+        "[defaults]\n"
+        'default_agent = "pm"\n'
+        "[backends.ollama]\n"
+        'kind = "ollama"\n'
+        'base_url = "http://host.docker.internal:11434/v1"\n'
+        "[models.gemma]\n"
+        'backend = "ollama"\n'
+        'tag = "gemma3:27b"\n'
+        "tool_call = true\n"
+        "[agents]\n"
+        'pm = "gemma"\n',
+        encoding="utf-8",
+    )
+    result = runner.invoke(app, ["install", "--config", str(cfg), "--target", str(tmp_path)])
     assert result.exit_code == 0
     assert (tmp_path / ".opencode" / "opencode.jsonc").is_file()
 

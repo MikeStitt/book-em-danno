@@ -13,7 +13,7 @@ from ..config.generate import Action, generate
 from ..config.loader import DannoConfigError
 from ..config.schema import DannoConfig, OllamaBackend
 from ..core import registry
-from ..core.exec import Runner, log_err, log_info
+from ..core.exec import CommandFailedError, Runner, log_err, log_info
 from . import ollama, sandbox, tools
 
 
@@ -46,9 +46,11 @@ def _emit_config(cfg: DannoConfig, target_abs: Path, runner: Runner) -> None:
 
 
 def _ollama_tags(cfg: DannoConfig) -> list[str]:
-    """Unique Ollama model tags referenced by the agent map, in stable order."""
+    """Unique Ollama model tags DEFINED in danno.toml, in stable order. Every
+    defined model is pulled (and emitted to opencode.jsonc), not just agent-assigned
+    ones, so the whole catalog is usable in opencode's model picker."""
     tags: list[str] = []
-    for model_name in sorted(set(cfg.agents.values())):
+    for model_name in sorted(cfg.models):
         model = cfg.models[model_name]
         backend = cfg.backends[model.backend]
         if isinstance(backend, OllamaBackend) and model.tag and model.tag not in tags:
@@ -80,15 +82,28 @@ def run_install(
     _emit_config(cfg, target_abs, runner)
 
     log_info("step 2/5 — Ollama models")
+    present = ollama.installed_tags()
     for tag in _ollama_tags(cfg):
-        ollama.ensure_model(runner, tag)
+        # Ollama stores a bare tag as `<tag>:latest`; normalize before comparing.
+        canonical = tag if ":" in tag else f"{tag}:latest"
+        if canonical in present:
+            log_info(f"Ollama model already present, skipping pull: {tag}")
+        else:
+            ollama.ensure_model(runner, tag)
 
     log_info("step 3/5 — tools")
+    failed: list[str] = []
     for tool in cfg.tools:
         try:
             tools.install_tool(runner, tool, target_abs, ados_repo=ados_repo)
-        except tools.ToolInstallError as exc:
+        except (tools.ToolInstallError, CommandFailedError) as exc:
             log_err(f"tool '{tool.name}': {exc}")
+            failed.append(tool.name)
+    # Fail loud (Working Rule 8): a swallowed tool failure must not reach "ready".
+    if failed:
+        raise InstallError(
+            f"tool install failed for: {', '.join(failed)} — not provisioning the sandbox"
+        )
 
     log_info("step 4/5 — sandbox")
     sandbox.provision(runner, name, target_abs, home=home, registry_path=registry.default_path())

@@ -13,7 +13,8 @@ clobbers files we don't own without explicit `--apply`).
 
 ## 2. Command surface
 
-Three commands. `danno` is an alias for `book-em-danno`.
+Three commands. The distribution is named `danno`; `book-em-danno` is a legacy
+script alias for the same entry point.
 
 ### `danno install [--target .] [--ados-repo DIR]`
 
@@ -61,7 +62,9 @@ loudly if a `--name` would bind to a different target than one already recorded.
 **Agent home (`[sandbox] agent_home`):** each sandbox gets a durable host folder
 (chat history, settings, onboarding) keyed by `agent_home`, mounted as a second
 workspace and relocated per agent (`CLAUDE_CONFIG_DIR` for claude; `XDG_CONFIG_HOME`
-+ `XDG_DATA_HOME` for opencode). It survives `rebuild`. `per-project` (default) keys
+for opencode — its sqlite session store stays VM-local because the virtiofs mount
+can't run WAL). The mounted config survives `rebuild`; opencode sessions reset on
+it. `per-project` (default) keys
 on the sandbox name; `per-repo` keys on the shared `.git` common dir (worktrees
 share); `shared` is one home for all; `ephemeral` is VM-local (None mounted); a
 `group:<name>` or explicit `<path>` lets a chosen set share. A relative path inherited

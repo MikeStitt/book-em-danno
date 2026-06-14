@@ -1,5 +1,5 @@
 [project]
-name = "book-em-danno"
+name = "danno"
 version = "0.2.5"
 description = "Declarative, transparent setup of OpenCode hybrid local/cloud model runtimes in a Docker sandbox, driven by danno.toml."
 readme = "README.md"

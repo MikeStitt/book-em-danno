@@ -319,9 +319,15 @@ def agent_env(agent: str, ollama_url: str, home: Path | None = None) -> list[str
     danno's host environment. Fail loud (Working Rule 8) when neither is set. The
     secret only ever lands in the chmod-600 env-file, never on the command line.
 
-    When `home` is set, the agent's global config/history is relocated onto the
-    mounted host dir: claude via CLAUDE_CONFIG_DIR; opencode via XDG_CONFIG_HOME +
-    XDG_DATA_HOME (its sessions live in a sqlite db under XDG_DATA_HOME).
+    When `home` is set, the agent's global config is relocated onto the mounted
+    host dir: claude via CLAUDE_CONFIG_DIR; opencode via XDG_CONFIG_HOME.
+
+    opencode's data dir (XDG_DATA_HOME — its sqlite session store) is deliberately
+    NOT relocated onto the mounted home: that mount is virtiofs, which can't honor
+    `PRAGMA journal_mode = WAL`, so opencode crashes with a Drizzle error on start.
+    Left unset, it defaults to the container's VM-local ext4 (~/.local/share),
+    where WAL works. Tradeoff: sessions persist across stop/start but reset on a
+    sandbox rebuild/reset (`docker sandbox` has no volume mount to do better).
     """
     if agent == "claude":
         lines: list[str] = []
@@ -343,7 +349,6 @@ def agent_env(agent: str, ollama_url: str, home: Path | None = None) -> list[str
     lines = [f"OLLAMA_BASE_URL={ollama_url}"]
     if home is not None:
         lines.append(f"XDG_CONFIG_HOME={home}/config")
-        lines.append(f"XDG_DATA_HOME={home}/data")
     return lines
 
 
