@@ -30,7 +30,7 @@ def _resolve_target(target: Path) -> Path:
 
 def _emit_config(cfg: DannoConfig, target_abs: Path, runner: Runner) -> None:
     """Tier-1: write/diff .opencode/opencode.jsonc (we own this file)."""
-    result = generate(cfg, target_abs, apply=runner.apply, dry_run=runner.dry_run)
+    result = generate(cfg, target_abs, apply=runner.apply)
     if result.action is Action.WROTE:
         log_info(f"[green]wrote[/green] {result.path}")
     elif result.action is Action.UNCHANGED:

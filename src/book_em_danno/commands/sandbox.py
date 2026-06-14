@@ -67,7 +67,7 @@ def sandbox_exists(name: str) -> bool:
 
 def _live(runner: Runner) -> bool:
     """True when we are actually executing (so existence checks are meaningful)."""
-    return runner.apply and not runner.dry_run
+    return runner.apply
 
 
 def _agent_home_root() -> Path:
@@ -374,52 +374,36 @@ def launch(
     home: Path | None = None,
 ) -> list[str]:
     """Launch the in-container agent in the mounted repo (`-w <target>`), wired to
-    host Ollama / agent auth via an env-file. With a persistent `home`, the agent's
-    config/history is relocated onto it; for claude, onboarding is pre-seeded so the
-    wizard can't mask the env auth token."""
+    host Ollama / agent auth via an env-file. Launching is the command's purpose, so
+    it always executes (not gated by `--apply`). With a persistent `home`, the
+    agent's config/history is relocated onto it; for claude, onboarding is pre-seeded
+    so the wizard can't mask the env auth token."""
     env_pairs = env_pairs or []
     env_files = env_files or []
-    if runner.apply and not runner.dry_run:
-        if agent == "claude" and home is not None:
-            seed_onboarding(home)
-        lines = agent_env(agent, ollama_url, home)
-        injected = ", ".join(line.split("=", 1)[0] for line in lines)
-        log_info(f"injecting {injected} via a chmod-600 --env-file")
-        env_path = _build_env_file(lines, env_pairs, env_files)
-        try:
-            return runner.advise(
-                [
-                    "docker",
-                    "sandbox",
-                    "exec",
-                    "-it",
-                    "-w",
-                    str(target_abs),
-                    "--env-file",
-                    str(env_path),
-                    name,
-                    agent,
-                ],
-                why=f"launch {agent} in sandbox '{name}'",
-            )
-        finally:
-            env_path.unlink(missing_ok=True)
-    log_info(f"would inject {agent} env (OLLAMA_BASE_URL / auth token) via a chmod-600 --env-file")
-    return runner.advise(
-        [
-            "docker",
-            "sandbox",
-            "exec",
-            "-it",
-            "-w",
-            str(target_abs),
-            "--env-file",
-            "<env-file>",
-            name,
-            agent,
-        ],
-        why=f"launch {agent} in sandbox '{name}'",
-    )
+    if agent == "claude" and home is not None:
+        seed_onboarding(home)
+    lines = agent_env(agent, ollama_url, home)
+    injected = ", ".join(line.split("=", 1)[0] for line in lines)
+    log_info(f"injecting {injected} via a chmod-600 --env-file")
+    env_path = _build_env_file(lines, env_pairs, env_files)
+    try:
+        return runner.run(
+            [
+                "docker",
+                "sandbox",
+                "exec",
+                "-it",
+                "-w",
+                str(target_abs),
+                "--env-file",
+                str(env_path),
+                name,
+                agent,
+            ],
+            why=f"launch {agent} in sandbox '{name}'",
+        )
+    finally:
+        env_path.unlink(missing_ok=True)
 
 
 def start(
@@ -435,16 +419,24 @@ def start(
     home: Path | None = None,
     registry_path: Path | None = None,
 ) -> None:
-    """Provision (idempotent) then launch the in-container agent."""
-    provision(
-        runner,
-        name,
-        target_abs,
-        agent=agent,
-        allow_hosts=allow_hosts,
-        home=home,
-        registry_path=registry_path,
-    )
+    """Launch the in-container agent. Under `--apply`, provision (idempotent) first;
+    otherwise just launch the already-provisioned sandbox, failing loud if it is
+    missing rather than letting `docker sandbox exec` error on a missing sandbox."""
+    if runner.apply:
+        provision(
+            runner,
+            name,
+            target_abs,
+            agent=agent,
+            allow_hosts=allow_hosts,
+            home=home,
+            registry_path=registry_path,
+        )
+    elif not sandbox_exists(name):
+        raise CommandFailedError(
+            f"sandbox '{name}' is not provisioned. Run `danno sandbox start --apply` "
+            f"(provisions then launches) or `danno install --apply` first."
+        )
     launch(
         runner,
         name,
@@ -485,8 +477,9 @@ def run_npm_setup(runner: Runner, name: str, plugins: list[NpmPlugin]) -> list[l
 
 
 def shell(runner: Runner, name: str) -> list[str]:
-    """Open an interactive bash shell inside the sandbox VM."""
-    return runner.advise(
+    """Open an interactive bash shell inside the sandbox VM (always executes — the
+    interactive shell is the command's purpose, not a gated side effect)."""
+    return runner.run(
         ["docker", "sandbox", "exec", "-it", name, "bash"], why=f"open a shell in sandbox '{name}'"
     )
 

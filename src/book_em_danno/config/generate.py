@@ -1,8 +1,9 @@
 """Generate <target>/.opencode/opencode.jsonc from a validated danno.toml.
 
 Ports the agent-tier mapping from the Bash `tools/gen-opencode-config`. Tier-1 of
-the automation policy: first run writes; a later run that would change the file
-returns a diff for approval (the CLI requires --apply to write it).
+the automation policy: a new file is written freely on first run (nothing to
+clobber); a later run that would change an existing file returns a diff for
+approval (the CLI requires --apply to overwrite it).
 """
 
 from __future__ import annotations
@@ -145,7 +146,6 @@ def generate(
     target: Path,
     *,
     apply: bool = False,
-    dry_run: bool = False,
 ) -> GenerateResult:
     content = render_config(config)
     dest = Path(target) / ".opencode" / "opencode.jsonc"
@@ -162,14 +162,12 @@ def generate(
                 tofile="proposed",
             )
         )
-        if dry_run or not apply:
+        if not apply:
             return GenerateResult(Action.DIFF, dest, content, diff)
         dest.write_text(content, encoding="utf-8")
         return GenerateResult(Action.WROTE, dest, content, diff)
 
-    # First run: nothing to clobber, so write automatically (unless dry-run).
-    if dry_run:
-        return GenerateResult(Action.DIFF, dest, content, content)
+    # First run: nothing to clobber, so write automatically.
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(content, encoding="utf-8")
     return GenerateResult(Action.WROTE, dest, content)
