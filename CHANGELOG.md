@@ -3,6 +3,12 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.2.5] - 2026-06-14
+
+### CI
+
+- Keep uv.lock in sync across releases and enforce it
+
 ## [0.2.4] - 2026-06-13
 
 ### Documentation
