@@ -13,7 +13,8 @@ clobbers files we don't own without explicit `--apply`).
 
 ## 2. Command surface
 
-Three commands. `danno` is an alias for `book-em-danno`.
+Three commands. The distribution is named `danno`; `book-em-danno` is a legacy
+script alias for the same entry point.
 
 ### `danno install [--target .] [--ados-repo DIR]`
 

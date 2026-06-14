@@ -15,12 +15,20 @@ Pass `--apply` (a per-command flag, e.g. `danno install --apply`) to execute.
 ## Install
 
 ```bash
-uv sync            # install danno + its locked deps
+uv sync            # install danno + its locked deps (in-project)
 uv run danno --help
 uv run danno --version
 ```
 
-`danno` is the entry point (`book-em-danno` is an alias).
+Or install it as a global tool — the distribution is named `danno`, so the
+command and the package match:
+
+```bash
+uv tool install .   # then `danno` is on PATH
+danno --help        # also works: uv tool run danno --help
+```
+
+`danno` is the entry point; `book-em-danno` is a legacy script alias.
 
 ## Getting started
 

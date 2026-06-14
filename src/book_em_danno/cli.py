@@ -39,7 +39,7 @@ def _version_callback(value: bool) -> None:
     if not value:
         return
     try:
-        ver = pkg_version("book-em-danno")
+        ver = pkg_version("danno")
     except PackageNotFoundError:
         ver = "unknown (dev)"
     console.print(f"danno {ver}")
