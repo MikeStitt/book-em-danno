@@ -3,6 +3,7 @@ from __future__ import annotations
 from importlib.metadata import version as pkg_version
 from pathlib import Path
 
+import typer.main
 from typer.testing import CliRunner
 
 from book_em_danno.cli import app
@@ -32,11 +33,13 @@ def test_collapsed_subcommands_are_gone() -> None:
 
 
 def test_install_accepts_apply_after_subcommand() -> None:
-    """Gap A regression guard: `--apply` is a per-command option, so it must appear
-    in `install --help` (the old global placement rejected `install --apply`)."""
-    result = runner.invoke(app, ["install", "--help"])
-    assert result.exit_code == 0
-    assert "--apply" in result.stdout
+    """Gap A regression guard: `--apply` is a per-command option on `install` (the
+    old global placement rejected `install --apply`). Asserted against the parsed
+    Click command rather than rendered --help text, which is width/ANSI-dependent."""
+    install_cmd = typer.main.get_command(app).commands["install"]  # type: ignore[attr-defined]
+    opts = {opt for param in install_cmd.params for opt in param.opts}
+    assert "--apply" in opts
+    assert "--dry-run" not in opts
 
 
 def test_dry_run_flag_is_gone() -> None:
