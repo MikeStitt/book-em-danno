@@ -26,6 +26,17 @@ def reachable(host_url: str = DEFAULT_HOST_URL, *, timeout: float = 2.0) -> bool
         return False
 
 
+def installed_tags(host_url: str = DEFAULT_HOST_URL, *, timeout: float = 2.0) -> set[str]:
+    """Model tags already pulled, from /api/tags. Empty set if Ollama is
+    unreachable — best-effort, so the caller falls back to advising the pull."""
+    try:
+        with urllib.request.urlopen(f"{host_url}/api/tags", timeout=timeout) as resp:
+            body = json.loads(resp.read())
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        return set()
+    return {m["name"] for m in body.get("models", []) if "name" in m}
+
+
 def ensure_model(runner: Runner, tag: str, *, host_url: str = DEFAULT_HOST_URL) -> list[str]:
     """Advise (and under --apply, run) `ollama pull <tag>`. `ollama pull` is itself
     idempotent — an already-present model is a fast no-op."""

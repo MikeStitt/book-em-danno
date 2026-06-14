@@ -82,8 +82,14 @@ def run_install(
     _emit_config(cfg, target_abs, runner)
 
     log_info("step 2/5 — Ollama models")
+    present = ollama.installed_tags()
     for tag in _ollama_tags(cfg):
-        ollama.ensure_model(runner, tag)
+        # Ollama stores a bare tag as `<tag>:latest`; normalize before comparing.
+        canonical = tag if ":" in tag else f"{tag}:latest"
+        if canonical in present:
+            log_info(f"Ollama model already present, skipping pull: {tag}")
+        else:
+            ollama.ensure_model(runner, tag)
 
     log_info("step 3/5 — tools")
     for tool in cfg.tools:
