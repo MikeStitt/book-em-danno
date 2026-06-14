@@ -49,6 +49,9 @@ jobs:
         with:
           tool: git-cliff
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
       - name: Compute next version
         id: version
         env:
@@ -82,6 +85,9 @@ jobs:
           # Render the changelog with the about-to-be-released commits under TAG.
           git cliff --tag "${TAG}" -o CHANGELOG.md
           grep -q "^version = \"${VERSION}\"" pyproject.toml
+          # Refresh uv.lock's self-version so it stays in sync with the bump;
+          # without this the lock drifts and check.yml (uv sync --locked) fails.
+          uv lock
 
       - name: Open release PR
         env:
