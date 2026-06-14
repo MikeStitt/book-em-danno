@@ -1,12 +1,11 @@
 """The `danno` CLI. Three commands — `install`, `doctor`, `sandbox` — over the
-two-tier automation policy: advise by default, execute under `--apply`, never
-under `--dry-run`. `install` is the one provisioning path; `sandbox` operates the
-provisioned VM; `doctor` is a read-only preflight."""
+two-mode automation policy: advise by default, execute under `--apply`. `install`
+is the one provisioning path; `sandbox` operates the provisioned VM; `doctor` is a
+read-only preflight. `--apply` is a per-command option (`danno install --apply`)."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from pathlib import Path
@@ -21,26 +20,19 @@ from .config.schema import DannoConfig
 from .core import registry
 from .core.exec import CommandFailedError, CommandNotFoundError, Runner, console, log_err
 
-
-@dataclass
-class State:
-    config_path: Path = Path("danno.toml")
-    apply: bool = False
-    dry_run: bool = False
-    verbose: bool = False
-
-    def runner(self) -> Runner:
-        return Runner(apply=self.apply, dry_run=self.dry_run, verbose=self.verbose)
-
-
-state = State()
-
 app = typer.Typer(
     no_args_is_help=True,
     help="Declarative, transparent OpenCode hybrid-runtime setup driven by danno.toml.",
 )
 sandbox_app = typer.Typer(no_args_is_help=True, help="Operate the provisioned Docker sandbox.")
 app.add_typer(sandbox_app, name="sandbox")
+
+# Per-command options shared across the side-effecting commands (mirrors _AGENT_OPT).
+_APPLY_OPT = typer.Option(
+    False, "--apply", help="Execute host/Docker/Ollama commands instead of only printing them."
+)
+_VERBOSE_OPT = typer.Option(False, "--verbose", "-v", help="Debug output.")
+_CONFIG_OPT = typer.Option(Path("danno.toml"), "--config", help="Path to danno.toml.")
 
 
 def _version_callback(value: bool) -> None:
@@ -56,7 +48,6 @@ def _version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
-    config: Path = typer.Option(Path("danno.toml"), "--config", help="Path to danno.toml."),
     version: bool = typer.Option(
         False,
         "--version",
@@ -64,23 +55,13 @@ def main(
         callback=_version_callback,
         is_eager=True,
     ),
-    apply: bool = typer.Option(
-        False, "--apply", help="Execute host/Docker/Ollama commands instead of only printing them."
-    ),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", "-n", help="Show intended actions and diffs without writing/executing."
-    ),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="Debug output."),
 ) -> None:
-    state.config_path = config
-    state.apply = apply
-    state.dry_run = dry_run
-    state.verbose = verbose
+    pass
 
 
-def _load() -> DannoConfig:
+def _load(config_path: Path) -> DannoConfig:
     try:
-        return load_config(state.config_path)
+        return load_config(config_path)
     except DannoConfigError as exc:
         log_err(str(exc))
         raise typer.Exit(code=2) from exc
@@ -102,16 +83,19 @@ def install(
     ados_repo: str = typer.Option(
         None, "--ados-repo", help="ADOS checkout to install from (else auto-detected)."
     ),
+    config: Path = _CONFIG_OPT,
+    apply: bool = _APPLY_OPT,
+    verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Provision a target project: config + Ollama models + tools + sandbox.
 
-    Default prints the host/Docker commands to run yourself; `--dry-run` previews
-    everything (writing nothing); `--apply` executes. Stops before the TUI —
-    launch with `danno sandbox start`.
+    Default prints the host/Docker commands to run yourself; `--apply` executes.
+    Stops before the TUI — launch with `danno sandbox start`.
     """
-    cfg = _load()
+    cfg = _load(config)
+    runner = Runner(apply=apply, verbose=verbose)
     try:
-        install_cmd.run_install(cfg, target, state.runner(), ados_repo=ados_repo)
+        install_cmd.run_install(cfg, target, runner, ados_repo=ados_repo)
     except (install_cmd.InstallError, NotImplementedError, ValueError) as exc:
         log_err(str(exc))
         raise typer.Exit(code=3) from exc
@@ -162,8 +146,14 @@ def sandbox_start(
     agent: str = _AGENT_OPT,
     env: list[str] = typer.Option(None, "--env", help="KEY=VAL to inject (repeatable)."),
     env_file: list[str] = typer.Option(None, "--env-file", help="File of KEY=VAL to inject."),
+    apply: bool = _APPLY_OPT,
+    verbose: bool = _VERBOSE_OPT,
 ) -> None:
-    """Provision (if needed) and launch the in-container agent.
+    """Launch the in-container agent (provisioning it first under `--apply`).
+
+    Launching is the command's purpose, so it runs without `--apply`; `--apply`
+    additionally executes the provisioning side effects (create/proxy). On an
+    unprovisioned sandbox without `--apply`, it fails loud with the fix.
 
     Tip: `cd <project> && danno sandbox start` (no --target/--name) recomputes the
     same name every time — stand in the sandbox's directory rather than naming it.
@@ -172,7 +162,7 @@ def sandbox_start(
     home = _resolve_home(abs_target, sandbox_name)
     _guard(
         lambda: sandbox_cmd.start(
-            state.runner(),
+            Runner(apply=apply, verbose=verbose),
             sandbox_name,
             abs_target,
             agent=agent,
@@ -189,10 +179,11 @@ def sandbox_shell(
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
     name: str = typer.Option(None, "--name", help=_NAME_OPT_HELP),
     agent: str = _AGENT_OPT,
+    verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Open an interactive bash shell inside the sandbox VM."""
     _, sandbox_name = _sandbox_target(target, name, agent)
-    _guard(lambda: sandbox_cmd.shell(state.runner(), sandbox_name))
+    _guard(lambda: sandbox_cmd.shell(Runner(verbose=verbose), sandbox_name))
 
 
 @sandbox_app.command("stop")
@@ -200,10 +191,12 @@ def sandbox_stop(
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
     name: str = typer.Option(None, "--name", help=_NAME_OPT_HELP),
     agent: str = _AGENT_OPT,
+    apply: bool = _APPLY_OPT,
+    verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Stop the sandbox VM."""
     _, sandbox_name = _sandbox_target(target, name, agent)
-    _guard(lambda: sandbox_cmd.stop(state.runner(), sandbox_name))
+    _guard(lambda: sandbox_cmd.stop(Runner(apply=apply, verbose=verbose), sandbox_name))
 
 
 @sandbox_app.command("rebuild")
@@ -211,13 +204,15 @@ def sandbox_rebuild(
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
     name: str = typer.Option(None, "--name", help=_NAME_OPT_HELP),
     agent: str = _AGENT_OPT,
+    apply: bool = _APPLY_OPT,
+    verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Remove and re-provision the sandbox from scratch (the agent home survives)."""
     abs_target, sandbox_name = _sandbox_target(target, name, agent)
     home = _resolve_home(abs_target, sandbox_name)
     _guard(
         lambda: sandbox_cmd.rebuild(
-            state.runner(),
+            Runner(apply=apply, verbose=verbose),
             sandbox_name,
             abs_target,
             agent=agent,
@@ -232,10 +227,12 @@ def sandbox_update(
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
     name: str = typer.Option(None, "--name", help=_NAME_OPT_HELP),
     agent: str = _AGENT_OPT,
+    apply: bool = _APPLY_OPT,
+    verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Advise how to update the agent inside the sandbox."""
     _, sandbox_name = _sandbox_target(target, name, agent)
-    _guard(lambda: sandbox_cmd.update(state.runner(), sandbox_name, agent))
+    _guard(lambda: sandbox_cmd.update(Runner(apply=apply, verbose=verbose), sandbox_name, agent))
 
 
 @sandbox_app.command("ls")
@@ -245,4 +242,4 @@ def sandbox_ls() -> None:
 
 
 # Re-exported so tests and `from book_em_danno.cli import console` keep working.
-__all__ = ["app", "console", "state"]
+__all__ = ["app", "console"]

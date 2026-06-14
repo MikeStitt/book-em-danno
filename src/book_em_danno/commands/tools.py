@@ -53,7 +53,7 @@ def _copy_md_dir(runner: Runner, src: Path, dest: Path, label: str) -> None:
         log_warn(f"missing {label} source: {src}")
         return
     md_files = sorted(src.glob("*.md"))
-    if runner.apply and not runner.dry_run:
+    if runner.apply:
         dest.mkdir(parents=True, exist_ok=True)
         for f in md_files:
             target = dest / f.name
@@ -113,7 +113,7 @@ def install_ados(
     _copy_md_dir(
         runner, ados / ".opencode" / "command", target_abs / ".opencode" / "command", "command"
     )
-    if runner.apply and not runner.dry_run:
+    if runner.apply:
         _write_provenance(ados, target_abs)
     else:
         log_info(f"would record ADOS provenance in {target_abs}/.opencode/ados-provenance.txt")

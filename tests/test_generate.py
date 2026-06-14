@@ -122,12 +122,6 @@ def test_change_requires_apply(tmp_path: Path) -> None:
     assert not dest.read_text(encoding="utf-8").endswith("// hand edit\n")
 
 
-def test_dry_run_does_not_write_first_run(tmp_path: Path) -> None:
-    result = generate(_example(), tmp_path, dry_run=True)
-    assert result.action is Action.DIFF
-    assert not (tmp_path / ".opencode" / "opencode.jsonc").exists()
-
-
 def test_llamacpp_backend_is_stubbed(tmp_path: Path) -> None:
     cfg = DannoConfig(
         defaults=Defaults(default_agent="pm"),

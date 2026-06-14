@@ -1,11 +1,10 @@
-"""Logging + the two-tier command Runner.
+"""Logging + the two-mode command Runner.
 
 Ports `scripts/lib/common.sh`. The defining behavioral shift from the Bash
-original: Bash `run_cmd` *executes* by default and only logs under DRY_RUN. Ours
-**advises** by default — it prints the literal copy-paste command and runs it
-only under `--apply`. This is the non-destructive/idempotent install rule applied
-to every host/Docker/Ollama side effect: the human sees exactly what would run
-and opts in.
+original: Bash `run_cmd` *executes* by default. Ours **advises** by default — it
+prints the literal copy-paste command and runs it only under `--apply`. This is
+the non-destructive/idempotent install rule applied to every host/Docker/Ollama
+side effect: the human sees exactly what would run and opts in.
 
 `advise()` returns the command list so tests can assert exact construction
 without a Docker daemon or Ollama server (Working Rule 7: I/O in a thin, mockable
@@ -61,16 +60,14 @@ def require_cmd(name: str, *, fix: str | None = None) -> str:
 
 @dataclass
 class Runner:
-    """Executes host/Docker/Ollama commands under the two-tier policy.
+    """Executes host/Docker/Ollama commands under the two-mode policy.
 
-    - default (`apply=False, dry_run=False`): print the copy-paste command, run
-      nothing — the user runs it themselves.
-    - `--dry-run`: print only, never execute (takes precedence over `--apply`).
+    - default (`apply=False`): print the copy-paste command, run nothing — the
+      user runs it themselves.
     - `--apply`: print and execute via `subprocess.run`.
     """
 
     apply: bool = False
-    dry_run: bool = False
     verbose: bool = False
 
     def advise(
@@ -94,12 +91,35 @@ class Runner:
         """
         log_info(why)
         console.print(f"  $ {shlex.join(cmd)}")
-        if self.apply and not self.dry_run:
-            log_debug(f"executing: {shlex.join(cmd)}", verbose=self.verbose)
-            try:
-                subprocess.run(cmd, check=True, cwd=cwd, env=env)
-            except subprocess.CalledProcessError as exc:
-                raise CommandFailedError(
-                    f"command failed (exit {exc.returncode}): {shlex.join(cmd)}"
-                ) from exc
+        if self.apply:
+            self._exec(cmd, cwd=cwd, env=env)
         return cmd
+
+    def run(
+        self,
+        cmd: list[str],
+        why: str,
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+    ) -> list[str]:
+        """Print and ALWAYS execute, regardless of `apply`. Returns `cmd`.
+
+        For terminal/interactive actions that are the command's whole purpose (the
+        `docker sandbox exec -it … <agent>` launch, an interactive shell) rather
+        than gated side effects — gating those behind `--apply` is nonsensical, so
+        they run unconditionally. Same `CommandFailedError` wrap as `advise`.
+        """
+        log_info(why)
+        console.print(f"  $ {shlex.join(cmd)}")
+        self._exec(cmd, cwd=cwd, env=env)
+        return cmd
+
+    def _exec(self, cmd: list[str], *, cwd: Path | None, env: dict[str, str] | None) -> None:
+        log_debug(f"executing: {shlex.join(cmd)}", verbose=self.verbose)
+        try:
+            subprocess.run(cmd, check=True, cwd=cwd, env=env)
+        except subprocess.CalledProcessError as exc:
+            raise CommandFailedError(
+                f"command failed (exit {exc.returncode}): {shlex.join(cmd)}"
+            ) from exc

@@ -30,10 +30,10 @@ The one provisioning path. Runs in order, each step honoring the two-tier policy
    the policy applies on next start). **Does not launch the TUI.**
 6. Print: `ready — launch with: danno sandbox start --target <t>`.
 
-| Step | `danno install` (default) | `--dry-run` | `--apply` |
-| --- | --- | --- | --- |
-| config (Tier-1) | write first-run / diff-then-stop if changed | show diff, write nothing | write (overwrite if changed) |
-| ollama / tools / sandbox (Tier-2) | print copy-paste commands | print copy-paste commands | execute |
+| Step | `danno install` (default) | `danno install --apply` |
+| --- | --- | --- |
+| config (Tier-1) | write first-run / diff-then-stop if changed | write (overwrite if changed) |
+| ollama / tools / sandbox (Tier-2) | print copy-paste commands | execute |
 
 ### `danno doctor`
 
@@ -44,10 +44,12 @@ pulled, and the loopback-bind WARN. Non-zero exit on any required FAIL. **No hos
 
 ### `danno sandbox <start|shell|stop|rebuild|update|ls> [--target .] [--name N] [--env K=V] [--env-file F]`
 
-Operate the provisioned sandbox. `start` provisions (if needed) and launches the
-in-container agent **in the mounted repo** (`-w <target>`) wired to host Ollama;
-`shell` opens bash in the VM; `stop`/`rebuild` recycle it (the agent home survives);
-`update` advises updating the agent; `ls` is read-only and lists recorded sandboxes
+Operate the provisioned sandbox. `start` launches the in-container agent **in the
+mounted repo** (`-w <target>`) wired to host Ollama — launching is its purpose, so
+it runs without `--apply`; `--apply` additionally provisions (create + egress hole)
+first, and on an unprovisioned sandbox without `--apply` it fails loud with the fix.
+`shell` opens bash in the VM (also launches by default). `stop`/`rebuild`/`update`
+keep the advise/`--apply` split; `ls` is read-only and lists recorded sandboxes
 (`name → target`, live status) from `~/.danno/sandboxes.json`.
 
 The default sandbox name is `danno-<parent>-<dir>[-<agent>]` — the parent dir is
@@ -67,10 +69,14 @@ from a `danno.workspace.toml` resolves against that file's directory. For claude
 onboarding is pre-seeded into `<home>/.claude.json` so the wizard can't mask the env
 auth token. Full model: README "Sandboxed agents: repo, agent-home, auth".
 
-### Global flags
+### Flags
 
-`--config <path>` (danno.toml), `--apply`, `--dry-run`/`-n`, `--verbose`/`-v`.
-Global flags precede the subcommand: `danno --dry-run install …`.
+`--version` is the only top-level flag. The mode/IO flags are **per-command**
+(after the subcommand): `--apply` (execute, on every side-effecting command except
+the launch-by-default `sandbox shell`), `--verbose`/`-v`, and `--config <path>`
+(danno.toml, `install` only). E.g. `danno install --apply`, `danno sandbox stop
+--apply`. There is no `--dry-run` — the default (advise) already prints without
+executing.
 
 ## 3. Architecture / network model
 
