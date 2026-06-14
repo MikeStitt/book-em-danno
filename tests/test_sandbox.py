@@ -35,12 +35,19 @@ def test_create_claude_agent(tmp_path: Path) -> None:
     assert r.joined() == [f"docker sandbox create --name danno-x-claude claude {tmp_path}"]
 
 
-def test_launch_claude_uses_agent_binary() -> None:
+def _assert_launch_cmd(cmd: list[str], name: str, agent: str, repo: str = "/repo") -> None:
+    """Assert a launch exec command, tolerating the generated env-file temp path."""
+    assert cmd[:7] == ["docker", "sandbox", "exec", "-it", "-w", repo, "--env-file"]
+    assert cmd[7]  # a real env-file path (created then unlinked); value is dynamic
+    assert cmd[8:] == [name, agent]
+
+
+def test_launch_claude_uses_agent_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
     r = RecordingRunner()
     sandbox.launch(r, "danno-x-claude", Path("/repo"), agent="claude")
-    assert r.joined() == [
-        "docker sandbox exec -it -w /repo --env-file <env-file> danno-x-claude claude"
-    ]
+    assert len(r.commands) == 1
+    _assert_launch_cmd(r.commands[0], "danno-x-claude", "claude")
 
 
 def test_agent_env_opencode_injects_ollama() -> None:
@@ -96,13 +103,35 @@ def test_provision_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 def test_launch_builds_exec_command() -> None:
     r = RecordingRunner()
     sandbox.launch(r, "probe", Path("/repo"))
-    assert r.joined() == ["docker sandbox exec -it -w /repo --env-file <env-file> probe opencode"]
+    assert len(r.commands) == 1
+    _assert_launch_cmd(r.commands[0], "probe", "opencode")
 
 
 def test_shell_command() -> None:
     r = RecordingRunner()
     sandbox.shell(r, "probe")
     assert r.joined() == ["docker sandbox exec -it probe bash"]
+
+
+def test_start_fails_loud_when_not_provisioned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Default (no --apply) launch of an unprovisioned sandbox must fail loud with
+    # the fix, not let `docker sandbox exec` error on a missing sandbox.
+    monkeypatch.setattr(sandbox, "sandbox_exists", lambda name: False)
+    with pytest.raises(CommandFailedError, match="not provisioned"):
+        sandbox.start(RecordingRunner(), "probe", tmp_path)
+
+
+def test_start_launches_existing_without_apply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Existing sandbox, no --apply: skip provisioning, just launch.
+    monkeypatch.setattr(sandbox, "sandbox_exists", lambda name: True)
+    r = RecordingRunner()
+    sandbox.start(r, "probe", tmp_path)
+    assert len(r.commands) == 1  # only the launch, no create/proxy/stop
+    _assert_launch_cmd(r.commands[0], "probe", "opencode", repo=str(tmp_path))
 
 
 def test_rebuild_stops_and_removes_without_force_flag(
@@ -126,7 +155,7 @@ def test_create_is_idempotent_under_apply(tmp_path: Path, monkeypatch: pytest.Mo
     # When executing for real and the sandbox already exists, create is skipped.
     monkeypatch.setattr(sandbox, "sandbox_exists", lambda name: True)
     r = RecordingRunner()
-    r.apply, r.dry_run = True, False  # simulate --apply
+    r.apply = True  # simulate --apply
     sandbox.create(r, "probe", tmp_path)
     assert r.commands == []  # nothing advised/run
 
@@ -172,7 +201,7 @@ def test_create_no_home_is_single_mount(tmp_path: Path) -> None:
 # --- agent-home: registry guard -------------------------------------------------
 
 
-def test_create_advises_record_in_dry_run(tmp_path: Path) -> None:
+def test_create_advises_record_by_default(tmp_path: Path) -> None:
     reg = tmp_path / "sandboxes.json"
     r = RecordingRunner()
     sandbox.create(r, "probe", tmp_path, registry_path=reg)
@@ -183,7 +212,7 @@ def test_create_records_under_apply(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(sandbox, "sandbox_exists", lambda name: False)
     reg = tmp_path / "sandboxes.json"
     r = RecordingRunner()
-    r.apply, r.dry_run = True, False
+    r.apply = True
     sandbox.create(r, "probe", tmp_path / "proj", registry_path=reg)
     assert registry.lookup(reg, "probe") == {"target": str(tmp_path / "proj"), "agent": "opencode"}
 

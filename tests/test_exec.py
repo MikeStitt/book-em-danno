@@ -26,16 +26,26 @@ def test_advise_default_prints_but_does_not_execute(monkeypatch: pytest.MonkeyPa
     assert calls == []  # advise-by-default: nothing ran
 
 
-def test_dry_run_never_executes(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = _patch_run(monkeypatch)
-    Runner(apply=True, dry_run=True).advise(["echo", "hi"], why="greet")
-    assert calls == []  # dry-run wins over apply
-
-
 def test_apply_executes(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _patch_run(monkeypatch)
     Runner(apply=True).advise(["echo", "hi"], why="greet")
     assert calls == [["echo", "hi"]]
+
+
+def test_run_always_executes_regardless_of_apply(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _patch_run(monkeypatch)
+    cmd = Runner(apply=False).run(["echo", "hi"], why="greet")
+    assert cmd == ["echo", "hi"]
+    assert calls == [["echo", "hi"]]  # run() is for terminal actions: not gated
+
+
+def test_run_failure_raises_clean_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(cmd, **kw):  # type: ignore[no-untyped-def]
+        raise subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr(exec_mod.subprocess, "run", boom)
+    with pytest.raises(CommandFailedError):
+        Runner(apply=False).run(["docker", "sandbox", "exec", "ghost", "bash"], why="shell")
 
 
 def test_apply_forwards_cwd_and_env(monkeypatch: pytest.MonkeyPatch) -> None:

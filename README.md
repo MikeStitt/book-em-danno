@@ -9,8 +9,8 @@ agentic tools (including [ADOS](https://github.com/juliusz-cwiakalski/agentic-de
 and creates a Docker Desktop microVM sandbox wired to host Ollama.
 
 Everything is **transparent and non-destructive**: by default `danno` *advises* —
-it prints the exact copy-paste commands it would run. `--dry-run` previews
-without touching anything; `--apply` executes.
+it prints the exact copy-paste commands it would run, without executing them.
+Pass `--apply` (a per-command flag, e.g. `danno install --apply`) to execute.
 
 ## Install
 
@@ -38,14 +38,11 @@ the sandbox VM).
 ### 2. Preview, then provision
 
 ```bash
-# preview everything — writes and runs nothing
-uv run danno --dry-run install --target ./my-project
-
 # default: write the config we own, PRINT the host/Docker commands to run yourself
 uv run danno install --target ./my-project
 
 # actually do it: write config, pull models, create + wire the sandbox
-uv run danno --apply install --target ./my-project
+uv run danno install --apply --target ./my-project
 ```
 
 `install` runs the full happy path in order — validate `danno.toml` → write
@@ -59,14 +56,19 @@ diff and needs `--apply`.
 The confusion-resistant flow is to `cd` into the project and omit `--target`: it
 defaults to `.`, so danno derives the same sandbox name every time.
 
+`start` and `shell` are interactive: launching is their purpose, so they run
+without `--apply`. (On an unprovisioned sandbox, `start` fails loud — provision it
+first with `danno install --apply` or `danno sandbox start --apply`.) The
+management commands keep the advise/`--apply` split.
+
 ```bash
 cd ./my-project
 # launch the in-container OpenCode TUI, wired to host Ollama
-uv run danno --apply sandbox start
-uv run danno --apply sandbox shell      # bash in the VM
-uv run danno --apply sandbox stop
-uv run danno --apply sandbox rebuild    # recycle from scratch (agent home survives)
-uv run danno sandbox ls                 # which sandbox maps to which project?
+uv run danno sandbox start
+uv run danno sandbox shell               # bash in the VM
+uv run danno sandbox stop --apply
+uv run danno sandbox rebuild --apply     # recycle from scratch (agent home survives)
+uv run danno sandbox ls                  # which sandbox maps to which project?
 ```
 
 `--target ./my-project` works too. The sandbox name is `danno-<parent>-<dir>` (the
@@ -101,7 +103,7 @@ to run a different one; non-default agents get their **own** sandbox
 (`danno-<parent>-<dir>-<agent>`) so they coexist with the opencode sandbox.
 
 ```bash
-uv run danno --apply sandbox start --target ./my-project --agent claude
+uv run danno sandbox start --apply --target ./my-project --agent claude
 ```
 
 **Claude Code auth** is read from danno's host environment and injected into the
@@ -201,8 +203,8 @@ to edit `danno.toml`, not the generated file.** When you do hand-edit it:
   a re-run, danno compares the proposed output to what's on disk: if they differ it
   prints a unified diff and **refuses to write unless you pass `--apply`**. So plain
   `danno install` will *not* clobber your edits (it shows the diff);
-  **`danno --apply install` overwrites them.** `--dry-run` never writes, and
-  `sandbox`/`doctor`/etc. never touch the file.
+  **`danno install --apply` overwrites them.** `sandbox`/`doctor`/etc. never touch
+  the file.
 - **It's already diff-friendly.** danno emits one key per line (no dense single-line
   objects), so edits and diffs stay readable.
 - **Edits reach the sandbox on the next launch.** The project is bind-mounted
@@ -248,8 +250,8 @@ That `[[npm]]` block generates this in `.opencode/opencode.jsonc`:
 ]
 ```
 
-**End to end:** `danno --dry-run install` previews the `"plugin"` array and any
-in-container `docker sandbox exec … bash -lc …` setup line; `danno --apply install`
+**End to end:** `danno install` previews the `"plugin"` array and any
+in-container `docker sandbox exec … bash -lc …` setup line; `danno install --apply`
 writes the config and runs the setup step post-create; then `danno sandbox start`
 launches OpenCode, which installs the plugins in-sandbox on first run. A `package`
 with no `config`/`setup` is the minimum — `config` and `setup` are both optional.
@@ -478,7 +480,7 @@ edit `danno.toml`, not the generated file (see
 | A throwaway agent, no persistence | `agent_home = "ephemeral"` |
 | Project rules every agent follows | commit `CLAUDE.md` / edit `danno.toml` (opencode) |
 | Change auth | `export` a token in your shell; never in `danno.toml` |
-| Start fresh but keep history + rules | `danno --apply sandbox rebuild` |
+| Start fresh but keep history + rules | `danno sandbox rebuild --apply` |
 
 ## Development
 
