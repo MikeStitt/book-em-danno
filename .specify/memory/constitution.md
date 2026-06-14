@@ -119,6 +119,14 @@ config can pass it — close that gap by hand.
   Before staging the first change of any task, check
   `git branch --show-current`; if it returns `main`, run
   `git switch -c <kebab-case-name>`. One branch per logical unit.
+- **Stack on unmerged work; don't force independence.** When a task builds on, or
+  will touch the same files as, a branch/PR that has not merged yet, branch from
+  *that branch* rather than `main`, and name the base in your summary. Do **not**
+  rebase or re-create an already-stacked branch onto `main` to make its diff look
+  "pure" — that is exactly what re-introduces the merge conflicts (lockfiles like
+  `uv.lock`, `CHANGELOG.md`, shared modules) that stacking avoids. Reserve
+  independent branches off `main` for work that is genuinely unrelated *and*
+  touches disjoint files. When the right base is unclear, ask before branching.
 - **The user owns the merge order**; you only push your branch. Do not merge PRs
   on the user's behalf.
 - **Pushing**: Once `ninja check` is locally green and you're confident CI will
@@ -193,4 +201,4 @@ in `scratch/`. This exception is named explicitly so future contributors don't
   [`parts/constitution-maintenance.md`](parts/constitution-maintenance.md).
   Read that part before changing this file or any other part.
 
-**Version**: 2.0.0 | **Ratified**: 2026-06-05 | **Last amended**: 2026-06-11
+**Version**: 2.1.0 | **Ratified**: 2026-06-05 | **Last amended**: 2026-06-14

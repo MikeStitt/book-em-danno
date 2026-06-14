@@ -40,6 +40,14 @@ checklist for any change to `constitution.md` or a part.
 
 ## Changelog
 
+- **2.1.0 (2026-06-14)** — MINOR: added a *Stacking* rule to the Branch & Push
+  Policy. _Why:_ the agent's default of founding every branch on `main` (and even
+  rebasing already-stacked work back onto `main` to keep a "pure" diff) pushes
+  lockfile/changelog merge-conflict resolution onto the human whenever one PR
+  merges before another. Dependent or file-overlapping work should stack so
+  merging in order stays conflict-free; independent branches off `main` are
+  reserved for genuinely unrelated, file-disjoint work. No on-disk companion
+  enforces this (it is an agent-behavior rule), so there is nothing to exercise.
 - **2.0.0 (2026-06-11)** — MAJOR: the Bash→Python pivot. The deliverable is now
   **`danno`, a Python CLI** (typer/rich/pydantic over `uv`), not Bash-first
   tooling — an incompatible redefinition of the repository's identity, gate, and
