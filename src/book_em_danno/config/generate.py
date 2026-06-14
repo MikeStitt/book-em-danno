@@ -71,9 +71,11 @@ def _model_ref(config: DannoConfig, model_name: str) -> str:
 def render_config(config: DannoConfig) -> str:
     used_models = set(config.agents.values())
 
-    # Emit a provider block for each ollama-kind backend referenced by a used model.
+    # Emit a provider block for every ollama-kind model DEFINED in danno.toml, not
+    # just those assigned to an agent — so the whole catalog shows in opencode's
+    # model picker (the user switches models interactively, beyond the agent map).
     providers: dict[str, dict[str, Any]] = {}
-    for model_name in sorted(used_models):
+    for model_name in sorted(config.models):
         model = config.models[model_name]
         backend = config.backends[model.backend]
         if isinstance(backend, LlamacppBackend):

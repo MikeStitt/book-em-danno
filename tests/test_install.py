@@ -66,6 +66,13 @@ def test_ollama_tags_deduped_and_only_ollama(monkeypatch: pytest.MonkeyPatch) ->
     assert install._ollama_tags(cfg) == ["gemma4:26b"]
 
 
+def test_ollama_tags_includes_unassigned_models() -> None:
+    # Every defined ollama model is pulled, even if no agent references it.
+    cfg = _config()
+    cfg.models["spare"] = Model(backend="ollama", tag="qwen3-coder-next", tool_call=True)
+    assert install._ollama_tags(cfg) == ["gemma4:26b", "qwen3-coder-next"]
+
+
 def test_install_missing_target_fails_loud() -> None:
     r = RecordingRunner()
     with pytest.raises(install.InstallError):

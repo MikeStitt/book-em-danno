@@ -46,9 +46,11 @@ def _emit_config(cfg: DannoConfig, target_abs: Path, runner: Runner) -> None:
 
 
 def _ollama_tags(cfg: DannoConfig) -> list[str]:
-    """Unique Ollama model tags referenced by the agent map, in stable order."""
+    """Unique Ollama model tags DEFINED in danno.toml, in stable order. Every
+    defined model is pulled (and emitted to opencode.jsonc), not just agent-assigned
+    ones, so the whole catalog is usable in opencode's model picker."""
     tags: list[str] = []
-    for model_name in sorted(set(cfg.agents.values())):
+    for model_name in sorted(cfg.models):
         model = cfg.models[model_name]
         backend = cfg.backends[model.backend]
         if isinstance(backend, OllamaBackend) and model.tag and model.tag not in tags:
