@@ -4,13 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from book_em_danno.commands import install, ollama, sandbox
+from book_em_danno.commands import install, ollama, sandbox, tools
 from book_em_danno.config.schema import (
     CloudBackend,
     DannoConfig,
     Model,
     NpmPlugin,
     OllamaBackend,
+    Tool,
 )
 from book_em_danno.core import registry
 from conftest import RecordingRunner
@@ -91,6 +92,26 @@ def test_install_skips_already_present_ollama_models(
     install.run_install(cfg, tmp_path, r)
     pulls = [c for c in r.joined() if c.startswith("ollama pull")]
     assert pulls == ["ollama pull spare-model"]  # gemma4:26b present → skipped
+
+
+def test_install_fails_loud_when_a_tool_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A failed tool installer must raise (no silent "ready") and must abort before
+    # the sandbox is provisioned.
+    monkeypatch.setattr(ollama, "loopback_warning", lambda **k: None)
+    monkeypatch.setattr(ollama, "installed_tags", lambda **k: set())
+
+    def _boom(*a: object, **k: object) -> None:
+        raise tools.ToolInstallError("kaboom")
+
+    monkeypatch.setattr(tools, "install_tool", _boom)
+    cfg = _config()
+    cfg.tools = [Tool(name="ados", source="https://example/ados", install_to="sandbox")]
+    r = RecordingRunner()
+    with pytest.raises(install.InstallError, match="ados"):
+        install.run_install(cfg, tmp_path, r)
+    assert not any("docker sandbox create" in c for c in r.joined())  # aborted pre-sandbox
 
 
 def test_install_missing_target_fails_loud() -> None:

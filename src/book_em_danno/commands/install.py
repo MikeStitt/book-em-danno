@@ -13,7 +13,7 @@ from ..config.generate import Action, generate
 from ..config.loader import DannoConfigError
 from ..config.schema import DannoConfig, OllamaBackend
 from ..core import registry
-from ..core.exec import Runner, log_err, log_info
+from ..core.exec import CommandFailedError, Runner, log_err, log_info
 from . import ollama, sandbox, tools
 
 
@@ -92,11 +92,18 @@ def run_install(
             ollama.ensure_model(runner, tag)
 
     log_info("step 3/5 — tools")
+    failed: list[str] = []
     for tool in cfg.tools:
         try:
             tools.install_tool(runner, tool, target_abs, ados_repo=ados_repo)
-        except tools.ToolInstallError as exc:
+        except (tools.ToolInstallError, CommandFailedError) as exc:
             log_err(f"tool '{tool.name}': {exc}")
+            failed.append(tool.name)
+    # Fail loud (Working Rule 8): a swallowed tool failure must not reach "ready".
+    if failed:
+        raise InstallError(
+            f"tool install failed for: {', '.join(failed)} — not provisioning the sandbox"
+        )
 
     log_info("step 4/5 — sandbox")
     sandbox.provision(runner, name, target_abs, home=home, registry_path=registry.default_path())
