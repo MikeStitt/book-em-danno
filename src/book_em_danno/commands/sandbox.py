@@ -388,13 +388,17 @@ def launch(
     env_pairs: list[str] | None = None,
     env_files: list[str] | None = None,
     home: Path | None = None,
+    agent_args: list[str] | None = None,
 ) -> list[str]:
     """Launch the in-container agent in the mounted repo (`-w <target>`), wired to
     host Ollama / agent auth via an env-file. Launching is the command's purpose, so
     it always executes (not gated by `--apply`). With a persistent `home`, the
     agent's config/history is relocated onto it; for claude, onboarding and
     workspace trust are pre-seeded so neither wizard nor the trust dialog blocks the
-    launch. The exec runs with `check=False`: quitting the TUI is not a danno error."""
+    launch. The exec runs with `check=False`: quitting the TUI is not a danno error.
+
+    `agent_args` are forwarded verbatim to the agent binary (e.g.
+    `["--resume", "<id>"]` for `claude`), appended after the agent name."""
     env_pairs = env_pairs or []
     env_files = env_files or []
     if agent == "claude" and home is not None:
@@ -403,23 +407,21 @@ def launch(
     injected = ", ".join(line.split("=", 1)[0] for line in lines)
     log_info(f"injecting {injected} via a chmod-600 --env-file")
     env_path = _build_env_file(lines, env_pairs, env_files)
+    cmd = [
+        "docker",
+        "sandbox",
+        "exec",
+        "-it",
+        "-w",
+        str(target_abs),
+        "--env-file",
+        str(env_path),
+        name,
+        agent,
+        *(agent_args or []),
+    ]
     try:
-        return runner.run(
-            [
-                "docker",
-                "sandbox",
-                "exec",
-                "-it",
-                "-w",
-                str(target_abs),
-                "--env-file",
-                str(env_path),
-                name,
-                agent,
-            ],
-            why=f"launch {agent} in sandbox '{name}'",
-            check=False,
-        )
+        return runner.run(cmd, why=f"launch {agent} in sandbox '{name}'", check=False)
     finally:
         env_path.unlink(missing_ok=True)
 
@@ -436,10 +438,13 @@ def start(
     env_files: list[str] | None = None,
     home: Path | None = None,
     registry_path: Path | None = None,
+    agent_args: list[str] | None = None,
 ) -> None:
     """Launch the in-container agent. Under `--apply`, provision (idempotent) first;
     otherwise just launch the already-provisioned sandbox, failing loud if it is
-    missing rather than letting `docker sandbox exec` error on a missing sandbox."""
+    missing rather than letting `docker sandbox exec` error on a missing sandbox.
+
+    `agent_args` are forwarded verbatim to the agent binary (e.g. `--resume <id>`)."""
     if runner.apply:
         provision(
             runner,
@@ -464,6 +469,7 @@ def start(
         env_pairs=env_pairs,
         env_files=env_files,
         home=home,
+        agent_args=agent_args,
     )
 
 

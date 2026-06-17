@@ -3,6 +3,7 @@ from __future__ import annotations
 from importlib.metadata import version as pkg_version
 from pathlib import Path
 
+import pytest
 import typer.main
 from typer.testing import CliRunner
 
@@ -70,6 +71,22 @@ def test_install_default_writes_config_without_executing(tmp_path: Path) -> None
     result = runner.invoke(app, ["install", "--config", str(cfg), "--target", str(tmp_path)])
     assert result.exit_code == 0
     assert (tmp_path / ".opencode" / "opencode.jsonc").is_file()
+
+
+def test_sandbox_start_forwards_args_after_double_dash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `danno sandbox start … -- --resume <id>` forwards the trailing args to the agent.
+    import book_em_danno.cli as cli
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(cli.sandbox_cmd, "start", lambda *a, **k: captured.update(k))
+    monkeypatch.setattr(cli, "_resolve_home", lambda *a, **k: None)
+    argv = ["sandbox", "start", "--agent", "claude", "--target", str(tmp_path)]
+    argv += ["--", "--resume", "id1"]
+    result = runner.invoke(app, argv)
+    assert result.exit_code == 0
+    assert captured["agent_args"] == ["--resume", "id1"]
 
 
 def test_install_missing_config_exits_2(tmp_path: Path) -> None:

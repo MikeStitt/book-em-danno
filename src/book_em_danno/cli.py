@@ -139,8 +139,12 @@ def _resolve_home(abs_target: Path, sandbox_name: str) -> Path | None:
 _NAME_OPT_HELP = "Sandbox name (default danno-<parent>-<dir>)."
 
 
-@sandbox_app.command("start")
+@sandbox_app.command(
+    "start",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
 def sandbox_start(
+    ctx: typer.Context,
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
     name: str = typer.Option(None, "--name", help=_NAME_OPT_HELP),
     agent: str = _AGENT_OPT,
@@ -157,6 +161,9 @@ def sandbox_start(
 
     Tip: `cd <project> && danno sandbox start` (no --target/--name) recomputes the
     same name every time — stand in the sandbox's directory rather than naming it.
+
+    Anything after `--` is forwarded verbatim to the agent, e.g.
+    `danno sandbox start --agent claude -- --resume <session-id>`.
     """
     abs_target, sandbox_name = _sandbox_target(target, name, agent)
     home = _resolve_home(abs_target, sandbox_name)
@@ -170,6 +177,7 @@ def sandbox_start(
             env_files=env_file or [],
             home=home,
             registry_path=registry.default_path(),
+            agent_args=ctx.args,
         )
     )
 

@@ -107,6 +107,13 @@ def test_launch_builds_exec_command() -> None:
     _assert_launch_cmd(r.commands[0], "probe", "opencode")
 
 
+def test_launch_forwards_agent_args() -> None:
+    # `--` passthrough: extra args land verbatim after the agent name.
+    r = RecordingRunner()
+    sandbox.launch(r, "probe", Path("/repo"), agent="opencode", agent_args=["--resume", "abc123"])
+    assert r.commands[0][8:] == ["probe", "opencode", "--resume", "abc123"]
+
+
 def test_shell_command() -> None:
     r = RecordingRunner()
     sandbox.shell(r, "probe")
