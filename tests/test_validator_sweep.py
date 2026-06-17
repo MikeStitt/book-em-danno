@@ -12,8 +12,10 @@ import pytest
 from book_em_danno.config.schema import DannoConfig, Model, OllamaBackend
 from book_em_danno.core.exec import CaptureResult, Runner
 from danno_validator import level0, sweep
+from danno_validator.driver import OpencodeTurn
 from danno_validator.level0 import ConversationResult
-from danno_validator.oracle import FailureClass
+from danno_validator.level1 import TaskResult
+from danno_validator.oracle import FailureClass, classify_turn
 
 
 def _config() -> DannoConfig:
@@ -34,6 +36,20 @@ def _fake_result(model: str, overall: FailureClass) -> ConversationResult:
     )
 
 
+def _fake_task_result(model: str) -> TaskResult:
+    turn = OpencodeTurn(result=CaptureResult([], 0, "", ""), events=[], raw="")
+    verdict = classify_turn(turn, side_effect=True, expects_action=True)
+    return TaskResult(
+        model=model,
+        sandbox="box",
+        workspace_root=Path("/ws"),
+        task_label="line-count",
+        session_id="s",
+        turn=turn,
+        verdict=verdict,
+    )
+
+
 def test_run_sweep_iterates_variants_resetting_each(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -48,16 +64,49 @@ def test_run_sweep_iterates_variants_resetting_each(
         overall = FailureClass.PASS if "alpha" in model else FailureClass.STALL
         return _fake_result(model, overall)
 
+    def fake_run_level1(runner, name, *, model, workspace_root, **kw):  # type: ignore[no-untyped-def]
+        calls.append(f"l1:{model}")
+        return _fake_task_result(model)
+
     monkeypatch.setattr(sweep, "reset_workspace", fake_reset)
     monkeypatch.setattr(level0, "run_level0", fake_run_level0)
+    monkeypatch.setattr(sweep, "run_level1", fake_run_level1)
 
     results = sweep.run_sweep(Runner(), "box", config=_config(), workspace_root=tmp_path)
 
-    # A reset precedes each run, in matrix (sorted) order.
-    assert calls == ["reset:box", "run:ollama/alpha:1b", "reset:box", "run:ollama/beta:1b"]
+    # A reset precedes each variant; L1 runs only after a passing L0 (the tiering
+    # short-circuit) — alpha passes so it gets L1; beta stalls so it does not.
+    assert calls == [
+        "reset:box",
+        "run:ollama/alpha:1b",
+        "l1:ollama/alpha:1b",
+        "reset:box",
+        "run:ollama/beta:1b",
+    ]
     assert [s.variant.model_name for s in results] == ["alpha", "beta"]
     assert results[0].result.overall is FailureClass.PASS
+    assert results[0].level1 is not None  # L0 passed → L1 ran
     assert results[1].result.overall is FailureClass.STALL
+    assert results[1].level1 is None  # L0 failed → L1 skipped
+
+
+def test_run_sweep_level1_false_skips_tier1(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ran_l1: list[str] = []
+    monkeypatch.setattr(sweep, "reset_workspace", lambda *a, **k: None)  # noqa: ARG005
+    monkeypatch.setattr(
+        level0,
+        "run_level0",
+        lambda runner, name, *, model, workspace_root, **kw: _fake_result(model, FailureClass.PASS),
+    )
+    monkeypatch.setattr(sweep, "run_level1", lambda *a, **k: ran_l1.append("x"))  # noqa: ARG005
+
+    results = sweep.run_sweep(
+        Runner(), "box", config=_config(), workspace_root=tmp_path, level1=False
+    )
+    assert ran_l1 == []  # tier-1 disabled even though L0 passed
+    assert all(s.level1 is None for s in results)
 
 
 def test_run_sweep_reset_false_skips_reset(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -72,6 +121,11 @@ def test_run_sweep_reset_false_skips_reset(monkeypatch: pytest.MonkeyPatch, tmp_
         "run_level0",
         lambda runner, name, *, model, workspace_root, **kw: _fake_result(model, FailureClass.PASS),
     )
+    monkeypatch.setattr(
+        sweep,
+        "run_level1",
+        lambda runner, name, *, model, workspace_root, **kw: _fake_task_result(model),
+    )
 
     sweep.run_sweep(Runner(), "box", config=_config(), workspace_root=tmp_path, reset=False)
     assert resets == []
@@ -83,6 +137,11 @@ def test_run_sweep_only_restricts_models(monkeypatch: pytest.MonkeyPatch, tmp_pa
         level0,
         "run_level0",
         lambda runner, name, *, model, workspace_root, **kw: _fake_result(model, FailureClass.PASS),
+    )
+    monkeypatch.setattr(
+        sweep,
+        "run_level1",
+        lambda runner, name, *, model, workspace_root, **kw: _fake_task_result(model),
     )
     results = sweep.run_sweep(
         Runner(), "box", config=_config(), workspace_root=tmp_path, only=["beta"]

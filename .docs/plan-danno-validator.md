@@ -18,7 +18,9 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
   conversation runner, MyST page; live-verified flags/schema — see "M1 — DONE" below)
 - [x] M2 — config-matrix sweep + results-matrix index (model-axis sweep, guarded
   per-config reset, MyST sweep index; see "M2 — DONE" below)
-- [ ] M3 — Level-1 tool/bash oracle (pull 1 benchmark task)
+- [x] M3 — Level-1 tool/bash oracle + tiered sweep (curated deterministic task,
+  L0→L1 short-circuit, L1 column/section in the report; live-verified on a fresh
+  validator-owned sandbox — see "M3 — DONE" below)
 - [ ] M4 — Level-2 software-dev oracle (1 small repo+tests task)
 - [ ] M5 — Claude Code baseline + comparison row
 - [ ] M6 — annotated "menu" danno.toml emitter
@@ -253,6 +255,75 @@ unit-tested; the orchestration is thin and faked in tests.
   exp1, whose mount is a real repo so the guarded reset can't run there); the L1
   tool/bash oracle adapter; and the second matrix axis (per-model knobs / prompts)
   via regenerate-in-place.
+
+### M3 — DONE (2026-06-17), with these decisions
+
+Implemented on branch `danno-validator-m3` (branched off the merged `main` — the
+whole M0–M2 stack landed, so no more stacking). `ninja check` green (173 passed).
+The pure-vs-I/O discipline from M1/M2 holds: the task spec + oracle are pure and
+fully unit-tested; the orchestration is thin and faked in tests.
+
+**LIVE-VERIFIED (2026-06-17) on a fresh validator-owned sandbox** — the
+carried-forward item from M1/M2 is now closed. Provisioned a throwaway sandbox
+(`danno-validator-m3-live`) whose mount *was* a `prepare_workspace`-seeded dir
+(`/private/tmp/danno-validator-m3-live`: marker + generated opencode.jsonc +
+committed git repo), then `run_sweep`'d the trials `danno.toml` over two models.
+Result matrix:
+
+    config        L0 verdict   L1 verdict
+    gemma3-27b    error        —  (skipped)
+    gpt-oss-20b   pass         pass
+
+This exercises the whole M3 path live: `gemma3:27b` (no tool support) errors at L0
+so **L1 short-circuits** (the tiering); `gpt-oss:20b` passes L0, then the L1
+line-count task elicits real tool use and the deterministic oracle confirms
+`line_count.txt == "7"` → pass. The guarded `reset_workspace` ran cleanly between
+variants (the committed opencode.jsonc survived; probe/seed files cleaned), and the
+report rendered the L1 column (`—` for the skipped config) and the per-config
+`## Level 1 — tool/bash` section. Sandbox removed afterward. (Driver: a scratch
+orchestration script, gitignored — promote to a `danno_validator` entry point if the
+sweep CLI is built later.)
+
+- **L1 reuses the L0 oracle — no new failure class.** `level1.run_level1` drives
+  one headless turn (`--agent build -w <ws> --dangerously-skip-permissions`, via
+  the M1-verified `driver.opencode_run`), computes the deterministic side effect,
+  and feeds it into the *same* pure `oracle.classify_turn(side_effect=…,
+  expects_action=True)`. So an L1 result lands in the existing `FailureClass`
+  taxonomy automatically: a clean tool call that produced the **wrong** content is
+  `early-stop` (tool ran, required change absent); a tool that errored is
+  `malformed-tool-args`; talk-but-no-act is `stall`/`hallucinated-tool`. No
+  L1-only class was needed, exactly as the plan anticipated.
+- **Tasks are declarative; the oracle is a file comparison.** `Level1Task`
+  (`label`, `prompt`, `inputs` = `(name, content)` pairs, `output_file`,
+  `expected_output`) makes the oracle a pure stripped-content equality check — the
+  L1 "no LLM judge" contract — and trivially unit-testable. `seed` is **surgical**:
+  it writes the inputs and unlinks only its own expected output (so a stale correct
+  output can't fake a pass, mirroring L0's probe reset) — it never runs a
+  destructive git reset, so L1 needs no extra `reset_workspace` between L0 and L1.
+- **Curated default = a bash line-count task.** Seeds `data.txt` (7 known lines),
+  asks the agent to count lines *with a shell command* and write the digits to
+  `line_count.txt`; the oracle checks the file equals `"7"`. Chosen because the
+  answer is a single deterministic integer **and** producing it genuinely requires
+  tool/bash use (a pure "echo this literal string" task wouldn't exercise tools).
+  A larger task bank / `--full` and the general benchmark-adapter path
+  (Terminal-Bench, InterCode-Bash) are deferred, per "start curated".
+- **Tiered sweep with a short-circuit.** `sweep.SweepResult` gains
+  `level1: TaskResult | None`; `run_sweep` gains `level1: bool = True` and, for each
+  variant that **passes L0**, runs L1 against the same workspace. A config that
+  fails L0 skips L1 (`level1` stays `None`) — the plan's tiering, so a stalling
+  model never wastes a run on L1. No reset between L0 and L1 (the task seeds its own
+  clean state surgically); the per-variant guarded reset still isolates configs.
+- **Reporter** gains an **L1 verdict column** in the results matrix (`—` when L1
+  was skipped, which reads as "L0 didn't pass") and an appended **`## Level 1 —
+  tool/bash`** section on each config page (verdict, reply, tool calls, side-effect
+  flag). Still stdlib strings — the `danno[validator]` extra stays empty until the
+  judge (M6). The L0 transcript heading became `## Level 0 — liveness` so the two
+  tiers read as parallel sections on one page.
+- **Open for M4:** the Level-2 dev oracle (one small repo+tests task with a hidden
+  test suite as oracle); and the second matrix axis (per-model knobs / prompts) via
+  regenerate-in-place. (The live-sweep prerequisite is now closed — see
+  "LIVE-VERIFIED" above.) A larger L1 task bank / `--full` and the general
+  benchmark-adapter path (Terminal-Bench, InterCode-Bash) also remain deferred.
 
 ## The annotated "menu" danno.toml
 
