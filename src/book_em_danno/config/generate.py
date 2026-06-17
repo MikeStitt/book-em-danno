@@ -51,8 +51,11 @@ class GenerateResult:
     diff: str = ""
 
 
-def _model_ref(config: DannoConfig, model_name: str) -> str:
-    """Resolve a model name to its OpenCode `<provider>/<model>` reference."""
+def model_ref(config: DannoConfig, model_name: str) -> str:
+    """Resolve a model name to its OpenCode `<provider>/<model>` reference.
+
+    Public so the validator's matrix generator can label and `-m`-drive each model
+    variant with the exact ref OpenCode expects (e.g. `ollama/gemma3:27b`)."""
     model = config.models[model_name]
     backend = config.backends[model.backend]
     if isinstance(backend, OllamaBackend | OpenAIBackend):
@@ -113,15 +116,15 @@ def render_config(config: DannoConfig) -> str:
             provider["models"][model.tag] = entry
 
     agent_block = {
-        agent: {"model": _model_ref(config, model_name)}
+        agent: {"model": model_ref(config, model_name)}
         for agent, model_name in config.agents.items()
     }
 
     default_agent = config.defaults.default_agent
     if default_agent in config.agents:
-        main_ref = _model_ref(config, config.agents[default_agent])
+        main_ref = model_ref(config, config.agents[default_agent])
     elif config.models:
-        main_ref = _model_ref(config, sorted(config.models)[0])
+        main_ref = model_ref(config, sorted(config.models)[0])
     else:
         main_ref = ""
 
@@ -129,7 +132,7 @@ def render_config(config: DannoConfig) -> str:
     small_ref = main_ref
     for model_name in sorted(used_models):
         if isinstance(config.backends[config.models[model_name].backend], OllamaBackend):
-            small_ref = _model_ref(config, model_name)
+            small_ref = model_ref(config, model_name)
             break
 
     doc: dict[str, Any] = {

@@ -7,8 +7,17 @@ from pathlib import Path
 from book_em_danno.core.exec import CaptureResult
 from danno_validator.driver import OpencodeTurn
 from danno_validator.level0 import ConversationResult, TurnRecord
+from danno_validator.matrix import ConfigVariant
 from danno_validator.oracle import FailureClass, classify_turn
-from danno_validator.report import render_level0_page, slug, strip_ansi, write_level0_page
+from danno_validator.report import (
+    render_level0_page,
+    render_matrix_index,
+    slug,
+    strip_ansi,
+    write_level0_page,
+    write_sweep_report,
+)
+from danno_validator.sweep import SweepResult
 
 
 def _record(label: str, text: str, *, expects_action: bool, side_effect: bool) -> TurnRecord:
@@ -70,3 +79,54 @@ def test_write_level0_page_creates_slugged_file(tmp_path: Path) -> None:
     assert path.name == "level0-ollama-gemma3-27b.md"
     assert path.is_file()
     assert "# Level 0" in path.read_text()
+
+
+def _pass_result(model: str) -> ConversationResult:
+    r = ConversationResult(
+        model=model,
+        sandbox="danno-box",
+        workspace_root=Path("/tmp/ws"),
+        session_id="ses_2",
+        overall=FailureClass.PASS,
+    )
+    r.records = [_record("greet", "Hi.", expects_action=False, side_effect=False)]
+    return r
+
+
+def _sweep() -> list[SweepResult]:
+    return [
+        SweepResult(
+            variant=ConfigVariant("gemma", "ollama/gemma3:27b", "ollama/gemma3:27b"),
+            result=_stall_result(),
+        ),
+        SweepResult(
+            variant=ConfigVariant("gptoss", "ollama/gpt-oss:20b", "ollama/gpt-oss:20b"),
+            result=_pass_result("ollama/gpt-oss:20b"),
+        ),
+    ]
+
+
+def test_matrix_index_has_row_per_config_and_toctree() -> None:
+    page = render_matrix_index(_sweep(), ["level0-ollama-gemma3-27b", "level0-ollama-gpt-oss-20b"])
+    assert "2 config(s) swept · 1 passed · 1 failed." in page
+    assert "| `gemma` | `ollama/gemma3:27b` |" in page
+    assert "| `gptoss` | `ollama/gpt-oss:20b` |" in page
+    # taxonomy summary counts both classes
+    assert "`stall`: 1" in page
+    assert "`pass`: 1" in page
+    # toctree links the per-config pages
+    assert "```{toctree}" in page
+    assert "level0-ollama-gemma3-27b" in page
+
+
+def test_write_sweep_report_writes_pages_and_matching_index(tmp_path: Path) -> None:
+    pages, index = write_sweep_report(_sweep(), tmp_path / "out")
+    assert {p.name for p in pages} == {
+        "level0-ollama-gemma3-27b.md",
+        "level0-ollama-gpt-oss-20b.md",
+    }
+    assert index.name == "index.md"
+    index_text = index.read_text()
+    # The toctree references exactly the stems that were written.
+    for p in pages:
+        assert p.stem in index_text

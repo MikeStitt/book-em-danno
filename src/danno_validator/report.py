@@ -1,10 +1,11 @@
-"""Render a Level-0 result as a single MyST-Markdown page.
+"""Render Level-0 results as MyST-Markdown pages.
 
-M1 emits **one** page per config: the verdict, the objective signals the oracle
-read, and the per-turn transcript. It is rendered with stdlib string building (no
-Jinja2/Sphinx dependency yet) — a single page needs no template engine, and the
-`danno[validator]` extra stays empty until the multi-page toctree and the judge
-arrive (M2/M6). MyST is just Markdown here, so the page also reads fine raw.
+M1 emitted one page per config; M2 adds the **sweep index**: a results matrix over
+many configs plus a `{toctree}` linking each per-config page. Both are rendered
+with stdlib string building (no Jinja2/Sphinx dependency yet) — a handful of rows
+and a toctree need no template engine, so the `danno[validator]` extra stays empty
+until the judge (M6) brings the Anthropic SDK. MyST is just Markdown here, so the
+pages also read fine raw.
 
 Transcripts are sanitised before they reach the page: ANSI escapes stripped, and
 raw model output fenced so stray backticks or markup can't break the document.
@@ -13,10 +14,12 @@ raw model output fenced so stray backticks or markup can't break the document.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 
 from danno_validator.level0 import ConversationResult, TurnRecord
 from danno_validator.oracle import FailureClass
+from danno_validator.sweep import SweepResult
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -129,3 +132,64 @@ def write_level0_page(
     path = out_dir / f"level0-{slug(result.model)}.md"
     path.write_text(render_level0_page(result, opencode_jsonc_excerpt=opencode_jsonc_excerpt))
     return path
+
+
+def _toctree(doc_stems: list[str]) -> str:
+    """A MyST `{toctree}` directive linking the per-config pages by filename stem."""
+    entries = "\n".join(doc_stems)
+    return f"```{{toctree}}\n:maxdepth: 1\n\n{entries}\n```"
+
+
+def render_matrix_index(
+    results: list[SweepResult],
+    doc_stems: list[str],
+    *,
+    title: str = "danno-validator — Level 0 sweep",
+) -> str:
+    """Render the sweep index: a results matrix, a failure-taxonomy summary, and a
+    toctree of the per-config pages.
+
+    Rows are the swept configs (one per model variant) in sweep order; `doc_stems`
+    are the per-config page filenames (without extension) the toctree links — kept
+    as an explicit argument so the index always matches what `write_sweep_report`
+    actually wrote.
+    """
+    passed = sum(1 for s in results if s.result.passed)
+    parts = [
+        f"# {title}",
+        "",
+        f"{len(results)} config(s) swept · {passed} passed · {len(results) - passed} failed.",
+        "",
+        "## Results matrix",
+        "",
+        "| config | model | L0 verdict | turns | tokens | latency |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for s in results:
+        r = s.result
+        badge = _BADGE.get(r.overall, r.overall.value)
+        parts.append(
+            f"| `{s.variant.model_name}` | `{s.variant.model_ref}` | {badge} "
+            f"| {len(r.records)} | {r.total_tokens} | {r.total_latency_s:.1f}s |"
+        )
+    parts += ["", "## Failure taxonomy", ""]
+    counts = Counter(s.result.overall for s in results)
+    for cls, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].value)):
+        parts.append(f"- `{cls.value}`: {n}")
+    parts += ["", "## Per-config reports", "", _toctree(doc_stems), ""]
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def write_sweep_report(results: list[SweepResult], out_dir: Path) -> tuple[list[Path], Path]:
+    """Write one Level-0 page per swept config plus an `index.md` matrix into
+    `out_dir`. Returns `(per_config_paths, index_path)`.
+
+    The toctree in the index is built from the actual written filenames, so the
+    index and its linked pages can never drift out of sync.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    page_paths = [write_level0_page(s.result, out_dir) for s in results]
+    index = render_matrix_index(results, [p.stem for p in page_paths])
+    index_path = out_dir / "index.md"
+    index_path.write_text(index)
+    return page_paths, index_path
