@@ -14,7 +14,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 - [x] Background investigation (headless modes, tool-use fidelity, native endpoints)
 - [x] **M0 — danno headless primitives** (capture exec, session-continued run, workspace reset)
-- [ ] M1 — Level-0 liveness test + single-config MyST report
+- [x] **M1 — Level-0 liveness test + single-config MyST report** (stall oracle, scripted
+  conversation runner, MyST page; live-verified flags/schema — see "M1 — DONE" below)
 - [ ] M2 — config-matrix sweep + results-matrix index
 - [ ] M3 — Level-1 tool/bash oracle (pull 1 benchmark task)
 - [ ] M4 — Level-2 software-dev oracle (1 small repo+tests task)
@@ -161,6 +162,48 @@ Implemented on branch `danno-validator-m0` (stacked on `feat-openai-backend-and-
 - **Open for M1:** confirm opencode's session flag (`OPENCODE_SESSION_FLAG = "--session"`,
   from this plan, not from running opencode) against the installed version on the first live
   turn; pin the `-f json` payload schema the stall oracle will read.
+
+### M1 — DONE (2026-06-17), with these live findings
+
+Implemented on branch `danno-validator-m1` (stacked on `danno-validator-m0`). All flags
+and the payload schema were **verified live against opencode 1.17.7** in the running
+`danno-danno-trials-exp1` sandbox (the opencode-only-in-sandbox invariant held — only the
+AUT ran in the VM; the harness ran on the host).
+
+- **Driver corrections vs the plan's assumptions.** The plan said `opencode run -f json`,
+  but in 1.17.7 `-f` is `--file` (attach a file) — the structured-output flag is
+  **`--format json`** (`OPENCODE_FORMAT_FLAG`). The session flag `--session`/`-s` was
+  confirmed correct (`OPENCODE_SESSION_FLAG`). `opencode_run` gained `--agent`, `-m model`,
+  and `--dangerously-skip-permissions` (a headless turn must auto-approve or it blocks).
+- **`--format json` is JSONL, not one object.** stdout is one JSON event per line,
+  interleaved with the occasional human-readable `[time] ERROR …` log block, so
+  `parse_events` parses line-by-line and drops non-JSON lines (the error is still
+  recoverable from its one-line `{"type":"error",…}` event). `OpencodeTurn` exposes
+  `assistant_text`, `tool_calls`/`tool_call_count`, `finish_reason`, `tokens`, `cost`,
+  `session_id`, `errors` from the pinned schema: events are `{type, timestamp, sessionID,
+  part}`; a **text** event carries `part.text`; a **tool** event (`type=="tool"`) carries
+  `part.tool`/`part.callID`/`part.state.status`; a **step_finish** carries `part.reason`,
+  `part.tokens`, `part.cost`.
+- **Two sandbox gotchas (cost a re-run to find).** (1) The default `run` agent is
+  read-only and *refuses* file edits — tool tasks need `--agent build`. (2) The sandbox's
+  default cwd `/home/agent/workspace` is an **empty dir**; the workspace is mounted at its
+  **verbatim host path**. opencode discovers its project (and `.opencode/opencode.jsonc`,
+  hence the configured models) from the exec cwd, so a turn must run with
+  `-w <workspace-root>` or it dies with `ProviderModelNotFoundError`. That cwd is also
+  opencode's project root, so file writes land where the side-effect probe looks.
+- **`oracle.classify_turn`** (pure) tags the failure taxonomy objectively: the L0 **stall**
+  = promises action (regex) **and** 0 tool calls **and** no workspace side effect — distinct
+  from `refusal`, `hallucinated-tool` (claims it acted), `early-stop`, `malformed-tool-args`,
+  `error`. `level0.run_level0` drives the scripted greet→task→nudge conversation over one
+  continued session, probes the side effect host-side (the mount is bidirectional), and the
+  nudge splits `only-acts-on-nudge` from a fully-`stall`ed model.
+- **Reporter** (`report.py`) renders one MyST page per config with stdlib string building
+  (no Jinja2/Sphinx yet — a single page needs no template engine; the `danno[validator]`
+  extra stays empty until the M2/M6 multi-page toctree). ANSI stripped, raw output fenced.
+- **Open for M2:** the matrix sweep needs a **provisioned-per-config** sandbox whose mount
+  *is* the validator workspace (its own git repo + generated `.opencode/opencode.jsonc`), so
+  `reset_workspace`'s guarded git reset applies and configs are isolated — M1 borrowed the
+  exp1 sandbox and only ever touched its single `danno_probe.txt`.
 
 ## The annotated "menu" danno.toml
 
