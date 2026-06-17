@@ -21,7 +21,9 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] M3 — Level-1 tool/bash oracle + tiered sweep (curated deterministic task,
   L0→L1 short-circuit, L1 column/section in the report; live-verified on a fresh
   validator-owned sandbox — see "M3 — DONE" below)
-- [ ] M4 — Level-2 software-dev oracle (1 small repo+tests task)
+- [x] M4 — Level-2 software-dev oracle (1 small repo+tests task; hidden test suite run
+  in-VM, L0→L1→L2 short-circuit, L2 column/section in the report; live-verified — see
+  "M4 — DONE" below)
 - [ ] M5 — Claude Code baseline + comparison row
 - [ ] M6 — annotated "menu" danno.toml emitter
 - [ ] M7 — serve+SDK rich backend · llama.cpp model switching · full benchmark banks
@@ -324,6 +326,92 @@ sweep CLI is built later.)
   regenerate-in-place. (The live-sweep prerequisite is now closed — see
   "LIVE-VERIFIED" above.) A larger L1 task bank / `--full` and the general
   benchmark-adapter path (Terminal-Bench, InterCode-Bash) also remain deferred.
+
+### M4 — DONE (2026-06-17), with these decisions
+
+Implemented on branch `danno-validator-m4` (branched off the merged `main` — the
+whole M0–M3 stack landed). `ninja check` green (187 passed). The pure-vs-I/O
+discipline from M1–M3 holds: the task spec + the verdict mapping are pure and
+fully unit-tested; the orchestration (seed → drive → run the suite in-VM) is thin
+and faked in tests.
+
+**LIVE-VERIFIED (2026-06-17) on a fresh validator-owned sandbox**
+(`danno-validator-m4-live`, mount `/private/tmp/danno-validator-m4-live`: a
+`prepare_workspace`-seeded marker + generated opencode.jsonc + committed git repo),
+sweeping the trials `danno.toml` over two models with the full L0→L1→L2 chain. The
+sandbox VM was first probed for the test runtime — `python3` is present (**Python
+3.14.4**; `node` v22 too), so the curated Python suite runs as-is. Result matrix:
+
+    config        L0 verdict   L1 verdict   L2 verdict
+    gemma3-27b    error        —  (skip)    —  (skip)
+    gpt-oss-20b   pass         pass         early-stop (hidden tests exit 1)
+
+`gemma3:27b` (no tool support) errors at L0 so **both higher tiers short-circuit**;
+`gpt-oss:20b` passes L0 and the L1 line-count, then reaches the L2 fizzbuzz task —
+the hidden test suite is written in only at grading time and **run inside the VM**
+(`python3 hidden_test_fizzbuzz.py`), and its exit code is the objective verdict.
+(Driver: `scratch/m4_live_sweep.py`, gitignored — promote to a `danno_validator`
+entry point if the sweep CLI is built later.)
+
+**The live L2 result is itself the strongest validation of the oracle.**
+`gpt-oss:20b` *printed a correct fizzbuzz in its reply text* but made only
+`glob`/`bash`/`read` tool calls — **no write/edit** — so the on-disk `fizzbuzz.py`
+still held the stub and the hidden suite hit `raise NotImplementedError` (exit 1 →
+`early-stop`). That is a live instance of the exact *promised-but-didn't-act*
+failure this harness exists to catch, and it proves the hidden-test oracle grades
+the **workspace, not the model's claims**: a model that shows correct code it never
+saved still fails. (`early-stop` rather than `hallucinated-tool` because the model
+did make real tool calls — it just stopped before the required edit landed; the
+hallucinated-tool class is reserved for *zero* tool calls.)
+
+- **L2 reuses the L0/L1 oracle — no new failure class.** `level2.run_level2` drives
+  one headless turn (`--agent build -w <ws> --dangerously-skip-permissions`, via the
+  M1-verified `driver.opencode_run`), runs the hidden suite in the VM, and feeds the
+  pass/fail boolean into the *same* pure `oracle.classify_turn(side_effect=…,
+  expects_action=True)`. So an L2 result lands in the existing `FailureClass`
+  taxonomy automatically: tests pass = `pass`; a clean edit that still fails the
+  suite = `early-stop`; a tool error = `malformed-tool-args`; talk-but-no-edit =
+  `stall`/`hallucinated-tool`. No L2-only class was needed (M3's discipline). The
+  richer record (the captured `TestRun`) lives on `DevTaskResult`, not the taxonomy.
+- **The oracle is a hidden test suite, run IN the sandbox.** Unlike L1's host-side
+  file compare, the L2 oracle is the *test run itself* — and the repo lives in the
+  mounted workspace with the VM's toolchain, so the suite runs in-VM via
+  `driver.capture_exec` (the opencode-only-in-sandbox invariant covers the
+  agent-under-test; the test run is the oracle and belongs in the VM too). The host
+  harness only writes the test in and reads the exit code. **Exit 0 = pass** is the
+  one convention `test_command` must follow, so the same machinery works for
+  `python3 t.py`, `node t.js`, or `pytest`.
+- **The test is genuinely hidden.** `Level2Task.seed` writes only the source stub and
+  **removes** any `test_file`, so the agent's turn runs against a repo with no test
+  to read for hints or hardcode against; `run_tests` writes the suite in only at
+  grading time. Surgical like L1's seed (no destructive git reset), so no extra
+  `reset_workspace` is needed between L1 and L2 — the per-variant guarded reset still
+  isolates configs.
+- **Curated default = implement FizzBuzz.** The seeded `fizzbuzz.py` stub raises, so
+  nothing passes until the agent writes the real logic — a genuine source edit (not a
+  one-literal task) with a fully specified, deterministic contract the hidden suite
+  checks exactly (12 cases). Chosen over full SWE-bench deliberately: SWE-bench's
+  per-task docker harness would mean nested virtualization inside the sandbox VM. A
+  larger bank / `--full` and the Aider-polyglot / Exercism repo+tests adapter path
+  are deferred.
+- **Fail-loud on a missing runtime.** A `test_command` exit of **127** means the test
+  interpreter is absent from the image (a harness misconfiguration), so `run_tests`
+  raises `CommandFailedError` rather than silently scoring every model as failing the
+  suite (Working Rule 8). The pre-run VM probe (python3 present) is the cheap check
+  that keeps this from firing.
+- **Tiered sweep extended.** `SweepResult` gains `level2: DevTaskResult | None`;
+  `run_sweep` gains `level2: bool = True` and runs L2 **only when L1 passed**
+  (`l1 is not None and l1.passed`) — completing the L0→L1→L2 short-circuit chain (a
+  config that fails any tier skips all later ones, their fields staying `None`).
+- **Reporter** gains an **L2 verdict column** in the results matrix (`—` when L2 was
+  skipped) and an appended **`## Level 2 — software dev`** section on each config page
+  (verdict, reply, tool calls, hidden-test pass/fail + command/exit, and the fenced
+  test output). Index title is now "(L0 + L1 + L2)". Still stdlib strings — the
+  `danno[validator]` extra stays empty until the judge (M6).
+- **Open for M5:** the Claude Code baseline + comparison row (same battery vs the
+  `claude` agent headless, normalised into the same result record). The second matrix
+  axis (per-model knobs / prompts) via regenerate-in-place, a larger L2 task bank /
+  `--full`, and the general benchmark-adapter path also remain deferred.
 
 ## The annotated "menu" danno.toml
 
