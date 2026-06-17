@@ -84,6 +84,20 @@ parent dir is included so same-basename checkouts and worktrees never collide), 
 `sandbox ls` reads `~/.danno/sandboxes.json` to print each `name → target` plus live
 status. OpenCode **only ever runs inside the sandbox** — never on your host.
 
+#### Forwarding flags to the agent (`--`)
+
+Anything after `--` on `sandbox start` is passed **verbatim** to the agent binary,
+so you can use the agent's own flags — for example resuming a prior Claude session
+(its history lives in the persistent agent home, so the session is still on disk):
+
+```bash
+uv run danno sandbox start --agent claude -- --resume <session-id>
+uv run danno sandbox start --agent claude -- --continue   # most recent session
+```
+
+danno's own options (`--target`, `--agent`, `--apply`, …) stay before the `--` and
+are not forwarded.
+
 ### Where the agent's history lives (`[sandbox] agent_home`)
 
 danno launches the agent **in your mounted repo** (so it sees `CLAUDE.md` and edits
