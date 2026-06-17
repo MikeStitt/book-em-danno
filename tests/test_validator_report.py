@@ -7,6 +7,7 @@ from pathlib import Path
 from book_em_danno.core.exec import CaptureResult
 from danno_validator.driver import OpencodeTurn
 from danno_validator.level0 import ConversationResult, TurnRecord
+from danno_validator.level1 import TaskResult
 from danno_validator.matrix import ConfigVariant
 from danno_validator.oracle import FailureClass, classify_turn
 from danno_validator.report import (
@@ -130,3 +131,63 @@ def test_write_sweep_report_writes_pages_and_matching_index(tmp_path: Path) -> N
     # The toctree references exactly the stems that were written.
     for p in pages:
         assert p.stem in index_text
+
+
+def _task_result(model: str, *, side_effect: bool) -> TaskResult:
+    events = [
+        {"type": "text", "sessionID": "s", "part": {"type": "text", "text": "wrote it"}},
+        {
+            "type": "tool",
+            "sessionID": "s",
+            "part": {"type": "tool", "tool": "bash", "state": {"status": "completed"}},
+        },
+        {"type": "step_finish", "sessionID": "s", "part": {"reason": "stop"}},
+    ]
+    turn = OpencodeTurn(result=CaptureResult([], 0, "", ""), events=events, raw="wrote it")
+    verdict = classify_turn(turn, side_effect=side_effect, expects_action=True)
+    return TaskResult(
+        model=model,
+        sandbox="danno-box",
+        workspace_root=Path("/tmp/ws"),
+        task_label="line-count",
+        session_id="s",
+        turn=turn,
+        verdict=verdict,
+        latency_s=2.0,
+    )
+
+
+def test_matrix_index_has_l1_column_with_skip_dash() -> None:
+    sweep = [
+        SweepResult(
+            variant=ConfigVariant("gemma", "ollama/gemma3:27b", "ollama/gemma3:27b"),
+            result=_stall_result(),  # L0 stalled → L1 skipped
+        ),
+        SweepResult(
+            variant=ConfigVariant("gptoss", "ollama/gpt-oss:20b", "ollama/gpt-oss:20b"),
+            result=_pass_result("ollama/gpt-oss:20b"),
+            level1=_task_result("ollama/gpt-oss:20b", side_effect=True),  # L1 passed
+        ),
+    ]
+    page = render_matrix_index(sweep, ["level0-ollama-gemma3-27b", "level0-ollama-gpt-oss-20b"])
+    assert "| L0 verdict | L1 verdict |" in page
+    # The stalled config shows a dash in the L1 column (tier-1 was skipped).
+    assert "| ✗ stall (promised-but-didn't-act) | — |" in page
+    # The passing config shows an L1 pass badge.
+    assert "| ✓ pass | ✓ pass |" in page
+
+
+def test_render_page_appends_level1_section_when_present() -> None:
+    page = render_level0_page(
+        _pass_result("ollama/gpt-oss:20b"),
+        level1=_task_result("ollama/gpt-oss:20b", side_effect=True),
+    )
+    assert "## Level 0 — liveness" in page
+    assert "## Level 1 — tool/bash" in page
+    assert "task `line-count`" in page
+    assert "`bash`" in page  # the tool call is listed
+
+
+def test_render_page_omits_level1_section_when_absent() -> None:
+    page = render_level0_page(_pass_result("ollama/gpt-oss:20b"))
+    assert "## Level 1 — tool/bash" not in page
