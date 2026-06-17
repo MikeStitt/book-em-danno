@@ -16,7 +16,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] **M0 — danno headless primitives** (capture exec, session-continued run, workspace reset)
 - [x] **M1 — Level-0 liveness test + single-config MyST report** (stall oracle, scripted
   conversation runner, MyST page; live-verified flags/schema — see "M1 — DONE" below)
-- [ ] M2 — config-matrix sweep + results-matrix index
+- [x] M2 — config-matrix sweep + results-matrix index (model-axis sweep, guarded
+  per-config reset, MyST sweep index; see "M2 — DONE" below)
 - [ ] M3 — Level-1 tool/bash oracle (pull 1 benchmark task)
 - [ ] M4 — Level-2 software-dev oracle (1 small repo+tests task)
 - [ ] M5 — Claude Code baseline + comparison row
@@ -204,6 +205,54 @@ AUT ran in the VM; the harness ran on the host).
   *is* the validator workspace (its own git repo + generated `.opencode/opencode.jsonc`), so
   `reset_workspace`'s guarded git reset applies and configs are isolated — M1 borrowed the
   exp1 sandbox and only ever touched its single `danno_probe.txt`.
+
+### M2 — DONE (2026-06-17), with these decisions
+
+Implemented on branch `danno-validator-m2` (stacked on `danno-validator-m1`).
+`ninja check` green (161 passed). The matrix/sweep split mirrors M1's pure-vs-I/O
+discipline: the config expansion and the report renderers are pure and fully
+unit-tested; the orchestration is thin and faked in tests.
+
+- **Axis = model (first/default).** `matrix.model_variants(config, only=…)`
+  (`matrix.py`) expands one `ConfigVariant` per model **declared** in the base
+  danno.toml — the whole catalog, not just agent-assigned models — sorted by danno
+  key, driving the L0 battery with that model via OpenCode's `-m <ref>`. `only`
+  restricts the sweep and fails loud on an undeclared name. Refs come from the
+  generator's resolver, now **public** as `book_em_danno.config.generate.model_ref`
+  (was `_model_ref`); an unimplemented backend (llamacpp) or a model missing its
+  `tag`/`id` raises at expansion, surfacing a broken base config up front.
+- **One validator-owned workspace + one sandbox, opencode.jsonc declares all
+  models.** Rather than reprovisioning a sandbox per config, the sweep keeps one
+  sandbox whose mount **is** the validator workspace and sweeps models with `-m`.
+  This is the cheapest thing that satisfies the M1→M2 prerequisite (a
+  validator-seeded workspace so `reset_workspace`'s guard applies) and matches what
+  M1 already proved live. Configs that vary *beyond* the model (per-model
+  reasoning/context, agent prompts, npm plugins) need a regenerated opencode.jsonc
+  (opencode rereads it each `run`, so regenerate-in-place is enough — no
+  reprovision) and are a later axis; npm-plugin changes additionally need a sandbox
+  restart (deferred).
+- **`sweep.prepare_workspace`** seeds the ownership marker, generates the base
+  opencode.jsonc, and **commits** it to a fresh git repo — the commit is what lets
+  `reset_workspace` (`git clean -fdx -e marker && git reset --hard`) preserve the
+  config across runs instead of deleting it as untracked. The seed commit carries an
+  inline `-c user.name/email` so it never depends on host git config (CI-safe). This
+  was **exercised for real host-side** (no Docker/opencode — invariant preserved):
+  prepare → simulate an AUT side effect → run the exact guarded reset → confirmed
+  the committed opencode.jsonc survives and the probe file is cleaned.
+- **`sweep.run_sweep`** runs the L0 battery against each variant **sequentially**
+  (local models are tens of GB resident — no concurrency to win), resetting the
+  workspace before each variant via the guarded `reset_workspace` (`reset=False` to
+  skip). Provisioning the sandbox itself stays the caller's job.
+- **Reporter** (`report.py`) gains `render_matrix_index` + `write_sweep_report`: a
+  results-matrix table (config · model · L0 verdict · turns · tokens · latency), a
+  failure-taxonomy count summary, and a MyST `{toctree}` whose entries are the
+  **actual written page stems**, so index and pages can't drift. Still stdlib
+  strings — the `danno[validator]` extra stays empty until the judge (M6) brings the
+  Anthropic SDK.
+- **Open for M3:** live sweep against a fresh validator-owned sandbox (M1/M2 borrowed
+  exp1, whose mount is a real repo so the guarded reset can't run there); the L1
+  tool/bash oracle adapter; and the second matrix axis (per-model knobs / prompts)
+  via regenerate-in-place.
 
 ## The annotated "menu" danno.toml
 
