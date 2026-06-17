@@ -15,6 +15,7 @@ from book_em_danno.config.schema import (
     Model,
     NpmPlugin,
     OllamaBackend,
+    OpenAIBackend,
 )
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "danno.toml.example"
@@ -108,6 +109,38 @@ def test_reasoning_effort_emitted_as_camelcase_when_set() -> None:
     assert doc["provider"]["ollama"]["models"]["gemma4:26b"]["options"] == {
         "reasoningEffort": "none"
     }
+
+
+def test_openai_backend_emits_env_substituted_api_key() -> None:
+    # A generic OpenAI-compatible backend (e.g. NVIDIA NIM) renders an
+    # @ai-sdk/openai-compatible provider with apiKey via {env:VAR} — the secret is
+    # never written into the config. The model ref is <provider>/<tag>.
+    cfg = DannoConfig(
+        defaults=Defaults(default_agent="plan"),
+        backends={
+            "nvidia": OpenAIBackend(
+                kind="openai",
+                base_url="https://integrate.api.nvidia.com/v1",
+                api_key_env="NVIDIA_API_KEY",
+                context_budget=128000,
+            )
+        },
+        models={
+            "nemotron": Model(
+                backend="nvidia", tag="nvidia/nemotron-3-ultra-550b-a55b", tool_call=True
+            )
+        },
+        agents={"plan": "nemotron"},
+    )
+    doc = json.loads(_strip_comments(render_config(cfg)))
+    prov = doc["provider"]["nvidia"]
+    assert prov["npm"] == "@ai-sdk/openai-compatible"
+    assert prov["options"]["baseURL"] == "https://integrate.api.nvidia.com/v1"
+    assert prov["options"]["apiKey"] == "{env:NVIDIA_API_KEY}"  # no literal secret
+    model = prov["models"]["nvidia/nemotron-3-ultra-550b-a55b"]
+    assert model["tool_call"] is True
+    assert model["limit"]["context"] == 128000
+    assert doc["agent"]["plan"]["model"] == "nvidia/nvidia/nemotron-3-ultra-550b-a55b"
 
 
 def test_first_run_writes(tmp_path: Path) -> None:

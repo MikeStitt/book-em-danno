@@ -114,11 +114,15 @@ at the boundary (unknown keys and dangling references fail).
 - `[project]` — `target`.
 - `[defaults]` — `default_agent`, `profile` (`hybrid` | `cloud-only` | `local-only`).
 - `[backends.<name>]` — discriminated by `kind`:
-  - `ollama` (IMPLEMENTED): `base_url`, `num_ctx`.
+  - `ollama` (IMPLEMENTED): `base_url`, `context_budget`, `output_limit`.
+  - `openai` (IMPLEMENTED): any OpenAI-compatible endpoint (NVIDIA NIM, vLLM,
+    OpenAI itself). `base_url`, `api_key_env` (named env var, emitted as
+    `{env:VAR}` — the secret is never written here; inject via
+    `danno sandbox start --env VAR=…`), `context_budget`, `output_limit`.
   - `cloud` (IMPLEMENTED): `provider`.
   - `llamacpp` (STUBBED): `base_url` — the generator raises a clear
     "not yet implemented" if a used model references it.
-- `[models.<name>]` — `backend`, `tag` (ollama/llamacpp) or `id` (cloud),
+- `[models.<name>]` — `backend`, `tag` (ollama/openai/llamacpp) or `id` (cloud),
   `tool_call`.
 - `[agents]` — `agent = model-name`.
 - `[[tools]]` — `name`, `source`, `install_to` (`sandbox` | `project`).
