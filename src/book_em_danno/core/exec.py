@@ -49,6 +49,20 @@ class CommandFailedError(Exception):
     """An advised command was executed under --apply and exited non-zero."""
 
 
+@dataclass
+class CaptureResult:
+    """Outcome of `Runner.capture`: the exact command plus its captured streams."""
+
+    cmd: list[str]
+    returncode: int
+    stdout: str
+    stderr: str
+
+    @property
+    def ok(self) -> bool:
+        return self.returncode == 0
+
+
 def require_cmd(name: str, *, fix: str | None = None) -> str:
     """Return the resolved path to `name`, or fail loud with a fix hint."""
     path = shutil.which(name)
@@ -121,6 +135,35 @@ class Runner:
         console.print(f"  $ {shlex.join(cmd)}")
         self._exec(cmd, cwd=cwd, env=env, check=check)
         return cmd
+
+    def capture(
+        self,
+        cmd: list[str],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        check: bool = False,
+    ) -> CaptureResult:
+        """Execute `cmd`, capture stdout/stderr, and return a `CaptureResult`.
+
+        Unlike `advise`/`run` this is for *reading state the harness must inspect*
+        (a captured `opencode run -f json` turn, a workspace probe): it always
+        executes (apply-independent, like `run`) but does NOT stream — output is
+        captured for the caller to parse.
+
+        `check=False` by default: a non-zero exit from the agent-under-test is
+        data to inspect, not a danno failure. Pass `check=True` to raise
+        `CommandFailedError` on a non-zero exit (e.g. a workspace reset that must
+        succeed). The command is logged only under `--verbose` (machine-driven; no
+        copy-paste line).
+        """
+        log_debug(f"capturing: {shlex.join(cmd)}", verbose=self.verbose)
+        result = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
+        if check and result.returncode != 0:
+            raise CommandFailedError(
+                f"command failed (exit {result.returncode}): {shlex.join(cmd)}"
+            )
+        return CaptureResult(cmd, result.returncode, result.stdout, result.stderr)
 
     def _exec(
         self, cmd: list[str], *, cwd: Path | None, env: dict[str, str] | None, check: bool = True

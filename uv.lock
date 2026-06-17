@@ -96,6 +96,7 @@ requires-dist = [
     { name = "rich", specifier = ">=13" },
     { name = "typer", specifier = ">=0.12" },
 ]
+provides-extras = ["validator"]
 
 [package.metadata.requires-dev]
 dev = [
