@@ -100,10 +100,55 @@ A real community config for `gpt-oss` in opencode places reasoning at **model le
 
 Key facts from that source [nijho.lt]:
 - Reasoning (`think`) goes under `models.<m>.options.extraBody` — forwarded per request.
-- **`num_ctx` is NOT set in opencode at all.** Ollama's OpenAI-compatible `/v1` API
-  cannot set the context window; you bake it into an Ollama model variant
-  (`/set parameter num_ctx …` → `/save`, or a `Modelfile`), then point opencode at
-  that model name.
+- **`num_ctx` is NOT set in opencode at all, and a `/v1` request-body `num_ctx` is
+  ignored** — Ollama loads the model at its *full* trained context (qwen3.6 =
+  262144), which is the RAM blowup. The only way to cap the real window is to bake a
+  smaller `num_ctx` into a **named Ollama model variant** and point danno (hence
+  opencode) at that variant. Concretely, when setting up book-em-danno:
+
+  1. **Write a `Modelfile`** on the host that bases on the upstream tag and pins the
+     window (32768 is a sane coding-agent size — raise/lower to taste):
+
+     ```
+     FROM qwen3.6:27b-q4_K_M
+     PARAMETER num_ctx 32768
+     ```
+
+  2. **Build the variant** on the **host** (Ollama runs natively there, not in the
+     sandbox):
+
+     ```bash
+     ollama create qwen3.6:27b-q4_K_M-ctx32k -f Modelfile
+     ```
+
+     Equivalent interactive form: `ollama run qwen3.6:27b-q4_K_M`, then
+     `/set parameter num_ctx 32768`, then `/save qwen3.6:27b-q4_K_M-ctx32k`.
+
+  3. **Verify the baked window:** `ollama show qwen3.6:27b-q4_K_M-ctx32k` lists
+     `num_ctx 32768` under Parameters.
+
+  4. **Point danno at the variant** in `danno.toml`: set the model's `tag` to the new
+     name, and set the backend's `context_budget` to the same number so opencode's
+     client-side trim/compaction belief matches the real window (`context_budget` is
+     backend-wide, so it applies to every model on that ollama backend — size it for
+     the variant you actually run):
+
+     ```toml
+     [backends.ollama]
+     context_budget = 32768                    # match the baked num_ctx
+
+     [models.quen3p6-27b-q4_K_M]
+     backend = "ollama"
+     tag     = "qwen3.6:27b-q4_K_M-ctx32k"     # the variant, NOT the stock tag
+     ```
+
+  5. **Regenerate and relaunch:** run `danno install`, which writes
+     `.opencode/opencode.jsonc` with the variant under `provider.ollama.models` and
+     `limit.context = 32768`, then `danno sandbox start`. opencode then requests the
+     variant by name over `/v1`, Ollama serves it at the 32k window, and qwen3.6's
+     ~31.5 GiB footprint drops accordingly. (The variant lives only on your host, so
+     it already shows in `ollama list`; danno's install detects it as present and
+     skips the `ollama pull` — it will not try to fetch a non-existent registry tag.)
 
 ### Per-key verdict for what danno currently emits
 
