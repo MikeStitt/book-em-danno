@@ -13,6 +13,20 @@ from book_em_danno.core.exec import (
 )
 
 
+def _patch_capture(
+    monkeypatch: pytest.MonkeyPatch, *, stdout: str = "", stderr: str = "", returncode: int = 0
+) -> list[list[str]]:
+    """Stub subprocess.run to record the cmd and return a controlled CompletedProcess."""
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kw):  # type: ignore[no-untyped-def]
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
+
+    monkeypatch.setattr(exec_mod.subprocess, "run", fake_run)
+    return calls
+
+
 def _patch_run(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     calls: list[list[str]] = []
     monkeypatch.setattr(exec_mod.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
@@ -83,6 +97,47 @@ def test_apply_failure_raises_clean_error(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(exec_mod.subprocess, "run", boom)
     with pytest.raises(CommandFailedError):
         Runner(apply=True).advise(["docker", "sandbox", "rm", "ghost"], why="remove")
+
+
+def test_capture_returns_streams_and_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_capture(monkeypatch, stdout="out", stderr="err", returncode=3)
+    res = Runner().capture(["echo", "hi"])
+    assert (res.cmd, res.returncode, res.stdout, res.stderr) == (["echo", "hi"], 3, "out", "err")
+    assert res.ok is False  # non-zero
+
+
+def test_capture_ok_property_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_capture(monkeypatch, stdout="hi", returncode=0)
+    assert Runner().capture(["echo", "hi"]).ok is True
+
+
+def test_capture_check_false_does_not_raise_on_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The agent-under-test exiting non-zero is data to inspect, not a danno error.
+    _patch_capture(monkeypatch, returncode=1)
+    assert Runner().capture(["opencode", "run"]).returncode == 1  # returned, did not raise
+
+
+def test_capture_check_true_raises_on_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_capture(monkeypatch, returncode=1)
+    with pytest.raises(CommandFailedError):
+        Runner().capture(["git", "reset", "--hard"], check=True)
+
+
+def test_capture_runs_regardless_of_apply(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _patch_capture(monkeypatch, stdout="x")
+    Runner(apply=False).capture(["echo", "hi"])  # not gated by --apply, like run()
+    assert calls == [["echo", "hi"]]
+
+
+def test_capture_uses_capture_output_and_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        exec_mod.subprocess,
+        "run",
+        lambda cmd, **kw: (captured.update(kw), subprocess.CompletedProcess(cmd, 0, "", ""))[1],
+    )
+    Runner().capture(["echo", "hi"])
+    assert captured["capture_output"] is True and captured["text"] is True
 
 
 def test_require_cmd_found() -> None:

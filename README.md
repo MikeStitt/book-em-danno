@@ -167,6 +167,13 @@ output_limit   = 8192
 kind     = "cloud"
 provider = "anthropic"            # API keys stay in the env, never in this file
 
+[backends.nvidia]                 # any OpenAI-compatible endpoint (NVIDIA NIM, vLLM, OpenAI)
+kind        = "openai"
+base_url    = "https://integrate.api.nvidia.com/v1"
+api_key_env = "NVIDIA_API_KEY"    # emitted as {env:NVIDIA_API_KEY}; the secret is never
+                                  #   written here. At launch danno auto-injects it if
+                                  #   exported, else `--env NVIDIA_API_KEY=…`, else fails loud.
+
 [models.gemma4]
 backend          = "ollama"
 tag              = "gemma4:26b"   # local models MUST be tool-capable (gemma3:1b is NOT)
@@ -177,9 +184,14 @@ reasoning_effort = "none"         # disable the thinking trace; see knobs below
 backend = "cloud"
 id      = "anthropic/claude-sonnet-4-6"
 
+[models.nemotron]
+backend = "nvidia"
+tag     = "nvidia/nemotron-3-ultra-550b-a55b"   # the model id the endpoint expects
+tool_call = true
+
 [agents]                          # agent -> model: high-stakes cloud, high-volume local
 pm        = "sonnet"
-architect = "sonnet"
+architect = "nemotron"
 runner    = "gemma4"
 committer = "gemma4"
 

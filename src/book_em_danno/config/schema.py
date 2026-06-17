@@ -67,8 +67,27 @@ class LlamacppBackend(BaseModel):
     base_url: str
 
 
+class OpenAIBackend(BaseModel):
+    """A generic OpenAI-compatible endpoint (NVIDIA NIM, vLLM, OpenAI itself, …) via
+    OpenCode's @ai-sdk/openai-compatible provider. IMPLEMENTED.
+
+    Unlike `ollama` (no auth) this needs a key — but the secret is NEVER written
+    here. `api_key_env` names an environment variable; the generator emits
+    `apiKey: "{env:<api_key_env>}"`, and the value is injected at launch via
+    `danno sandbox start --env <api_key_env>=…` (so it lands only in the chmod-600
+    env-file, never in danno.toml or the committed opencode.jsonc). `context_budget`/
+    `output_limit` map to `limit.context`/`limit.output` as for ollama."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["openai"]
+    base_url: str
+    api_key_env: str
+    context_budget: int = 32000
+    output_limit: int = 8192
+
+
 Backend = Annotated[
-    OllamaBackend | CloudBackend | LlamacppBackend,
+    OllamaBackend | CloudBackend | LlamacppBackend | OpenAIBackend,
     Field(discriminator="kind"),
 ]
 

@@ -100,6 +100,25 @@ def test_provision_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     ]
 
 
+def test_provision_existing_sandbox_starts_before_proxy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Re-provision under --apply when the sandbox already exists (stopped): create is
+    # skipped, and the VM is started before `network proxy` (which 400s on a stopped
+    # VM). Order must be ensure-running → proxy → stop.
+    monkeypatch.setattr(ollama, "loopback_warning", lambda **kw: None)
+    monkeypatch.setattr(sandbox, "sandbox_exists", lambda name: True)
+    r = RecordingRunner()
+    r.apply = True
+    sandbox.provision(r, "probe", tmp_path)
+    assert r.joined() == [
+        # create skipped (already exists) — no `docker sandbox create`
+        "docker sandbox exec probe true",  # ensure running before proxy
+        "docker sandbox network proxy probe --policy allow --allow-host localhost:11434",
+        "docker sandbox stop probe",
+    ]
+
+
 def test_launch_builds_exec_command() -> None:
     r = RecordingRunner()
     sandbox.launch(r, "probe", Path("/repo"))
@@ -112,6 +131,53 @@ def test_launch_forwards_agent_args() -> None:
     r = RecordingRunner()
     sandbox.launch(r, "probe", Path("/repo"), agent="opencode", agent_args=["--resume", "abc123"])
     assert r.commands[0][8:] == ["probe", "opencode", "--resume", "abc123"]
+
+
+def _write_opencode_cfg(target: Path, body: str) -> None:
+    (target / ".opencode").mkdir(parents=True, exist_ok=True)
+    (target / ".opencode" / "opencode.jsonc").write_text(body, encoding="utf-8")
+
+
+def test_reconcile_env_refs_fails_loud_when_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_opencode_cfg(tmp_path, '{ "apiKey": "{env:NVIDIA_API_KEY}" }')
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    with pytest.raises(CommandFailedError, match="NVIDIA_API_KEY"):
+        sandbox.reconcile_env_refs(tmp_path, [], [])
+
+
+def test_reconcile_env_refs_auto_injects_from_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_opencode_cfg(tmp_path, '{ "apiKey": "{env:NVIDIA_API_KEY}" }')
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-secret")
+    assert sandbox.reconcile_env_refs(tmp_path, [], []) == ["NVIDIA_API_KEY=nvapi-secret"]
+
+
+def test_reconcile_env_refs_passes_when_supplied_via_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_opencode_cfg(tmp_path, '{ "apiKey": "{env:NVIDIA_API_KEY}" }')
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    # Explicitly passed via --env → accepted, not duplicated from host.
+    pairs = sandbox.reconcile_env_refs(tmp_path, ["NVIDIA_API_KEY=nvapi-x"], [])
+    assert pairs == ["NVIDIA_API_KEY=nvapi-x"]
+
+
+def test_reconcile_env_refs_empty_value_fails_loud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The exact footgun: `--env NVIDIA_API_KEY=` (empty) must fail, not slip through.
+    _write_opencode_cfg(tmp_path, '{ "apiKey": "{env:NVIDIA_API_KEY}" }')
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    with pytest.raises(CommandFailedError, match="NVIDIA_API_KEY"):
+        sandbox.reconcile_env_refs(tmp_path, ["NVIDIA_API_KEY="], [])
+
+
+def test_reconcile_env_refs_noop_without_refs(tmp_path: Path) -> None:
+    # No opencode.jsonc (or no {env:…}) → returns env_pairs unchanged, never raises.
+    assert sandbox.reconcile_env_refs(tmp_path, ["FOO=bar"], []) == ["FOO=bar"]
 
 
 def test_shell_command() -> None:

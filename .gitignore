@@ -311,3 +311,6 @@ __marimo__/
 scratch/
 temp/
 .ninja_log
+
+# danno-validator work-dir + reports (seeded throwaway workspaces, per-config runs)
+.danno-validator/
