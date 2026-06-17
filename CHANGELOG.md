@@ -3,11 +3,51 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.3.0] - 2026-06-17
+
+### Bug Fixes
+
+- *(install)* Fail loud when a tool installer fails
+- *(sandbox)* Keep opencode data dir VM-local to avoid the WAL crash
+- *(sandbox)* Pre-accept claude workspace trust; don't error on TUI exit
+- *(sandbox)* Start an existing stopped VM before configuring its proxy
+
+### Documentation
+
+- Document the `sandbox start -- <agent args>` passthrough
+- *(validator)* Record M3 live tiered-sweep verification
+
+### Features
+
+- *(config)* Emit every defined model, pull every defined ollama tag
+- *(ollama)* Pull only models absent from `ollama list`
+- *(sandbox)* Forward args after `--` to the agent on `sandbox start`
+- *(config)* Add `openai` backend kind for authenticated OpenAI-compatible APIs
+- *(sandbox)* Fail loud when opencode.jsonc references an unsupplied env var
+- *(validator)* Add danno_validator M0 headless primitives
+- *(validator)* Add M1 Level-0 liveness battery, stall oracle, MyST report
+- *(validator)* Add M2 config-matrix sweep + results-matrix index
+- *(validator)* Add M3 Level-1 tool/bash oracle + tiered L0→L1 sweep
+- *(validator)* Add M4 Level-2 dev oracle (hidden test suite) + tiered L0→L1→L2 sweep
+
+### Testing
+
+- *(cli)* Assert --apply via parsed Click command, not rendered help
+- *(cli)* Make default-install test hermetic (no ADOS dependency)
+
 ## [0.2.5] - 2026-06-14
 
 ### CI
 
 - Keep uv.lock in sync across releases and enforce it
+
+### Documentation
+
+- *(constitution)* Add stacking rule to Branch & Push Policy (v2.1.0)
+
+### Features
+
+- *(cli)* Collapse automation modes to advise/--apply
 
 ## [0.2.4] - 2026-06-13
 
