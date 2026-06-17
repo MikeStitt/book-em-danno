@@ -272,3 +272,27 @@ def test_render_page_appends_level1_section_when_present() -> None:
 def test_render_page_omits_level1_section_when_absent() -> None:
     page = render_level0_page(_pass_result("ollama/gpt-oss:20b"))
     assert "## Level 1 — tool/bash" not in page
+
+
+def test_matrix_index_flags_baseline_row_and_excludes_it_from_tally() -> None:
+    sweep = [
+        SweepResult(
+            variant=ConfigVariant("gemma", "ollama/gemma3:27b", "ollama/gemma3:27b"),
+            result=_stall_result(),
+        ),
+        SweepResult(
+            variant=ConfigVariant("claude-code", "claude-code (baseline)", "baseline"),
+            result=_pass_result("claude-code"),
+            level1=_task_result("claude-code", side_effect=True),
+            level2=_dev_result("claude-code", side_effect=True),
+        ),
+    ]
+    page = render_matrix_index(sweep, ["level0-ollama-gemma3-27b", "level0-claude-code"])
+    # Only the local model counts as a swept config; the baseline is the reference.
+    assert "1 config(s) swept · 0 passed · 1 failed." in page
+    assert "+ Claude Code baseline (reference row)." in page
+    # The baseline row is rendered and flagged.
+    assert "| `claude-code` _(baseline)_ | `claude-code (baseline)` |" in page
+    # Taxonomy describes the models under test, so the baseline's pass is excluded.
+    assert "`pass`" not in page
+    assert "`stall`: 1" in page

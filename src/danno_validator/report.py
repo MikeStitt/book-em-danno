@@ -17,6 +17,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
+from danno_validator.baseline import BASELINE_MODEL
 from danno_validator.level0 import ConversationResult, TurnRecord
 from danno_validator.level1 import TaskResult
 from danno_validator.level2 import DevTaskResult
@@ -234,16 +235,23 @@ def render_matrix_index(
     """Render the sweep index: a results matrix, a failure-taxonomy summary, and a
     toctree of the per-config pages.
 
-    Rows are the swept configs (one per model variant) in sweep order; `doc_stems`
-    are the per-config page filenames (without extension) the toctree links — kept
-    as an explicit argument so the index always matches what `write_sweep_report`
-    actually wrote.
+    Rows are the swept configs (one per model variant) in sweep order, plus the
+    Claude Code baseline row (flagged) when present; `doc_stems` are the per-config
+    page filenames (without extension) the toctree links — kept as an explicit
+    argument so the index always matches what `write_sweep_report` actually wrote.
+    The baseline is the reference point, so it is excluded from the swept-config
+    tally and the failure-taxonomy counts (which describe the models under test).
     """
-    passed = sum(1 for s in results if s.result.passed)
+    configs = [s for s in results if s.variant.model_name != BASELINE_MODEL]
+    has_baseline = any(s.variant.model_name == BASELINE_MODEL for s in results)
+    passed = sum(1 for s in configs if s.result.passed)
+    summary = f"{len(configs)} config(s) swept · {passed} passed · {len(configs) - passed} failed."
+    if has_baseline:
+        summary += " · + Claude Code baseline (reference row)."
     parts = [
         f"# {title}",
         "",
-        f"{len(results)} config(s) swept · {passed} passed · {len(results) - passed} failed.",
+        summary,
         "",
         "## Results matrix",
         "",
@@ -261,12 +269,16 @@ def render_matrix_index(
         l2_badge = (
             _BADGE.get(s.level2.overall, s.level2.overall.value) if s.level2 is not None else "—"
         )
+        # Flag the baseline so it reads as the reference rather than a swept config.
+        config_cell = f"`{s.variant.model_name}`"
+        if s.variant.model_name == BASELINE_MODEL:
+            config_cell += " _(baseline)_"
         parts.append(
-            f"| `{s.variant.model_name}` | `{s.variant.model_ref}` | {badge} | {l1_badge} "
+            f"| {config_cell} | `{s.variant.model_ref}` | {badge} | {l1_badge} "
             f"| {l2_badge} | {len(r.records)} | {r.total_tokens} | {r.total_latency_s:.1f}s |"
         )
     parts += ["", "## Failure taxonomy", ""]
-    counts = Counter(s.result.overall for s in results)
+    counts = Counter(s.result.overall for s in configs)
     for cls, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].value)):
         parts.append(f"- `{cls.value}`: {n}")
     parts += ["", "## Per-config reports", "", _toctree(doc_stems), ""]
