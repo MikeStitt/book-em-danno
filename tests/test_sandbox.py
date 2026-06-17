@@ -107,6 +107,13 @@ def test_launch_builds_exec_command() -> None:
     _assert_launch_cmd(r.commands[0], "probe", "opencode")
 
 
+def test_launch_forwards_agent_args() -> None:
+    # `--` passthrough: extra args land verbatim after the agent name.
+    r = RecordingRunner()
+    sandbox.launch(r, "probe", Path("/repo"), agent="opencode", agent_args=["--resume", "abc123"])
+    assert r.commands[0][8:] == ["probe", "opencode", "--resume", "abc123"]
+
+
 def test_shell_command() -> None:
     r = RecordingRunner()
     sandbox.shell(r, "probe")
@@ -352,21 +359,33 @@ def test_resolve_home_malformed_config_fails_loud(tmp_path: Path) -> None:
 
 def test_seed_onboarding_creates_and_merges(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    sandbox.seed_onboarding(home)
+    workspace = Path("/work/proj")
+    sandbox.seed_onboarding(home, workspace)
     data = json.loads((home / ".claude.json").read_text())
     assert data["hasCompletedOnboarding"] is True
     assert "theme" in data
+    # Per-workspace trust is pre-accepted so the "trust this folder" dialog can't
+    # block a fresh launch (keyed by the in-container path == host path).
+    proj = data["projects"]["/work/proj"]
+    assert proj["hasTrustDialogAccepted"] is True
+    assert proj["hasCompletedProjectOnboarding"] is True
 
 
 def test_seed_onboarding_does_not_clobber(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
-    (home / ".claude.json").write_text('{"theme": "light", "mcpServers": {"x": 1}}')
-    sandbox.seed_onboarding(home)
+    (home / ".claude.json").write_text(
+        '{"theme": "light", "mcpServers": {"x": 1}, '
+        '"projects": {"/work/proj": {"hasTrustDialogAccepted": false, "keep": 1}}}'
+    )
+    sandbox.seed_onboarding(home, Path("/work/proj"))
     data = json.loads((home / ".claude.json").read_text())
     assert data["theme"] == "light"  # existing key preserved
     assert data["mcpServers"] == {"x": 1}  # unrelated key preserved
     assert data["hasCompletedOnboarding"] is True  # added
+    proj = data["projects"]["/work/proj"]
+    assert proj["hasTrustDialogAccepted"] is False  # existing trust value not clobbered
+    assert proj["keep"] == 1  # unrelated per-project key preserved
 
 
 # --- agent-home: ls -------------------------------------------------------------
