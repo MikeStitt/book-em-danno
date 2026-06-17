@@ -202,10 +202,15 @@ def resolve_home(target_abs: Path, sandbox_name: str) -> Path | None:
     return home
 
 
-def seed_onboarding(home: Path) -> None:
-    """Pre-mark Claude onboarding so the theme/login wizard can't mask a valid env
-    auth token on a fresh VM (Working Rule 8 trap). Merges into `<home>/.claude.json`
-    without clobbering existing keys; idempotent."""
+def seed_onboarding(home: Path, workspace: Path) -> None:
+    """Pre-mark Claude onboarding AND per-workspace trust so neither the theme/login
+    wizard (which can mask a valid env auth token on a fresh VM — Working Rule 8
+    trap) nor the "trust this folder" dialog blocks a launch. Merges into
+    `<home>/.claude.json` without clobbering existing keys; idempotent.
+
+    `workspace` is the in-container repo path; `docker sandbox` mounts it at the same
+    absolute path as on the host, so it matches the key Claude stores trust under
+    (`projects.<path>.hasTrustDialogAccepted`)."""
     home.mkdir(parents=True, exist_ok=True)
     f = home / ".claude.json"
     data: dict[str, object] = {}
@@ -218,6 +223,12 @@ def seed_onboarding(home: Path) -> None:
             data = {}
     data.setdefault("hasCompletedOnboarding", True)
     data.setdefault("theme", "dark")
+    projects = data.setdefault("projects", {})
+    if isinstance(projects, dict):
+        proj = projects.setdefault(str(workspace), {})
+        if isinstance(proj, dict):
+            proj.setdefault("hasTrustDialogAccepted", True)
+            proj.setdefault("hasCompletedProjectOnboarding", True)
     f.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
@@ -381,12 +392,13 @@ def launch(
     """Launch the in-container agent in the mounted repo (`-w <target>`), wired to
     host Ollama / agent auth via an env-file. Launching is the command's purpose, so
     it always executes (not gated by `--apply`). With a persistent `home`, the
-    agent's config/history is relocated onto it; for claude, onboarding is pre-seeded
-    so the wizard can't mask the env auth token."""
+    agent's config/history is relocated onto it; for claude, onboarding and
+    workspace trust are pre-seeded so neither wizard nor the trust dialog blocks the
+    launch. The exec runs with `check=False`: quitting the TUI is not a danno error."""
     env_pairs = env_pairs or []
     env_files = env_files or []
     if agent == "claude" and home is not None:
-        seed_onboarding(home)
+        seed_onboarding(home, target_abs)
     lines = agent_env(agent, ollama_url, home)
     injected = ", ".join(line.split("=", 1)[0] for line in lines)
     log_info(f"injecting {injected} via a chmod-600 --env-file")
@@ -406,6 +418,7 @@ def launch(
                 agent,
             ],
             why=f"launch {agent} in sandbox '{name}'",
+            check=False,
         )
     finally:
         env_path.unlink(missing_ok=True)
@@ -483,9 +496,12 @@ def run_npm_setup(runner: Runner, name: str, plugins: list[NpmPlugin]) -> list[l
 
 def shell(runner: Runner, name: str) -> list[str]:
     """Open an interactive bash shell inside the sandbox VM (always executes — the
-    interactive shell is the command's purpose, not a gated side effect)."""
+    interactive shell is the command's purpose, not a gated side effect). Runs with
+    `check=False` so exiting the shell (non-zero status) is not a danno error."""
     return runner.run(
-        ["docker", "sandbox", "exec", "-it", name, "bash"], why=f"open a shell in sandbox '{name}'"
+        ["docker", "sandbox", "exec", "-it", name, "bash"],
+        why=f"open a shell in sandbox '{name}'",
+        check=False,
     )
 
 

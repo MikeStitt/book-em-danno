@@ -102,21 +102,38 @@ class Runner:
         *,
         cwd: Path | None = None,
         env: dict[str, str] | None = None,
+        check: bool = True,
     ) -> list[str]:
         """Print and ALWAYS execute, regardless of `apply`. Returns `cmd`.
 
         For terminal/interactive actions that are the command's whole purpose (the
         `docker sandbox exec -it … <agent>` launch, an interactive shell) rather
         than gated side effects — gating those behind `--apply` is nonsensical, so
-        they run unconditionally. Same `CommandFailedError` wrap as `advise`.
+        they run unconditionally.
+
+        `check=True` wraps a non-zero exit in `CommandFailedError` like `advise`.
+        Pass `check=False` for an interactive TUI/shell: once we have handed the
+        terminal to the agent, its exit code reflects the user's session (quitting,
+        declining a prompt), not a danno provisioning failure, so a non-zero exit is
+        not escalated to an error (it is logged at debug under --verbose).
         """
         log_info(why)
         console.print(f"  $ {shlex.join(cmd)}")
-        self._exec(cmd, cwd=cwd, env=env)
+        self._exec(cmd, cwd=cwd, env=env, check=check)
         return cmd
 
-    def _exec(self, cmd: list[str], *, cwd: Path | None, env: dict[str, str] | None) -> None:
+    def _exec(
+        self, cmd: list[str], *, cwd: Path | None, env: dict[str, str] | None, check: bool = True
+    ) -> None:
         log_debug(f"executing: {shlex.join(cmd)}", verbose=self.verbose)
+        if not check:
+            result = subprocess.run(cmd, cwd=cwd, env=env)
+            if result.returncode != 0:
+                log_debug(
+                    f"interactive session exited with status {result.returncode}",
+                    verbose=self.verbose,
+                )
+            return
         try:
             subprocess.run(cmd, check=True, cwd=cwd, env=env)
         except subprocess.CalledProcessError as exc:

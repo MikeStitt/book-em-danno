@@ -33,6 +33,7 @@ class RecordingRunner(Runner):
         *,
         cwd: Path | None = None,
         env: dict[str, str] | None = None,
+        check: bool = True,
     ) -> list[str]:
         self.commands.append(cmd)
         return cmd

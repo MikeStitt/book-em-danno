@@ -48,6 +48,17 @@ def test_run_failure_raises_clean_error(monkeypatch: pytest.MonkeyPatch) -> None
         Runner(apply=False).run(["docker", "sandbox", "exec", "ghost", "bash"], why="shell")
 
 
+def test_run_interactive_nonzero_exit_does_not_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An interactive launch/shell uses check=False: a non-zero exit from the user
+    # quitting the TUI (or declining a prompt) must NOT become a danno error.
+    monkeypatch.setattr(
+        exec_mod.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1)
+    )
+    exec_cmd = ["docker", "sandbox", "exec", "-it", "x", "claude"]
+    cmd = Runner().run(exec_cmd, why="launch", check=False)
+    assert cmd == exec_cmd  # returned, did not raise
+
+
 def test_apply_forwards_cwd_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
     monkeypatch.setattr(exec_mod.subprocess, "run", lambda cmd, **kw: captured.update(kw))
