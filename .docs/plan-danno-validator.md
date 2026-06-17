@@ -19,7 +19,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] M2 — config-matrix sweep + results-matrix index (model-axis sweep, guarded
   per-config reset, MyST sweep index; see "M2 — DONE" below)
 - [x] M3 — Level-1 tool/bash oracle + tiered sweep (curated deterministic task,
-  L0→L1 short-circuit, L1 column/section in the report; see "M3 — DONE" below)
+  L0→L1 short-circuit, L1 column/section in the report; live-verified on a fresh
+  validator-owned sandbox — see "M3 — DONE" below)
 - [ ] M4 — Level-2 software-dev oracle (1 small repo+tests task)
 - [ ] M5 — Claude Code baseline + comparison row
 - [ ] M6 — annotated "menu" danno.toml emitter
@@ -260,9 +261,28 @@ unit-tested; the orchestration is thin and faked in tests.
 Implemented on branch `danno-validator-m3` (branched off the merged `main` — the
 whole M0–M2 stack landed, so no more stacking). `ninja check` green (173 passed).
 The pure-vs-I/O discipline from M1/M2 holds: the task spec + oracle are pure and
-fully unit-tested; the orchestration is thin and faked in tests. **Not yet
-live-verified** — the live tiered sweep on a fresh validator-owned sandbox is the
-one carried-forward item (see "Open for M4" below).
+fully unit-tested; the orchestration is thin and faked in tests.
+
+**LIVE-VERIFIED (2026-06-17) on a fresh validator-owned sandbox** — the
+carried-forward item from M1/M2 is now closed. Provisioned a throwaway sandbox
+(`danno-validator-m3-live`) whose mount *was* a `prepare_workspace`-seeded dir
+(`/private/tmp/danno-validator-m3-live`: marker + generated opencode.jsonc +
+committed git repo), then `run_sweep`'d the trials `danno.toml` over two models.
+Result matrix:
+
+    config        L0 verdict   L1 verdict
+    gemma3-27b    error        —  (skipped)
+    gpt-oss-20b   pass         pass
+
+This exercises the whole M3 path live: `gemma3:27b` (no tool support) errors at L0
+so **L1 short-circuits** (the tiering); `gpt-oss:20b` passes L0, then the L1
+line-count task elicits real tool use and the deterministic oracle confirms
+`line_count.txt == "7"` → pass. The guarded `reset_workspace` ran cleanly between
+variants (the committed opencode.jsonc survived; probe/seed files cleaned), and the
+report rendered the L1 column (`—` for the skipped config) and the per-config
+`## Level 1 — tool/bash` section. Sandbox removed afterward. (Driver: a scratch
+orchestration script, gitignored — promote to a `danno_validator` entry point if the
+sweep CLI is built later.)
 
 - **L1 reuses the L0 oracle — no new failure class.** `level1.run_level1` drives
   one headless turn (`--agent build -w <ws> --dangerously-skip-permissions`, via
@@ -299,11 +319,11 @@ one carried-forward item (see "Open for M4" below).
   flag). Still stdlib strings — the `danno[validator]` extra stays empty until the
   judge (M6). The L0 transcript heading became `## Level 0 — liveness` so the two
   tiers read as parallel sections on one page.
-- **Open for M4:** the **live tiered sweep against a fresh validator-owned sandbox**
-  (M1/M2/M3 unit-verified host-side; M1/M2 were also live-verified, M3's live run is
-  still pending — provision a sandbox whose mount *is* a `prepare_workspace`-seeded
-  dir, then `run_sweep` it); the Level-2 dev oracle; and the second matrix axis
-  (per-model knobs / prompts) via regenerate-in-place.
+- **Open for M4:** the Level-2 dev oracle (one small repo+tests task with a hidden
+  test suite as oracle); and the second matrix axis (per-model knobs / prompts) via
+  regenerate-in-place. (The live-sweep prerequisite is now closed — see
+  "LIVE-VERIFIED" above.) A larger L1 task bank / `--full` and the general
+  benchmark-adapter path (Terminal-Bench, InterCode-Bash) also remain deferred.
 
 ## The annotated "menu" danno.toml
 
