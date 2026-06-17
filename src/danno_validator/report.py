@@ -19,6 +19,7 @@ from pathlib import Path
 
 from danno_validator.level0 import ConversationResult, TurnRecord
 from danno_validator.level1 import TaskResult
+from danno_validator.level2 import DevTaskResult
 from danno_validator.oracle import FailureClass
 from danno_validator.sweep import SweepResult
 
@@ -117,16 +118,52 @@ def _level1_section(tr: TaskResult) -> str:
     return "\n".join(lines)
 
 
+def _level2_section(dr: DevTaskResult) -> str:
+    """Render the Level-2 dev result (hidden test suite) as an appended section."""
+    v = dr.verdict
+    badge = _BADGE.get(v.failure_class, v.failure_class.value)
+    reply = dr.turn.assistant_text or "(no assistant text)"
+    tools = (
+        " (" + ", ".join(f"`{c.get('tool')}`" for c in dr.turn.tool_calls) + ")"
+        if dr.turn.tool_calls
+        else ""
+    )
+    test_output = (dr.test_run.stdout + dr.test_run.stderr).strip() or "(no test output)"
+    lines = [
+        "## Level 2 — software dev",
+        "",
+        f"**Verdict: {badge}** · task `{dr.task_label}`",
+        "",
+        "**Assistant reply**",
+        "",
+        _fence(reply),
+        "",
+        f"- verdict: `{v.failure_class.value}` — {v.rationale}",
+        f"- tool calls: {v.tool_call_count}{tools}",
+        f"- hidden tests: {'passed' if dr.test_run.passed else 'failed'} "
+        f"(`{dr.test_run.command}`, exit {dr.test_run.returncode})",
+        f"- latency: {dr.latency_s:.1f}s · tokens: {dr.turn.tokens}",
+        "",
+        "**Hidden test output**",
+        "",
+        _fence(test_output),
+    ]
+    if dr.turn.errors:
+        lines.append(f"- error: {dr.turn.error_summary}")
+    return "\n".join(lines)
+
+
 def render_level0_page(
     result: ConversationResult,
     *,
     opencode_jsonc_excerpt: str | None = None,
     level1: TaskResult | None = None,
+    level2: DevTaskResult | None = None,
 ) -> str:
     """Render one config's report as a MyST-Markdown document.
 
-    The Level-0 transcript is always rendered; when `level1` is supplied (the
-    config passed L0 and ran the tier-1 task) its tool/bash section is appended.
+    The Level-0 transcript is always rendered; when `level1`/`level2` are supplied
+    (the config reached that tier) their sections are appended in tier order.
     """
     badge = _BADGE.get(result.overall, result.overall.value)
     parts = [
@@ -153,6 +190,8 @@ def render_level0_page(
     parts += [_turn_section(r) + "\n" for r in result.records]
     if level1 is not None:
         parts += [_level1_section(level1), ""]
+    if level2 is not None:
+        parts += [_level2_section(level2), ""]
     return "\n".join(parts).rstrip() + "\n"
 
 
@@ -162,17 +201,20 @@ def write_level0_page(
     *,
     opencode_jsonc_excerpt: str | None = None,
     level1: TaskResult | None = None,
+    level2: DevTaskResult | None = None,
 ) -> Path:
     """Render and write one config's page to `out_dir/level0-<model-slug>.md`.
 
-    Returns the written path. When `level1` is supplied it is appended as the
-    tool/bash section. `out_dir` is created if missing (typically a subdirectory of
-    `driver.DEFAULT_WORK_DIR`, which is gitignored).
+    Returns the written path. When `level1`/`level2` are supplied they are appended
+    as the tool/bash and software-dev sections. `out_dir` is created if missing
+    (typically a subdirectory of `driver.DEFAULT_WORK_DIR`, which is gitignored).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"level0-{slug(result.model)}.md"
     path.write_text(
-        render_level0_page(result, opencode_jsonc_excerpt=opencode_jsonc_excerpt, level1=level1)
+        render_level0_page(
+            result, opencode_jsonc_excerpt=opencode_jsonc_excerpt, level1=level1, level2=level2
+        )
     )
     return path
 
@@ -187,7 +229,7 @@ def render_matrix_index(
     results: list[SweepResult],
     doc_stems: list[str],
     *,
-    title: str = "danno-validator — tiered sweep (L0 + L1)",
+    title: str = "danno-validator — tiered sweep (L0 + L1 + L2)",
 ) -> str:
     """Render the sweep index: a results matrix, a failure-taxonomy summary, and a
     toctree of the per-config pages.
@@ -205,19 +247,23 @@ def render_matrix_index(
         "",
         "## Results matrix",
         "",
-        "| config | model | L0 verdict | L1 verdict | turns | tokens | latency |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| config | model | L0 verdict | L1 verdict | L2 verdict | turns | tokens | latency |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for s in results:
         r = s.result
         badge = _BADGE.get(r.overall, r.overall.value)
-        # "—" reads as "not run": L1 is skipped whenever L0 didn't pass (tiering).
+        # "—" reads as "not run": each higher tier is skipped whenever the previous
+        # tier didn't pass (the L0→L1→L2 short-circuit).
         l1_badge = (
             _BADGE.get(s.level1.overall, s.level1.overall.value) if s.level1 is not None else "—"
         )
+        l2_badge = (
+            _BADGE.get(s.level2.overall, s.level2.overall.value) if s.level2 is not None else "—"
+        )
         parts.append(
             f"| `{s.variant.model_name}` | `{s.variant.model_ref}` | {badge} | {l1_badge} "
-            f"| {len(r.records)} | {r.total_tokens} | {r.total_latency_s:.1f}s |"
+            f"| {l2_badge} | {len(r.records)} | {r.total_tokens} | {r.total_latency_s:.1f}s |"
         )
     parts += ["", "## Failure taxonomy", ""]
     counts = Counter(s.result.overall for s in results)
@@ -235,7 +281,9 @@ def write_sweep_report(results: list[SweepResult], out_dir: Path) -> tuple[list[
     index and its linked pages can never drift out of sync.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    page_paths = [write_level0_page(s.result, out_dir, level1=s.level1) for s in results]
+    page_paths = [
+        write_level0_page(s.result, out_dir, level1=s.level1, level2=s.level2) for s in results
+    ]
     index = render_matrix_index(results, [p.stem for p in page_paths])
     index_path = out_dir / "index.md"
     index_path.write_text(index)

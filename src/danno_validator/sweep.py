@@ -33,7 +33,10 @@ from book_em_danno.core.exec import Runner
 from danno_validator import level0
 from danno_validator.driver import reset_workspace, seed_workspace
 from danno_validator.level0 import DEFAULT_AGENT, DEFAULT_SCRIPT, ConversationResult, ScriptedTurn
-from danno_validator.level1 import DEFAULT_TASK, Level1Task, TaskResult, run_level1
+from danno_validator.level1 import DEFAULT_TASK as DEFAULT_L1_TASK
+from danno_validator.level1 import Level1Task, TaskResult, run_level1
+from danno_validator.level2 import DEFAULT_TASK as DEFAULT_L2_TASK
+from danno_validator.level2 import DevTaskResult, Level2Task, run_level2
 from danno_validator.matrix import ConfigVariant, model_variants
 
 # Identity stamped on the seed commit so `prepare_workspace` never depends on the
@@ -45,14 +48,16 @@ _GIT_AUTHOR = ("user.name=danno-validator", "user.email=danno-validator@local")
 class SweepResult:
     """One config's place in the sweep: the variant and its tiered outcomes.
 
-    `result` is the Level-0 verdict; `level1` is the Level-1 verdict, present only
-    when L0 passed and L1 was requested — `None` means L1 was skipped (the tiering
-    short-circuit: a config that fails L0 never wastes time on L1).
+    `result` is the Level-0 verdict; `level1`/`level2` are the higher-tier
+    verdicts, each present only when the *previous* tier passed and that tier was
+    requested — `None` means it was skipped (the L0→L1→L2 short-circuit: a config
+    that fails an earlier tier never wastes time on a later one).
     """
 
     variant: ConfigVariant
     result: ConversationResult
     level1: TaskResult | None = None
+    level2: DevTaskResult | None = None
 
 
 def prepare_workspace(runner: Runner, workspace_root: Path, config: DannoConfig) -> Path:
@@ -87,17 +92,20 @@ def run_sweep(
     reset: bool = True,
     script: tuple[ScriptedTurn, ...] = DEFAULT_SCRIPT,
     level1: bool = True,
-    level1_task: Level1Task = DEFAULT_TASK,
+    level1_task: Level1Task = DEFAULT_L1_TASK,
+    level2: bool = True,
+    level2_task: Level2Task = DEFAULT_L2_TASK,
 ) -> list[SweepResult]:
     """Run the tiered battery against each model variant of `config`, sequentially.
 
     `only` restricts the swept models (see `matrix.model_variants`). When `reset`
     (the default), the validator-owned `workspace_root` is reset to its committed
     baseline before each variant via the guarded `reset_workspace`, so one config's
-    side effects never leak into the next. When `level1` (the default), each variant
-    that **passes L0** then runs the Level-1 tool/bash task — the plan's tiering, so a
-    config that stalls at L0 doesn't waste a run on L1 (its `SweepResult.level1` stays
-    `None`). L1 needs no extra reset: `level1_task.seed` establishes its own clean
+    side effects never leak into the next. The tiers run as a short-circuit chain:
+    each variant runs L0, then L1 **only if L0 passed** (`level1`), then L2 **only if
+    L1 passed** (`level2`) — the plan's tiering, so a config that stalls early never
+    wastes a run on a later tier (the skipped tier's `SweepResult` field stays
+    `None`). The higher tiers need no extra reset: each task seeds its own clean
     state surgically. Returns one `SweepResult` per variant, in matrix order.
     """
     results: list[SweepResult] = []
@@ -122,5 +130,15 @@ def run_sweep(
                 task=level1_task,
                 agent=agent,
             )
-        results.append(SweepResult(variant=variant, result=result, level1=l1))
+        l2: DevTaskResult | None = None
+        if level2 and l1 is not None and l1.passed:
+            l2 = run_level2(
+                runner,
+                sandbox,
+                model=variant.model_ref,
+                workspace_root=workspace_root,
+                task=level2_task,
+                agent=agent,
+            )
+        results.append(SweepResult(variant=variant, result=result, level1=l1, level2=l2))
     return results

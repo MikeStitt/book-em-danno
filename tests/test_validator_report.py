@@ -8,6 +8,7 @@ from book_em_danno.core.exec import CaptureResult
 from danno_validator.driver import OpencodeTurn
 from danno_validator.level0 import ConversationResult, TurnRecord
 from danno_validator.level1 import TaskResult
+from danno_validator.level2 import DevTaskResult, TestRun
 from danno_validator.matrix import ConfigVariant
 from danno_validator.oracle import FailureClass, classify_turn
 from danno_validator.report import (
@@ -155,6 +156,86 @@ def _task_result(model: str, *, side_effect: bool) -> TaskResult:
         verdict=verdict,
         latency_s=2.0,
     )
+
+
+def _dev_result(model: str, *, side_effect: bool, returncode: int = 0) -> DevTaskResult:
+    events = [
+        {"type": "text", "sessionID": "s", "part": {"type": "text", "text": "implemented it"}},
+        {
+            "type": "tool",
+            "sessionID": "s",
+            "part": {"type": "tool", "tool": "edit", "state": {"status": "completed"}},
+        },
+        {"type": "step_finish", "sessionID": "s", "part": {"reason": "stop"}},
+    ]
+    turn = OpencodeTurn(result=CaptureResult([], 0, "", ""), events=events, raw="implemented it")
+    verdict = classify_turn(turn, side_effect=side_effect, expects_action=True)
+    return DevTaskResult(
+        model=model,
+        sandbox="danno-box",
+        workspace_root=Path("/tmp/ws"),
+        task_label="fizzbuzz",
+        session_id="s",
+        turn=turn,
+        verdict=verdict,
+        test_run=TestRun(
+            command="python3 hidden_test_fizzbuzz.py",
+            returncode=returncode,
+            stdout="ok — 12 cases passed" if returncode == 0 else "AssertionError",
+            stderr="",
+        ),
+        latency_s=3.0,
+    )
+
+
+def test_matrix_index_has_l2_column_with_skip_dash() -> None:
+    sweep = [
+        SweepResult(
+            variant=ConfigVariant("gemma", "ollama/gemma3:27b", "ollama/gemma3:27b"),
+            result=_stall_result(),  # L0 stalled → L1 and L2 skipped
+        ),
+        SweepResult(
+            variant=ConfigVariant("gptoss", "ollama/gpt-oss:20b", "ollama/gpt-oss:20b"),
+            result=_pass_result("ollama/gpt-oss:20b"),
+            level1=_task_result("ollama/gpt-oss:20b", side_effect=True),  # L1 passed
+            level2=_dev_result("ollama/gpt-oss:20b", side_effect=True),  # L2 passed
+        ),
+    ]
+    page = render_matrix_index(sweep, ["level0-ollama-gemma3-27b", "level0-ollama-gpt-oss-20b"])
+    assert "| L0 verdict | L1 verdict | L2 verdict |" in page
+    # The stalled config shows dashes for both skipped higher tiers.
+    assert "| ✗ stall (promised-but-didn't-act) | — | — |" in page
+    # The passing config shows L1 and L2 pass badges.
+    assert "| ✓ pass | ✓ pass | ✓ pass |" in page
+
+
+def test_render_page_appends_level2_section_when_present() -> None:
+    page = render_level0_page(
+        _pass_result("ollama/gpt-oss:20b"),
+        level1=_task_result("ollama/gpt-oss:20b", side_effect=True),
+        level2=_dev_result("ollama/gpt-oss:20b", side_effect=True),
+    )
+    assert "## Level 1 — tool/bash" in page
+    assert "## Level 2 — software dev" in page
+    assert "task `fizzbuzz`" in page
+    assert "hidden tests: passed" in page
+    assert "ok — 12 cases passed" in page  # test output is shown
+
+
+def test_render_page_level2_section_shows_failure_output() -> None:
+    page = render_level0_page(
+        _pass_result("ollama/gpt-oss:20b"),
+        level1=_task_result("ollama/gpt-oss:20b", side_effect=True),
+        level2=_dev_result("ollama/gpt-oss:20b", side_effect=False, returncode=1),
+    )
+    assert "hidden tests: failed" in page
+    assert "exit 1" in page
+    assert "AssertionError" in page
+
+
+def test_render_page_omits_level2_section_when_absent() -> None:
+    page = render_level0_page(_pass_result("ollama/gpt-oss:20b"))
+    assert "## Level 2 — software dev" not in page
 
 
 def test_matrix_index_has_l1_column_with_skip_dash() -> None:
