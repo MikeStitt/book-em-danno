@@ -31,7 +31,7 @@ from book_em_danno.config.generate import generate
 from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import Runner
 from danno_validator import level0
-from danno_validator.driver import reset_workspace, seed_workspace
+from danno_validator.driver import TurnFn, reset_workspace, seed_workspace
 from danno_validator.level0 import DEFAULT_AGENT, DEFAULT_SCRIPT, ConversationResult, ScriptedTurn
 from danno_validator.level1 import DEFAULT_TASK as DEFAULT_L1_TASK
 from danno_validator.level1 import Level1Task, TaskResult, run_level1
@@ -112,33 +112,77 @@ def run_sweep(
     for variant in model_variants(config, only=only):
         if reset:
             reset_workspace(runner, sandbox, workspace_root)
-        result = level0.run_level0(
+        results.append(
+            run_tiers(
+                runner,
+                sandbox,
+                variant=variant,
+                workspace_root=workspace_root,
+                agent=agent,
+                script=script,
+                level1=level1,
+                level1_task=level1_task,
+                level2=level2,
+                level2_task=level2_task,
+            )
+        )
+    return results
+
+
+def run_tiers(
+    runner: Runner,
+    sandbox: str,
+    *,
+    variant: ConfigVariant,
+    workspace_root: Path,
+    agent: str = DEFAULT_AGENT,
+    script: tuple[ScriptedTurn, ...] = DEFAULT_SCRIPT,
+    level1: bool = True,
+    level1_task: Level1Task = DEFAULT_L1_TASK,
+    level2: bool = True,
+    level2_task: Level2Task = DEFAULT_L2_TASK,
+    run_turn: TurnFn | None = None,
+) -> SweepResult:
+    """Run the tiered L0→L1→L2 short-circuit for one `variant`, returning its result.
+
+    The shared core of both the model sweep (`run_sweep`, one call per model
+    variant with the default opencode `run_turn`) and the Claude baseline
+    (`baseline.run_baseline`, one call with `run_turn=driver.claude_run`). It runs
+    **no reset** — workspace isolation is the caller's job (the sweep resets per
+    variant). Each tier runs only if the previous passed: L0, then L1 if L0 passed
+    (`level1`), then L2 if L1 passed (`level2`); a skipped tier's field stays
+    `None`. `variant.model_ref` is passed as the model to the turn producer
+    (opencode uses it for `-m`; `claude_run` ignores it).
+    """
+    result = level0.run_level0(
+        runner,
+        sandbox,
+        model=variant.model_ref,
+        workspace_root=workspace_root,
+        agent=agent,
+        script=script,
+        run_turn=run_turn,
+    )
+    l1: TaskResult | None = None
+    if level1 and result.passed:
+        l1 = run_level1(
             runner,
             sandbox,
             model=variant.model_ref,
             workspace_root=workspace_root,
+            task=level1_task,
             agent=agent,
-            script=script,
+            run_turn=run_turn,
         )
-        l1: TaskResult | None = None
-        if level1 and result.passed:
-            l1 = run_level1(
-                runner,
-                sandbox,
-                model=variant.model_ref,
-                workspace_root=workspace_root,
-                task=level1_task,
-                agent=agent,
-            )
-        l2: DevTaskResult | None = None
-        if level2 and l1 is not None and l1.passed:
-            l2 = run_level2(
-                runner,
-                sandbox,
-                model=variant.model_ref,
-                workspace_root=workspace_root,
-                task=level2_task,
-                agent=agent,
-            )
-        results.append(SweepResult(variant=variant, result=result, level1=l1, level2=l2))
-    return results
+    l2: DevTaskResult | None = None
+    if level2 and l1 is not None and l1.passed:
+        l2 = run_level2(
+            runner,
+            sandbox,
+            model=variant.model_ref,
+            workspace_root=workspace_root,
+            task=level2_task,
+            agent=agent,
+            run_turn=run_turn,
+        )
+    return SweepResult(variant=variant, result=result, level1=l1, level2=l2)

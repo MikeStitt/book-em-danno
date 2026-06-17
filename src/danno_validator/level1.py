@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from book_em_danno.core.exec import Runner
-from danno_validator.driver import OpencodeTurn, opencode_run
+from danno_validator.driver import Turn, TurnFn, opencode_run
 from danno_validator.level0 import DEFAULT_AGENT
 from danno_validator.oracle import FailureClass, TurnVerdict, classify_turn
 
@@ -103,7 +103,7 @@ class TaskResult:
     workspace_root: Path
     task_label: str
     session_id: str | None
-    turn: OpencodeTurn
+    turn: Turn
     verdict: TurnVerdict
     latency_s: float = field(default=0.0)
 
@@ -132,6 +132,7 @@ def run_level1(
     workspace_root: Path,
     task: Level1Task = DEFAULT_TASK,
     agent: str = DEFAULT_AGENT,
+    run_turn: TurnFn | None = None,
 ) -> TaskResult:
     """Run one Level-1 task against `model` in `sandbox`, returning the result.
 
@@ -140,10 +141,15 @@ def run_level1(
     pure `classify_turn` tags the verdict. Runs `--agent build` (the default `run`
     agent is read-only) in the workspace root (`-w`) so opencode finds the configured
     models and writes land where the oracle looks.
+
+    `run_turn` is the turn producer — `opencode_run` by default (resolved at call
+    time so a monkeypatched `level1.opencode_run` still applies); the Claude
+    baseline passes `driver.claude_run`.
     """
+    turn_fn = run_turn or opencode_run
     task.seed(workspace_root)
     start = time.monotonic()
-    turn = opencode_run(
+    turn = turn_fn(
         runner,
         sandbox,
         task.prompt,

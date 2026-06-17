@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
-from danno_validator.driver import OpencodeTurn
+from danno_validator.driver import Turn
 
 
 class FailureClass(StrEnum):
@@ -95,7 +95,7 @@ class TurnVerdict:
         return self.failure_class is FailureClass.PASS
 
 
-def classify_turn(turn: OpencodeTurn, *, side_effect: bool, expects_action: bool) -> TurnVerdict:
+def classify_turn(turn: Turn, *, side_effect: bool, expects_action: bool) -> TurnVerdict:
     """Classify one turn objectively.
 
     `side_effect` is the caller's verdict on whether the workspace actually changed

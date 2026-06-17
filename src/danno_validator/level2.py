@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from book_em_danno.core.exec import CommandFailedError, Runner
-from danno_validator.driver import OpencodeTurn, capture_exec, opencode_run
+from danno_validator.driver import Turn, TurnFn, capture_exec, opencode_run
 from danno_validator.level0 import DEFAULT_AGENT
 from danno_validator.oracle import FailureClass, TurnVerdict, classify_turn
 
@@ -174,7 +174,7 @@ class DevTaskResult:
     workspace_root: Path
     task_label: str
     session_id: str | None
-    turn: OpencodeTurn
+    turn: Turn
     verdict: TurnVerdict
     test_run: TestRun
     latency_s: float = field(default=0.0)
@@ -231,6 +231,7 @@ def run_level2(
     workspace_root: Path,
     task: Level2Task = DEFAULT_TASK,
     agent: str = DEFAULT_AGENT,
+    run_turn: TurnFn | None = None,
 ) -> DevTaskResult:
     """Run one Level-2 dev task against `model` in `sandbox`, returning the result.
 
@@ -239,10 +240,15 @@ def run_level2(
     then the hidden suite runs in the VM and its pass/fail becomes the `side_effect`
     fed to the pure `classify_turn`. Tests passing → `pass`; a clean edit that
     leaves the suite failing → `early-stop`; a talk-no-edit turn → `stall`/etc.
+
+    `run_turn` is the turn producer — `opencode_run` by default (resolved at call
+    time so a monkeypatched `level2.opencode_run` still applies); the Claude
+    baseline passes `driver.claude_run`.
     """
+    turn_fn = run_turn or opencode_run
     task.seed(workspace_root)
     start = time.monotonic()
-    turn = opencode_run(
+    turn = turn_fn(
         runner,
         sandbox,
         task.prompt,

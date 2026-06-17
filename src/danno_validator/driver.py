@@ -28,6 +28,7 @@ import json
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from book_em_danno.core.exec import CaptureResult, CommandFailedError, Runner
 
@@ -48,6 +49,72 @@ OPENCODE_SESSION_FLAG = "--session"
 # `--file` (attach a file) in 1.17.7 — the JSON-events flag is `--format json`
 # (M1 live finding). Using `-f json` would silently attach a file named "json".
 OPENCODE_FORMAT_FLAG = "--format"
+
+# Claude Code headless flags (M5). PIN LIVE against the installed `claude` version
+# before relying on them (M1 set the precedent of confirming agent flags live):
+# `-p`/`--print` runs headless; `--output-format stream-json` (with `--verbose`)
+# emits the per-message JSONL the parser below reads; `--resume <id>` continues a
+# session for the multi-turn Level-0 script; `--dangerously-skip-permissions`
+# auto-approves tools so a headless turn runs unattended. Claude ignores opencode's
+# `-m`/`--agent`, so the baseline drives its fixed default model/agent.
+CLAUDE_PRINT_FLAG = "-p"
+CLAUDE_FORMAT_FLAG = "--output-format"
+CLAUDE_FORMAT_VALUE = "stream-json"
+CLAUDE_RESUME_FLAG = "--resume"
+CLAUDE_SKIP_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
+
+
+@runtime_checkable
+class Turn(Protocol):
+    """The agent-agnostic read surface a captured turn must expose.
+
+    Both `OpencodeTurn` and `ClaudeTurn` satisfy this structurally (no
+    inheritance), so the oracle, the level runners, and the reporter consume
+    either transcript format unchanged — the comparison is on agent-agnostic
+    signals (text + tool calls + the caller's workspace side-effect probe), not on
+    opencode-vs-claude event shapes. These are exactly the members read by
+    `oracle.classify_turn`, the `*Result` dataclasses, and `report.py`.
+    """
+
+    @property
+    def assistant_text(self) -> str: ...
+    @property
+    def tool_calls(self) -> list[dict]: ...
+    @property
+    def tool_call_count(self) -> int: ...
+    @property
+    def session_id(self) -> str | None: ...
+    @property
+    def tokens(self) -> int: ...
+    @property
+    def cost(self) -> float: ...
+    @property
+    def errors(self) -> list[dict]: ...
+    @property
+    def error_summary(self) -> str | None: ...
+
+
+class TurnFn(Protocol):
+    """The call signature shared by `opencode_run` and `claude_run`.
+
+    The level runners take one of these as their (injectable) turn producer, so
+    the same battery drives either agent. The claude adapter accepts `agent`/
+    `model` for signature compatibility but ignores them (the baseline is the
+    fixed default Claude config).
+    """
+
+    def __call__(
+        self,
+        runner: Runner,
+        name: str,
+        prompt: str,
+        *,
+        session: str | None = ...,
+        agent: str | None = ...,
+        model: str | None = ...,
+        skip_permissions: bool = ...,
+        workspace: str | Path | None = ...,
+    ) -> Turn: ...
 
 
 def capture_exec(runner: Runner, name: str, command: str, *, check: bool = False) -> CaptureResult:
@@ -239,6 +306,209 @@ def opencode_run(
     cmd.append(prompt)
     result = runner.capture(cmd)
     return OpencodeTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)
+
+
+@dataclass
+class ClaudeTurn:
+    """One captured `claude -p --output-format stream-json` turn, parsed.
+
+    Claude Code's stream-json is JSONL like opencode's, but a different schema, so
+    this normalises it onto the same `Turn` read surface (see `Turn`). The schema
+    is PINNED LIVE against the installed `claude` version (M1 discipline); the
+    fields mapped here, against current Claude Code:
+
+    - a **system** init event (`type == "system"`) carries `session_id`;
+    - an **assistant** event (`type == "assistant"`) carries `message.content`, a
+      list of blocks — `{"type":"text","text":…}` and
+      `{"type":"tool_use","id":…,"name":…,"input":…}`;
+    - a **user** event (`type == "user"`) carries `tool_result` blocks with
+      `tool_use_id` and `is_error` — used to mark the matching tool call's status;
+    - a final **result** event (`type == "result"`) carries `result` (final text),
+      `total_cost_usd`, `usage` (token counts), `session_id`, and `is_error` /
+      `subtype` (a non-success subtype / `is_error` true ⇒ a failed turn).
+
+    Tool calls are re-shaped to ``{"tool": name, "callID": id, "state":
+    {"status": "completed"|"error"}}`` so the *same* oracle branch
+    (`state.status == "error"`) and reporter (`c.get("tool")`) work across agents.
+    """
+
+    result: CaptureResult
+    events: list[dict] = field(default_factory=list)
+    raw: str = ""
+
+    @property
+    def ok(self) -> bool:
+        """True iff the turn ran cleanly: zero exit, at least one parsed event,
+        and no error (a stalled-but-clean turn is still `ok` — the oracle's call)."""
+        return self.result.ok and bool(self.events) and not self.errors
+
+    @property
+    def _result_event(self) -> dict | None:
+        """The final `result` event, if any (carries totals + success flag)."""
+        for event in reversed(self.events):
+            if event.get("type") == "result":
+                return event
+        return None
+
+    @property
+    def session_id(self) -> str | None:
+        """The claude session id (top-level ``session_id``), for `--resume`."""
+        for event in self.events:
+            sid = event.get("session_id")
+            if sid:
+                return str(sid)
+        return None
+
+    def _assistant_blocks(self) -> list[dict]:
+        """Every content block across all assistant message events, in order."""
+        blocks: list[dict] = []
+        for event in self.events:
+            if event.get("type") != "assistant":
+                continue
+            content = event.get("message", {}).get("content")
+            if isinstance(content, list):
+                blocks += [b for b in content if isinstance(b, dict)]
+        return blocks
+
+    @property
+    def assistant_text(self) -> str:
+        """Concatenated text blocks across assistant turns (newline-joined).
+
+        Falls back to the final `result` event's `result` text when no streamed
+        text blocks were captured, so the stall/claim oracle always has something
+        to read."""
+        chunks = [
+            text
+            for block in self._assistant_blocks()
+            if block.get("type") == "text" and (text := str(block.get("text", "")).strip())
+        ]
+        if chunks:
+            return "\n".join(chunks)
+        res = self._result_event
+        if res and not res.get("is_error"):
+            return str(res.get("result", "")).strip()
+        return ""
+
+    @property
+    def _tool_error_ids(self) -> set[str]:
+        """`tool_use_id`s whose `tool_result` reported `is_error` true."""
+        bad: set[str] = set()
+        for event in self.events:
+            if event.get("type") != "user":
+                continue
+            content = event.get("message", {}).get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_result"
+                    and block.get("is_error")
+                    and (tid := block.get("tool_use_id"))
+                ):
+                    bad.add(str(tid))
+        return bad
+
+    @property
+    def tool_calls(self) -> list[dict]:
+        """Each `tool_use` block, re-shaped to the opencode tool-call dict shape.
+
+        Status is `error` when the matching `tool_result` reported `is_error`,
+        else `completed` — so the shared oracle's tool-error branch works."""
+        bad = self._tool_error_ids
+        calls: list[dict] = []
+        for block in self._assistant_blocks():
+            if block.get("type") != "tool_use":
+                continue
+            call_id = str(block.get("id", ""))
+            status = "error" if call_id in bad else "completed"
+            calls.append(
+                {"tool": block.get("name"), "callID": call_id, "state": {"status": status}}
+            )
+        return calls
+
+    @property
+    def tool_call_count(self) -> int:
+        return len(self.tool_calls)
+
+    @property
+    def tokens(self) -> int:
+        """Total tokens (input + output) from the final `result` event's usage."""
+        res = self._result_event
+        usage = res.get("usage", {}) if res else {}
+        if not isinstance(usage, dict):
+            return 0
+        return int(usage.get("input_tokens", 0) or 0) + int(usage.get("output_tokens", 0) or 0)
+
+    @property
+    def cost(self) -> float:
+        """The turn's `total_cost_usd` from the final `result` event."""
+        res = self._result_event
+        return float(res.get("total_cost_usd", 0) or 0) if res else 0.0
+
+    @property
+    def errors(self) -> list[dict]:
+        """Failed-turn signals: a `result` event with `is_error` true (or a
+        non-`success` subtype), plus any explicit `error` event."""
+        out: list[dict] = []
+        for event in self.events:
+            t = event.get("type")
+            if t == "error":
+                out.append(event)
+            elif t == "result" and (
+                event.get("is_error") or event.get("subtype", "success") != "success"
+            ):
+                out.append(event)
+        return out
+
+    @property
+    def error_summary(self) -> str | None:
+        """A human-readable summary of the first error, or None."""
+        if not self.errors:
+            return None
+        err = self.errors[0]
+        # A failed `result` event carries the detail in `result`/`subtype`; an
+        # explicit `error` event carries it under `error`.
+        detail = err.get("result") or err.get("error") or err.get("subtype")
+        return str(detail) if detail is not None else "error"
+
+
+def claude_run(
+    runner: Runner,
+    name: str,
+    prompt: str,
+    *,
+    session: str | None = None,
+    agent: str | None = None,
+    model: str | None = None,
+    skip_permissions: bool = False,
+    workspace: str | Path | None = None,
+) -> ClaudeTurn:
+    """Drive one headless `claude -p --output-format stream-json` turn in `name`.
+
+    The in-sandbox Claude Code counterpart of `opencode_run`, with the *same*
+    signature so it satisfies `TurnFn` and the level runners can drive either
+    agent. `session` continues a session (`--resume`), `skip_permissions` adds
+    `--dangerously-skip-permissions`, and `workspace` sets the in-VM exec cwd
+    (`-w`) so writes land in the mounted workspace the oracle probes. `agent` and
+    `model` are accepted for interface parity but ignored — the baseline is the
+    fixed default Claude config (claude has no opencode `--agent`/`-m`).
+
+    Returns the parsed events alongside the raw capture — never raises on a
+    non-zero exit, since a stalled/errored turn is the signal the battery
+    measures.
+    """
+    cmd = ["docker", "sandbox", "exec"]
+    if workspace is not None:
+        cmd += ["-w", str(workspace)]
+    cmd += [name, "claude", CLAUDE_PRINT_FLAG, CLAUDE_FORMAT_FLAG, CLAUDE_FORMAT_VALUE, "--verbose"]
+    if skip_permissions:
+        cmd.append(CLAUDE_SKIP_PERMISSIONS_FLAG)
+    if session is not None:
+        cmd += [CLAUDE_RESUME_FLAG, session]
+    cmd.append(prompt)
+    result = runner.capture(cmd)
+    return ClaudeTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)
 
 
 def parse_events(text: str) -> list[dict]:
