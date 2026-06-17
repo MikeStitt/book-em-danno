@@ -294,6 +294,17 @@ def stop(runner: Runner, name: str) -> list[str]:
     return runner.advise(["docker", "sandbox", "stop", name], why=f"stop sandbox '{name}'")
 
 
+def ensure_running(runner: Runner, name: str) -> list[str]:
+    """Start a stopped-but-existing sandbox VM. `docker sandbox` has no `start`
+    subcommand, but `exec … true` auto-starts the VM (then exits). Needed before
+    `network proxy`, which 400s ("not running") against a stopped VM — the case hit
+    when re-provisioning an existing sandbox left stopped by a prior provision."""
+    return runner.advise(
+        ["docker", "sandbox", "exec", name, "true"],
+        why=f"ensure sandbox '{name}' is running before configuring its network",
+    )
+
+
 def provision(
     runner: Runner,
     name: str,
@@ -312,13 +323,18 @@ def provision(
             "[yellow]WARN[/yellow] target has no .opencode/opencode.jsonc — "
             "run `danno install` first so the sandbox has a config to load."
         )
-    cmds = [
-        create(runner, name, target_abs, agent, home=home, registry_path=registry_path),
-        configure_proxy(runner, name, allow_hosts),
-        # The network policy only takes on a fresh VM start; stop so the next
-        # `start` applies the allow-rule.
-        stop(runner, name),
-    ]
+    # A fresh `create` leaves the VM running, so `configure_proxy` works. But on a
+    # re-provision `create` is skipped and the existing VM is stopped (a prior
+    # provision ends with `stop`), and `network proxy` 400s against a stopped VM —
+    # so bring it back up first when the sandbox already existed.
+    preexisting = _live(runner) and sandbox_exists(name)
+    cmds = [create(runner, name, target_abs, agent, home=home, registry_path=registry_path)]
+    if preexisting:
+        cmds.append(ensure_running(runner, name))
+    cmds.append(configure_proxy(runner, name, allow_hosts))
+    # The network policy only takes on a fresh VM start; stop so the next `start`
+    # applies the allow-rule.
+    cmds.append(stop(runner, name))
     return cmds
 
 
