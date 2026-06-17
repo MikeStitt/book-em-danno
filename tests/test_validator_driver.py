@@ -34,17 +34,37 @@ def test_capture_exec_builds_non_tty_bash_lc(monkeypatch: pytest.MonkeyPatch) ->
     assert res.stdout == "ok"
 
 
+# A trimmed but faithful capture of opencode 1.17.7 `--format json` stdout: JSONL
+# events (one per line), the schema the driver/oracle read. Pinned live at M1.
+_TEXT_TURN = (
+    '{"type":"step_start","sessionID":"ses_1","part":{"type":"step-start"}}\n'
+    '{"type":"text","sessionID":"ses_1","part":{"type":"text","text":"I will create the file."}}\n'
+    '{"type":"step_finish","sessionID":"ses_1",'
+    '"part":{"type":"step-finish","reason":"stop","tokens":{"total":3516},"cost":0}}\n'
+)
+_TOOL_TURN = (
+    '{"type":"step_start","sessionID":"ses_2","part":{"type":"step-start"}}\n'
+    '{"type":"tool","sessionID":"ses_2","part":{"type":"tool","tool":"write",'
+    '"callID":"call_x","state":{"status":"completed","output":"Wrote file successfully."}}}\n'
+    '{"type":"text","sessionID":"ses_2","part":{"type":"text","text":"done"}}\n'
+    '{"type":"step_finish","sessionID":"ses_2",'
+    '"part":{"type":"step-finish","reason":"stop","tokens":{"total":200},"cost":0}}\n'
+)
+
+
 def test_opencode_run_minimal_command(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = _patch_capture(monkeypatch, stdout="{}")
+    calls = _patch_capture(monkeypatch, stdout=_TEXT_TURN)
     driver.opencode_run(Runner(), "box", "do the thing")
     assert calls == [
-        ["docker", "sandbox", "exec", "box", "opencode", "run", "-f", "json", "do the thing"]
+        ["docker", "sandbox", "exec", "box", "opencode", "run", "--format", "json", "do the thing"]
     ]
 
 
-def test_opencode_run_with_session_and_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = _patch_capture(monkeypatch, stdout="{}")
-    driver.opencode_run(Runner(), "box", "next turn", session="sess-1", workspace="/repo")
+def test_opencode_run_with_session_agent_and_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _patch_capture(monkeypatch, stdout=_TOOL_TURN)
+    driver.opencode_run(
+        Runner(), "box", "next turn", session="sess-1", agent="build", workspace="/repo"
+    )
     assert calls == [
         [
             "docker",
@@ -55,8 +75,10 @@ def test_opencode_run_with_session_and_workspace(monkeypatch: pytest.MonkeyPatch
             "box",
             "opencode",
             "run",
-            "-f",
+            "--format",
             "json",
+            "--agent",
+            "build",
             driver.OPENCODE_SESSION_FLAG,
             "sess-1",
             "next turn",
@@ -64,23 +86,120 @@ def test_opencode_run_with_session_and_workspace(monkeypatch: pytest.MonkeyPatch
     ]
 
 
-def test_opencode_run_parses_json_payload(monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_capture(monkeypatch, stdout='{"role": "assistant"}')
+def test_opencode_run_model_and_skip_permissions(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _patch_capture(monkeypatch, stdout=_TOOL_TURN)
+    driver.opencode_run(
+        Runner(), "box", "go", agent="build", model="ollama/gemma3:27b", skip_permissions=True
+    )
+    assert calls == [
+        [
+            "docker",
+            "sandbox",
+            "exec",
+            "box",
+            "opencode",
+            "run",
+            "--format",
+            "json",
+            "--agent",
+            "build",
+            "-m",
+            "ollama/gemma3:27b",
+            "--dangerously-skip-permissions",
+            "go",
+        ]
+    ]
+
+
+def test_opencode_run_parses_jsonl_text_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_capture(monkeypatch, stdout=_TEXT_TURN)
     turn = driver.opencode_run(Runner(), "box", "hi")
-    assert turn.payload == {"role": "assistant"}
     assert turn.ok is True
+    assert turn.session_id == "ses_1"
+    assert turn.assistant_text == "I will create the file."
+    assert turn.tool_call_count == 0
+    assert turn.finish_reason == "stop"
+    assert turn.tokens == 3516
+    assert turn.cost == 0.0
 
 
-def test_opencode_run_unparseable_payload_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_opencode_run_reads_tool_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_capture(monkeypatch, stdout=_TOOL_TURN)
+    turn = driver.opencode_run(Runner(), "box", "make a file")
+    assert turn.tool_call_count == 1
+    assert turn.tool_calls[0]["tool"] == "write"
+    assert turn.tool_calls[0]["state"]["status"] == "completed"
+    assert turn.assistant_text == "done"
+
+
+def test_tool_use_event_counts_as_a_tool_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Some turns emit only `tool_use` (streamed call) rather than `tool` (result).
+    stdout = (
+        '{"type":"step_start","sessionID":"s","part":{}}\n'
+        '{"type":"tool_use","sessionID":"s","part":{"type":"tool","tool":"write","callID":"c1"}}\n'
+        '{"type":"text","sessionID":"s","part":{"type":"text","text":"done"}}\n'
+        '{"type":"step_finish","sessionID":"s","part":{"reason":"stop"}}\n'
+    )
+    _patch_capture(monkeypatch, stdout=stdout)
+    turn = driver.opencode_run(Runner(), "box", "go")
+    assert turn.tool_call_count == 1
+
+
+def test_tool_and_tool_use_same_call_dedupe(monkeypatch: pytest.MonkeyPatch) -> None:
+    # One call can surface as both a `tool_use` and a `tool` event; dedupe by callID.
+    stdout = (
+        '{"type":"tool_use","sessionID":"s","part":{"tool":"write","callID":"c1"}}\n'
+        '{"type":"tool","sessionID":"s","part":{"tool":"write","callID":"c1",'
+        '"state":{"status":"completed"}}}\n'
+    )
+    _patch_capture(monkeypatch, stdout=stdout)
+    turn = driver.opencode_run(Runner(), "box", "go")
+    assert turn.tool_call_count == 1
+
+
+def test_parse_events_drops_non_json_log_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `--format json` interleaves human log blocks with the JSONL stream; the
+    # error is still recoverable from its one-line event.
+    stdout = (
+        "[16:27:57.634] ERROR (#10941): failed {\n"
+        '  ref: "err_8d8e41c4",\n'
+        "}\n"
+        '{"type":"error","sessionID":"ses_9","error":{"_tag":"ProviderModelNotFoundError"}}\n'
+    )
+    _patch_capture(monkeypatch, stdout=stdout, returncode=1)
+    turn = driver.opencode_run(Runner(), "box", "hi")
+    assert len(turn.events) == 1  # the multi-line log block was dropped
+    assert len(turn.errors) == 1
+    assert turn.ok is False
+
+
+def test_error_summary_surfaces_api_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    stdout = (
+        '{"type":"error","sessionID":"s","error":{"name":"APIError",'
+        '"data":{"message":"gemma3:27b does not support tools"}}}\n'
+    )
+    _patch_capture(monkeypatch, stdout=stdout, returncode=1)
+    turn = driver.opencode_run(Runner(), "box", "go")
+    assert turn.error_summary == "APIError: gemma3:27b does not support tools"
+
+
+def test_error_summary_falls_back_to_tag(monkeypatch: pytest.MonkeyPatch) -> None:
+    stdout = '{"type":"error","sessionID":"s","error":{"_tag":"ProviderModelNotFoundError"}}\n'
+    _patch_capture(monkeypatch, stdout=stdout, returncode=1)
+    turn = driver.opencode_run(Runner(), "box", "go")
+    assert turn.error_summary == "ProviderModelNotFoundError"
+
+
+def test_opencode_run_unparseable_stdout_yields_no_events(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_capture(monkeypatch, stdout="not json at all")
     turn = driver.opencode_run(Runner(), "box", "hi")
-    assert turn.payload is None
+    assert turn.events == []
     assert turn.raw == "not json at all"
-    assert turn.ok is False  # zero exit but no parseable payload
+    assert turn.ok is False  # zero exit but nothing parsed
 
 
 def test_opencode_run_nonzero_exit_does_not_raise(monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_capture(monkeypatch, stdout="{}", returncode=1)
+    _patch_capture(monkeypatch, stdout=_TEXT_TURN, returncode=1)
     turn = driver.opencode_run(Runner(), "box", "hi")
     assert turn.result.returncode == 1
     assert turn.ok is False  # non-zero exit
