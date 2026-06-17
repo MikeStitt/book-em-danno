@@ -171,8 +171,8 @@ provider = "anthropic"            # API keys stay in the env, never in this file
 kind        = "openai"
 base_url    = "https://integrate.api.nvidia.com/v1"
 api_key_env = "NVIDIA_API_KEY"    # emitted as {env:NVIDIA_API_KEY}; the secret is never
-                                  #   written here — inject it at launch with
-                                  #   `danno sandbox start --env NVIDIA_API_KEY=…`
+                                  #   written here. At launch danno auto-injects it if
+                                  #   exported, else `--env NVIDIA_API_KEY=…`, else fails loud.
 
 [models.gemma4]
 backend          = "ollama"

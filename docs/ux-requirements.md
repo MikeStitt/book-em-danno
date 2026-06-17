@@ -117,8 +117,10 @@ at the boundary (unknown keys and dangling references fail).
   - `ollama` (IMPLEMENTED): `base_url`, `context_budget`, `output_limit`.
   - `openai` (IMPLEMENTED): any OpenAI-compatible endpoint (NVIDIA NIM, vLLM,
     OpenAI itself). `base_url`, `api_key_env` (named env var, emitted as
-    `{env:VAR}` — the secret is never written here; inject via
-    `danno sandbox start --env VAR=…`), `context_budget`, `output_limit`.
+    `{env:VAR}` — the secret is never written here), `context_budget`,
+    `output_limit`. At launch, `sandbox start` auto-injects `VAR` if it's exported
+    in danno's host environment, else accepts `--env VAR=…`, else **fails loud**
+    (rather than letting opencode hit the endpoint with no auth header).
   - `cloud` (IMPLEMENTED): `provider`.
   - `llamacpp` (STUBBED): `base_url` — the generator raises a clear
     "not yet implemented" if a used model references it.

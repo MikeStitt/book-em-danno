@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 import tomllib
@@ -394,6 +395,73 @@ def _build_env_file(agent_lines: list[str], env_pairs: list[str], env_files: lis
     return p
 
 
+_ENV_REF = re.compile(r"\{env:([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _required_env_refs(target_abs: Path) -> set[str]:
+    """Env var names referenced as `{env:VAR}` in the project's opencode.jsonc.
+
+    Scans the raw text (regex, comment-agnostic) so it catches every `{env:…}` the
+    sandboxed opencode will try to resolve — e.g. an `openai` backend's api key."""
+    cfg = target_abs / ".opencode" / "opencode.jsonc"
+    if not cfg.is_file():
+        return set()
+    return set(_ENV_REF.findall(cfg.read_text(encoding="utf-8")))
+
+
+def _provided_env(env_pairs: list[str], env_files: list[str]) -> dict[str, str]:
+    """KEY→VAL the user is injecting via --env / --env-file (later entries win)."""
+    provided: dict[str, str] = {}
+    for f in env_files:
+        for line in Path(f).read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, val = line.split("=", 1)
+                provided[key] = val
+    for pair in env_pairs:
+        if "=" in pair:
+            key, val = pair.split("=", 1)
+            provided[key] = val
+    return provided
+
+
+def reconcile_env_refs(target_abs: Path, env_pairs: list[str], env_files: list[str]) -> list[str]:
+    """Fail loud (Working Rule 8) if opencode.jsonc references an env var that isn't
+    supplied, and auto-inject any that are exported in danno's host environment.
+
+    Returns env_pairs augmented with host values for referenced vars the user did
+    not pass explicitly; raises `CommandFailedError` listing any that are neither
+    passed via --env/--env-file nor present (non-empty) in the host environment —
+    so a missing key fails up front instead of as a deep opencode 'authorization
+    missing' error."""
+    required = _required_env_refs(target_abs)
+    if not required:
+        return env_pairs
+    provided = _provided_env(env_pairs, env_files)
+    augmented = list(env_pairs)
+    missing: list[str] = []
+    for name in sorted(required):
+        if provided.get(name):  # explicitly passed, non-empty
+            continue
+        if name in provided:  # passed but empty — the exact footgun we hit
+            missing.append(name)
+            continue
+        host = os.environ.get(name)
+        if host:
+            augmented.append(f"{name}={host}")
+            log_info(f"injecting {name} from danno's host environment")
+        else:
+            missing.append(name)
+    if missing:
+        names = ", ".join(missing)
+        raise CommandFailedError(
+            f"opencode.jsonc needs env var(s) not supplied: {names}. Export them "
+            f"(e.g. `export {missing[0]}=…`) or pass `--env {missing[0]}=…` to "
+            f"`danno sandbox start`."
+        )
+    return augmented
+
+
 def launch(
     runner: Runner,
     name: str,
@@ -419,6 +487,10 @@ def launch(
     env_files = env_files or []
     if agent == "claude" and home is not None:
         seed_onboarding(home, target_abs)
+    if agent == DEFAULT_AGENT:
+        # opencode reads opencode.jsonc; verify every {env:VAR} it references is
+        # supplied (auto-injecting host-exported ones), else fail loud up front.
+        env_pairs = reconcile_env_refs(target_abs, env_pairs, env_files)
     lines = agent_env(agent, ollama_url, home)
     injected = ", ".join(line.split("=", 1)[0] for line in lines)
     log_info(f"injecting {injected} via a chmod-600 --env-file")

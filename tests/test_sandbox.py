@@ -133,6 +133,53 @@ def test_launch_forwards_agent_args() -> None:
     assert r.commands[0][8:] == ["probe", "opencode", "--resume", "abc123"]
 
 
+def _write_opencode_cfg(target: Path, body: str) -> None:
+    (target / ".opencode").mkdir(parents=True, exist_ok=True)
+    (target / ".opencode" / "opencode.jsonc").write_text(body, encoding="utf-8")
+
+
+def test_reconcile_env_refs_fails_loud_when_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_opencode_cfg(tmp_path, '{ "apiKey": "{env:NVIDIA_API_KEY}" }')
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    with pytest.raises(CommandFailedError, match="NVIDIA_API_KEY"):
+        sandbox.reconcile_env_refs(tmp_path, [], [])
+
+
+def test_reconcile_env_refs_auto_injects_from_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_opencode_cfg(tmp_path, '{ "apiKey": "{env:NVIDIA_API_KEY}" }')
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-secret")
+    assert sandbox.reconcile_env_refs(tmp_path, [], []) == ["NVIDIA_API_KEY=nvapi-secret"]
+
+
+def test_reconcile_env_refs_passes_when_supplied_via_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_opencode_cfg(tmp_path, '{ "apiKey": "{env:NVIDIA_API_KEY}" }')
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    # Explicitly passed via --env → accepted, not duplicated from host.
+    pairs = sandbox.reconcile_env_refs(tmp_path, ["NVIDIA_API_KEY=nvapi-x"], [])
+    assert pairs == ["NVIDIA_API_KEY=nvapi-x"]
+
+
+def test_reconcile_env_refs_empty_value_fails_loud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The exact footgun: `--env NVIDIA_API_KEY=` (empty) must fail, not slip through.
+    _write_opencode_cfg(tmp_path, '{ "apiKey": "{env:NVIDIA_API_KEY}" }')
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    with pytest.raises(CommandFailedError, match="NVIDIA_API_KEY"):
+        sandbox.reconcile_env_refs(tmp_path, ["NVIDIA_API_KEY="], [])
+
+
+def test_reconcile_env_refs_noop_without_refs(tmp_path: Path) -> None:
+    # No opencode.jsonc (or no {env:…}) → returns env_pairs unchanged, never raises.
+    assert sandbox.reconcile_env_refs(tmp_path, ["FOO=bar"], []) == ["FOO=bar"]
+
+
 def test_shell_command() -> None:
     r = RecordingRunner()
     sandbox.shell(r, "probe")
