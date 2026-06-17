@@ -13,7 +13,7 @@
 Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 - [x] Background investigation (headless modes, tool-use fidelity, native endpoints)
-- [ ] **M0 — danno headless primitives** (capture exec, session-continued run, workspace reset)
+- [x] **M0 — danno headless primitives** (capture exec, session-continued run, workspace reset)
 - [ ] M1 — Level-0 liveness test + single-config MyST report
 - [ ] M2 — config-matrix sweep + results-matrix index
 - [ ] M3 — Level-1 tool/bash oracle (pull 1 benchmark task)
@@ -133,6 +133,34 @@ These are the only true blockers; everything else is harness code.
 
 These can live in `danno_validator` calling `book_em_danno` library functions, keeping
 the `danno` CLI surface small; promote into the CLI only if broadly useful.
+
+### M0 — DONE (2026-06-17), with these decisions
+
+Implemented on branch `danno-validator-m0` (stacked on `feat-openai-backend-and-provision-fix`):
+
+- **`Runner.capture`** (`src/book_em_danno/core/exec.py`) — a third execution mode beside
+  `advise`/`run`: always executes (apply-independent), captures stdout/stderr/exit into a
+  `CaptureResult`, `check=False` by default (a stalled/errored AUT turn is *data*, not a
+  danno failure). Verbose-only logging — machine-driven, no copy-paste line.
+- **`danno_validator.driver`** (new sibling package `src/danno_validator/`) — `capture_exec`,
+  `opencode_run` (lenient JSON parse via `OpencodeTurn`; payload fields deliberately
+  uninterpreted until the schema is observed live at M1), `seed_workspace`,
+  `reset_workspace`.
+- **Work-dir + reports → `./.danno-validator/` in the invoking cwd** (gitignored;
+  `DEFAULT_WORK_DIR`). Reports land here too — *not* `doc/results/`.
+- **Destructive-reset marker guard (mandatory).** The sandbox mounts a host dir into the
+  VM, so `git clean -fdx && git reset --hard` mutates the host workspace. `reset_workspace`
+  therefore **refuses** (loud `CommandFailedError`) any dir lacking the
+  `.danno-validator-workspace` marker that `seed_workspace` drops; `git clean -e` excludes
+  the marker so the guard keeps holding across repeated resets. A misconfigured path can
+  never wipe a real repo.
+- **Packaging.** `danno_validator` ships in the wheel (added to hatch `packages`); its heavy
+  deps (Anthropic SDK for the judge, Sphinx/MyST/Jinja2 for reports) go behind the
+  `danno[validator]` optional extra (empty at M0). uv stays dev-only; PyPI/pip consumers are
+  unaffected.
+- **Open for M1:** confirm opencode's session flag (`OPENCODE_SESSION_FLAG = "--session"`,
+  from this plan, not from running opencode) against the installed version on the first live
+  turn; pin the `-f json` payload schema the stall oracle will read.
 
 ## The annotated "menu" danno.toml
 
