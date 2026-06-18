@@ -33,6 +33,7 @@ from book_em_danno.core.exec import Runner
 from danno_validator import level0
 from danno_validator.driver import Turn, TurnFn, opencode_run, reset_workspace, seed_workspace
 from danno_validator.events import ProgressFn, ValidateEvent
+from danno_validator.judge import JudgeFn
 from danno_validator.level0 import DEFAULT_AGENT, DEFAULT_SCRIPT, ConversationResult, ScriptedTurn
 from danno_validator.level1 import DEFAULT_TASK as DEFAULT_L1_TASK
 from danno_validator.level1 import Level1Task, TaskResult, run_level1
@@ -133,6 +134,7 @@ def run_sweep(
     level2: bool = True,
     level2_task: Level2Task = DEFAULT_L2_TASK,
     env_file: Path | None = None,
+    judge: JudgeFn | None = None,
     on_event: ProgressFn | None = None,
 ) -> list[SweepResult]:
     """Run the tiered battery against each model variant of `config`, sequentially.
@@ -171,6 +173,7 @@ def run_sweep(
                 level2=level2,
                 level2_task=level2_task,
                 run_turn=run_turn,
+                judge=judge,
                 on_event=on_event,
             )
         )
@@ -189,6 +192,7 @@ def run_tiers(
     level1_task: Level1Task = DEFAULT_L1_TASK,
     level2: bool = True,
     level2_task: Level2Task = DEFAULT_L2_TASK,
+    judge: JudgeFn | None = None,
     run_turn: TurnFn | None = None,
     on_event: ProgressFn | None = None,
 ) -> SweepResult:
@@ -207,6 +211,10 @@ def run_tiers(
     (start, done-with-verdict, or skip) for live status reporting — purely
     observational; the returned `SweepResult` is identical whether or not anyone is
     watching.
+
+    `judge`, when given, grades L2 dev quality on top of the objective oracle (see
+    `judge.make_judge`); the verdict rides on `SweepResult.level2.judgement`. Off by
+    default so the sweep stays offline unless a caller wires in a real judge client.
     """
 
     def emit(**kw: object) -> None:
@@ -269,6 +277,7 @@ def run_tiers(
                 task=level2_task,
                 agent=agent,
                 run_turn=run_turn,
+                judge=judge,
             )
             emit(
                 phase="tier-done",

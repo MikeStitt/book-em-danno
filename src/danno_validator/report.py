@@ -3,9 +3,9 @@
 M1 emitted one page per config; M2 adds the **sweep index**: a results matrix over
 many configs plus a `{toctree}` linking each per-config page. Both are rendered
 with stdlib string building (no Jinja2/Sphinx dependency yet) — a handful of rows
-and a toctree need no template engine, so the `danno[validator]` extra stays empty
-until the judge (M6) brings the Anthropic SDK. MyST is just Markdown here, so the
-pages also read fine raw.
+and a toctree need no template engine. MyST is just Markdown here, so the pages
+also read fine raw. When a run supplies the L2 dev-quality judge, its verdict is
+appended to the Level-2 section (see `_level2_section`).
 
 Transcripts are sanitised before they reach the page: ANSI escapes stripped, and
 raw model output fenced so stray backticks or markup can't break the document.
@@ -158,6 +158,15 @@ def _level2_section(dr: DevTaskResult) -> str:
         "",
         _fence(test_output),
     ]
+    if dr.judgement is not None:
+        j = dr.judgement
+        lines += [
+            "",
+            "**Dev-quality judge** "
+            f"(`{j.model}`) — score {j.score}/5 · clarity {j.clarity}/5 · {j.sizing.value}",
+            "",
+            _fence(j.rationale),
+        ]
     if dr.turn.errors:
         lines.append(f"- error: {dr.turn.error_summary}")
     return "\n".join(lines)

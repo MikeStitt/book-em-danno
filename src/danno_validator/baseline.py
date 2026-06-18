@@ -28,6 +28,7 @@ from book_em_danno.commands.sandbox import DEFAULT_OLLAMA_URL, _build_env_file, 
 from book_em_danno.core.exec import Runner
 from danno_validator.driver import Turn, TurnFn, claude_run, reset_workspace
 from danno_validator.events import ProgressFn
+from danno_validator.judge import JudgeFn
 from danno_validator.level0 import DEFAULT_SCRIPT, ScriptedTurn
 from danno_validator.level1 import DEFAULT_TASK as DEFAULT_L1_TASK
 from danno_validator.level1 import Level1Task
@@ -135,6 +136,7 @@ def run_baseline(
     level1_task: Level1Task = DEFAULT_L1_TASK,
     level2: bool = True,
     level2_task: Level2Task = DEFAULT_L2_TASK,
+    judge: JudgeFn | None = None,
     on_event: ProgressFn | None = None,
 ) -> SweepResult:
     """Run the L0→L1→L2 battery against Claude Code in a claude `sandbox`.
@@ -170,6 +172,7 @@ def run_baseline(
             level1_task=level1_task,
             level2=level2,
             level2_task=level2_task,
+            judge=judge,
             run_turn=_authed_claude_run(auth_file, model),
             on_event=on_event,
         )

@@ -17,10 +17,13 @@ dependencies = [
 # MyST report, annotated menu, and results.json need only stdlib + book_em_danno.
 # This extra gates only the heavy optional deps, so a base `pip install danno` stays
 # lean and pip-friendly (no uv assumed): the Anthropic SDK for the administrator-AI
-# judge, and Sphinx/MyST/Jinja2 for `danno validate --html`. Both are still pending,
-# so this is empty for now; the features that need them fail loud until you
-# `pip install danno[validator]`.
-validator = []
+# (L2 dev-quality judge — `danno_validator.judge`), and, still pending, Sphinx/MyST/
+# Jinja2 for `danno validate --html`. The judge lazy-imports `anthropic` and fails
+# loud until you `pip install danno[validator]` (or `uv sync --extra validator`); the
+# rest of the harness (sweep, report, menu, results.json) needs none of these.
+validator = [
+    "anthropic>=0.109.2",
+]
 
 [project.scripts]
 danno = "book_em_danno.cli:app"
@@ -63,3 +66,10 @@ files = ["src"]
 disallow_untyped_defs = true
 warn_unused_ignores = true
 warn_redundant_casts = true
+
+# `anthropic` lives in the optional `[validator]` extra, which the base gate env
+# does not sync — and the judge lazy-imports it behind a fail-loud guard. Ignore the
+# missing import so `ninja check` type-checks without the extra installed.
+[[tool.mypy.overrides]]
+module = "anthropic.*"
+ignore_missing_imports = true

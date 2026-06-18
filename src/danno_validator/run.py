@@ -20,6 +20,7 @@ orchestration logic without a Docker daemon.
 
 from __future__ import annotations
 
+import os
 import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -29,9 +30,10 @@ from pathlib import Path
 
 from book_em_danno.commands import sandbox as sb
 from book_em_danno.config.schema import CloudBackend, DannoConfig
-from book_em_danno.core.exec import Runner, log_warn
+from book_em_danno.core.exec import CommandFailedError, Runner, log_warn
 from danno_validator.baseline import BASELINE_MODEL, run_baseline
 from danno_validator.events import ValidateEvent
+from danno_validator.judge import JudgeFn
 from danno_validator.matrix import model_variants
 from danno_validator.menu import write_menu
 from danno_validator.report import write_sweep_report
@@ -50,6 +52,8 @@ class ValidateOptions:
     max_level: int = 2
     baseline: bool = False
     baseline_model: str | None = None
+    judge: bool = False
+    judge_model: str | None = None
     agent: str = DEFAULT_AGENT
     env: list[str] = field(default_factory=list)
     env_file: list[str] = field(default_factory=list)
@@ -74,6 +78,8 @@ class ValidatePlan:
     max_level: int
     baseline: bool
     baseline_model: str | None
+    judge: bool
+    judge_model: str | None
     agent: str
     workspace: Path
     out_dir: Path
@@ -148,6 +154,8 @@ def _resolve_plan(config: DannoConfig, opts: ValidateOptions, *, timestamp: str)
         max_level=opts.max_level,
         baseline=opts.baseline,
         baseline_model=opts.baseline_model,
+        judge=opts.judge,
+        judge_model=opts.judge_model,
         agent=opts.agent,
         workspace=workspace,
         out_dir=out_dir,
@@ -197,6 +205,39 @@ def _build_sweep_env_file(
     return sb._build_env_file([], augmented, opts.env_file)
 
 
+def _build_judge(opts: ValidateOptions) -> JudgeFn | None:
+    """Build the L2 dev-quality `JudgeFn` from `--judge`, or `None` when off.
+
+    Fails loud up front (Working Rule 8), *before* any sandbox is provisioned: a
+    missing Anthropic key or the un-installed `danno[validator]` extra aborts here
+    rather than mid-sweep. The judge runs host-side (not in the sandbox), so it
+    needs the key in danno's own environment. It uses the Anthropic SDK, which
+    honours `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` — *not* the Claude Code
+    subscription `CLAUDE_CODE_OAUTH_TOKEN` (that authenticates Claude Code, not the
+    SDK; see the baseline, which is the one place that token is used)."""
+    if not opts.judge:
+        return None
+    from danno_validator.judge import (
+        DEFAULT_JUDGE_MODEL,
+        AnthropicJudgeClient,
+        JudgeError,
+        make_judge,
+    )
+
+    if not any(os.environ.get(var) for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")):
+        raise CommandFailedError(
+            "the L2 dev-quality judge (--judge) needs an Anthropic API key, but neither "
+            "ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN is set in danno's environment. "
+            "Export one (API billing — the judge uses the Anthropic SDK, not the Claude "
+            "Code subscription token), or drop --judge."
+        )
+    try:
+        client = AnthropicJudgeClient()
+    except JudgeError as exc:  # the `danno[validator]` extra (anthropic SDK) isn't installed
+        raise CommandFailedError(str(exc)) from exc
+    return make_judge(client, model=opts.judge_model or DEFAULT_JUDGE_MODEL)
+
+
 def _teardown(runner: Runner, name: str) -> None:
     """Stop and remove a disposable validator sandbox (best effort under --apply)."""
     sb.stop(runner, name)
@@ -228,6 +269,9 @@ def run_validate(
     if opts.baseline:
         # Fail loud *before* provisioning anything if claude auth is missing.
         sb.agent_env("claude", sb.DEFAULT_OLLAMA_URL)
+    # Same discipline for the judge: validate its auth/SDK up front (also on a dry run,
+    # so the preview surfaces a misconfigured --judge before an expensive real run).
+    judge = _build_judge(opts)
     if opts.dry_run:
         return ValidateResult(plan=plan, dry_run=True)
 
@@ -256,6 +300,7 @@ def run_validate(
             level1=level1,
             level2=level2,
             env_file=sweep_env_file,
+            judge=judge,
             on_event=reporter.event,
         )
     finally:
@@ -276,6 +321,7 @@ def run_validate(
                 reset=opts.reset,
                 level1=level1,
                 level2=level2,
+                judge=judge,
                 on_event=reporter.event,
             )
         )
@@ -333,6 +379,7 @@ def _run_meta(plan: ValidatePlan, opts: ValidateOptions) -> dict[str, object]:
         "out_dir": str(plan.out_dir),
         "sandboxes": {"sweep": plan.sweep_sandbox, "baseline": plan.baseline_sandbox},
         "baseline": {"enabled": opts.baseline, "requested_model": opts.baseline_model},
+        "judge": {"enabled": opts.judge, "requested_model": opts.judge_model},
     }
 
 

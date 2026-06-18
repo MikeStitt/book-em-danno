@@ -21,6 +21,7 @@ from typing import Any
 
 from danno_validator.baseline import BASELINE_MODEL
 from danno_validator.driver import Turn
+from danno_validator.judge import Judgement
 from danno_validator.level0 import ConversationResult, TurnRecord
 from danno_validator.level1 import TaskResult
 from danno_validator.level2 import DevTaskResult
@@ -114,6 +115,23 @@ def _dev(dr: DevTaskResult | None) -> dict[str, Any] | None:
             "stdout": dr.test_run.stdout,
             "stderr": dr.test_run.stderr,
         },
+        # The fuzzy dev-quality verdict, or null when no judge ran (additive — the
+        # results.json schema stays v1; consumers treat a missing/null judge as
+        # "not graded").
+        "judgement": _judgement(dr.judgement),
+    }
+
+
+def _judgement(j: Judgement | None) -> dict[str, Any] | None:
+    """The L2 dev-quality judge verdict (`judge.Judgement`), or null when none ran."""
+    if j is None:
+        return None
+    return {
+        "model": j.model,
+        "score": j.score,
+        "clarity": j.clarity,
+        "sizing": j.sizing.value,
+        "rationale": j.rationale,
     }
 
 

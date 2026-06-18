@@ -27,8 +27,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] M5 — Claude Code baseline + comparison row (agent-agnostic `Turn` seam,
   in-sandbox `claude -p` driver, baseline row in the same matrix; live-verified —
   see "M5 — DONE" below)
-- [~] M6 — annotated "menu" danno.toml emitter (DONE — see "M6 — menu emitter DONE"
-  below) + Anthropic-SDK judge (still to do)
+- [x] M6 — annotated "menu" danno.toml emitter (DONE — see "M6 — menu emitter DONE"
+  below) + Anthropic-SDK L2 dev-quality judge (DONE — see "M6 — judge DONE" below)
 - [ ] M7 — serve+SDK rich backend · llama.cpp model switching · full benchmark banks
 
 ## Goal
@@ -527,12 +527,26 @@ extra).
   reporter — the emitter stands alone; the live combined-report driver
   (`scratch/m5_live_baseline.py`) can call `write_menu` once a sweep CLI lands.
 
-### M6 — judge (DEFERRED, scope decided 2026-06-18)
+### M6 — judge DONE (2026-06-18) · branch `danno-validator-judge`
 
-The Anthropic-SDK judge is the remaining M6 piece; the user **paused** it after the
-menu emitter shipped (adds the `anthropic` dep + live API calls — build it as its own
-change, not folded into the menu PR). Design decisions made up front so the next
-session doesn't re-litigate:
+The Anthropic-SDK L2 dev-quality judge **shipped**, completing M6. `danno_validator/
+judge.py` is a pure scoring core (`build_prompt`, `parse_judgement` enforcing the 1–5
+range + `sizing` enum the structured-output schema can't) behind a one-method
+`JudgeClient` seam; `AnthropicJudgeClient` lazy-imports `anthropic` (Messages API
+structured outputs via `output_config.format`, verified against the claude-api
+reference) so `ninja check` stays offline. `make_judge(client, model=…)` binds a
+`JudgeFn` threaded `run_validate → run_sweep/run_baseline → run_tiers → run_level2`,
+which reads the produced sources off the mount, grades quality on top of the objective
+oracle, and attaches the verdict as `DevTaskResult.judgement` (rendered in the L2
+report section + `results.json`; `None`/off by default). The CLI exposes `--judge` /
+`--judge-model` (default opus); `run.py:_build_judge` fails loud up front if
+`ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` is unset or the `danno[validator]` extra
+(now carrying `anthropic`) isn't installed. The judge model is recorded per-`Judgement`
+(pin-and-track) and per-run in `results.json`. **Still to do: a real live API run** —
+the offline tests + a real Anthropic call have not yet been exercised end-to-end
+together (the call *shape* is verified against the reference; the round-trip is not).
+
+Design decisions made up front (all honoured):
 - **Scope = L2 dev quality only.** Grade software-dev *quality beyond the hidden-test
   pass/fail* (code clarity, over-/under-building) — the tier where partial credit
   actually matters. NOT a fuzzy layer across all tiers; L0/L1 keep the objective

@@ -12,9 +12,11 @@ import pytest
 from book_em_danno.commands import sandbox as sb
 from book_em_danno.config.schema import CloudBackend, DannoConfig, Model, OllamaBackend
 from book_em_danno.core.exec import CaptureResult, CommandFailedError, Runner
+from danno_validator import judge as judge_mod
 from danno_validator import run as run_mod
 from danno_validator.driver import OpencodeTurn
 from danno_validator.events import ValidateEvent
+from danno_validator.judge import JudgeFn
 from danno_validator.level0 import ConversationResult, TurnRecord
 from danno_validator.level1 import TaskResult
 from danno_validator.level2 import DevTaskResult, TestRun
@@ -149,6 +151,7 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> dict:
         level2,
         on_event,
         env_file=None,
+        judge=None,
         agent="build",
     ):
         calls["sweep_kwargs"] = {
@@ -158,6 +161,7 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> dict:
             "reset": reset,
             "agent": agent,
             "env_file": env_file,
+            "judge": judge,
         }
         # The file is unlinked once the sweep returns, so capture its contents now.
         calls["env_file_contents"] = (
@@ -167,8 +171,11 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> dict:
         names = list(only or ["gptoss", "gemma", "sonnet"])
         return [_pass(n, f"ollama/{n}") for n in names]
 
-    def fake_baseline(runner, name, *, workspace_root, model, reset, level1, level2, on_event):
+    def fake_baseline(
+        runner, name, *, workspace_root, model, reset, level1, level2, on_event, judge=None
+    ):
         calls["baseline"] += 1
+        calls["baseline_judge"] = judge
         return _pass("claude-code", model or "claude-opus-4-8")
 
     monkeypatch.setattr(run_mod, "run_sweep", fake_sweep)
@@ -342,3 +349,67 @@ def test_local_only_sweep_needs_no_env_file(
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     _run(_opts(tmp_path, only=["gptoss"]))
     assert patched["sweep_kwargs"]["env_file"] is None
+
+
+# --- L2 dev-quality judge wiring --------------------------------------------
+
+
+def test_judge_off_passes_none_to_sweep(patched: dict, tmp_path: Path) -> None:
+    _run(_opts(tmp_path))
+    assert patched["sweep_kwargs"]["judge"] is None
+
+
+def test_judge_threads_into_sweep_and_baseline(
+    patched: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Stub the judge builder so the test doesn't need the anthropic SDK or a key; the
+    # orchestration should hand the same JudgeFn to both the sweep and the baseline.
+    sentinel: JudgeFn = lambda work: None  # noqa: E731 - a throwaway stand-in
+    monkeypatch.setattr(run_mod, "_build_judge", lambda opts: sentinel if opts.judge else None)
+    _run(_opts(tmp_path, judge=True, baseline=True))
+    assert patched["sweep_kwargs"]["judge"] is sentinel
+    assert patched["baseline_judge"] is sentinel
+
+
+def test_build_judge_off_returns_none(tmp_path: Path) -> None:
+    assert run_mod._build_judge(_opts(tmp_path, judge=False)) is None  # type: ignore[arg-type]
+
+
+def test_build_judge_missing_key_fails_loud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    with pytest.raises(CommandFailedError, match="Anthropic API key"):
+        run_mod._build_judge(_opts(tmp_path, judge=True))  # type: ignore[arg-type]
+
+
+def test_build_judge_missing_sdk_fails_loud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Key present, but the danno[validator] extra (anthropic) isn't installed → the
+    # JudgeError install hint is surfaced as a clean CommandFailedError (exit 4).
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-x")
+
+    def boom() -> object:
+        raise judge_mod.JudgeError("install `pip install danno[validator]`")
+
+    monkeypatch.setattr(judge_mod, "AnthropicJudgeClient", boom)
+    with pytest.raises(CommandFailedError, match="validator"):
+        run_mod._build_judge(_opts(tmp_path, judge=True))  # type: ignore[arg-type]
+
+
+def test_build_judge_success_returns_callable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-x")
+    monkeypatch.setattr(judge_mod, "AnthropicJudgeClient", lambda: object())
+    fn = run_mod._build_judge(_opts(tmp_path, judge=True, judge_model="sonnet"))  # type: ignore[arg-type]
+    assert callable(fn)
+
+
+def test_run_meta_records_judge(tmp_path: Path) -> None:
+    opts = _opts(tmp_path, judge=True, judge_model="haiku")
+    plan = run_mod._resolve_plan(_config(), opts, timestamp="t")  # type: ignore[arg-type]
+    meta = run_mod._run_meta(plan, opts)  # type: ignore[arg-type]
+    assert meta["judge"] == {"enabled": True, "requested_model": "haiku"}
