@@ -425,18 +425,22 @@ fully unit-tested; the orchestration is thin and faked in tests.
 **LIVE-VERIFIED (2026-06-17)** on fresh validator-owned sandboxes over one shared
 `prepare_workspace`-seeded mount (`/private/tmp/danno-validator-m5-live`): an
 **opencode** sandbox swept `gpt-oss-20b` and a **claude** sandbox ran the Claude
-Code baseline, combined into one report. Result matrix:
+Code baseline (pinned `--model opus`), combined into one report. Result matrix:
 
-    config        L0 verdict   L1 verdict   L2 verdict   turns  tokens   latency
-    gpt-oss-20b   pass         pass         pass            2   19056    122.1s
-    claude-code   pass         pass         pass            2     152     12.5s   (baseline)
+    config        model              L0     L1     L2     turns  tokens   latency
+    gpt-oss-20b   ollama/gpt-oss:20b pass   pass   pass      2   19104    99.1s
+    claude-code   claude-opus-4-8    pass   pass   pass      2    2029    9.7s    (baseline)
 
 This proves the agent-agnostic comparison: **the same oracles graded both agents**
 (L0 probe file, L1 `line_count.txt == "7"`, L2 hidden fizzbuzz suite run in-VM →
 "ok — 12 cases passed", exit 0). Claude drove real tool use (L1 `Bash`+`Write`, L2
 `Read`+`Edit`) and the matrix surfaces a real datapoint the harness exists to
-capture — claude reaches the same oracle outcomes at ~125× fewer tokens and ~10×
-lower latency than the local model on these tasks.
+capture — claude reaches the same oracle outcomes at ~9× fewer tokens and ~10×
+lower latency than the local model on these tasks. **Model pin/track validated
+live:** `--model opus` resolved to `claude-opus-4-8`, which the row records — and
+notably it differs from the *default* (an earlier unpinned run resolved to
+`claude-opus-4-8[1m]`, the 1M-context variant), exactly the cost/behaviour variance
+that makes pinning-and-recording the model necessary, not optional.
 
 - **One agent-agnostic seam, two transcript formats.** A structural `Turn`
   protocol (`driver.py`) captures exactly the read surface the oracle, the level
