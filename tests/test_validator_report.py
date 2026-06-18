@@ -121,6 +121,22 @@ def test_matrix_index_has_row_per_config_and_toctree() -> None:
     assert "level0-ollama-gemma3-27b" in page
 
 
+def test_write_sweep_report_prunes_stale_pages(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    # A leftover page from a prior run with a different model set, plus an
+    # unrelated file the writer must not touch.
+    (out / "level0-claude-opus-4-8.md").write_text("stale")
+    (out / "notes.md").write_text("keep me")
+
+    pages, _ = write_sweep_report(_sweep(), out)
+
+    written = {p.name for p in pages}
+    assert "level0-claude-opus-4-8.md" not in written
+    assert not (out / "level0-claude-opus-4-8.md").exists()  # orphan pruned
+    assert (out / "notes.md").read_text() == "keep me"  # non-page file untouched
+
+
 def test_write_sweep_report_writes_pages_and_matching_index(tmp_path: Path) -> None:
     pages, index = write_sweep_report(_sweep(), tmp_path / "out")
     assert {p.name for p in pages} == {
@@ -272,3 +288,27 @@ def test_render_page_appends_level1_section_when_present() -> None:
 def test_render_page_omits_level1_section_when_absent() -> None:
     page = render_level0_page(_pass_result("ollama/gpt-oss:20b"))
     assert "## Level 1 — tool/bash" not in page
+
+
+def test_matrix_index_flags_baseline_row_and_excludes_it_from_tally() -> None:
+    sweep = [
+        SweepResult(
+            variant=ConfigVariant("gemma", "ollama/gemma3:27b", "ollama/gemma3:27b"),
+            result=_stall_result(),
+        ),
+        SweepResult(
+            variant=ConfigVariant("claude-code", "claude-code (baseline)", "baseline"),
+            result=_pass_result("claude-code"),
+            level1=_task_result("claude-code", side_effect=True),
+            level2=_dev_result("claude-code", side_effect=True),
+        ),
+    ]
+    page = render_matrix_index(sweep, ["level0-ollama-gemma3-27b", "level0-claude-code"])
+    # Only the local model counts as a swept config; the baseline is the reference.
+    assert "1 config(s) swept · 0 passed · 1 failed." in page
+    assert "+ Claude Code baseline (reference row)." in page
+    # The baseline row is rendered and flagged.
+    assert "| `claude-code` _(baseline)_ | `claude-code (baseline)` |" in page
+    # Taxonomy describes the models under test, so the baseline's pass is excluded.
+    assert "`pass`" not in page
+    assert "`stall`: 1" in page

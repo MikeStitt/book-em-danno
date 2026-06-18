@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from book_em_danno.core.exec import Runner
-from danno_validator.driver import OpencodeTurn, opencode_run
+from danno_validator.driver import Turn, TurnFn, opencode_run
 from danno_validator.oracle import FailureClass, TurnVerdict, classify_turn
 
 # The L0 task's side effect: a file with known content the oracle can verify
@@ -71,7 +71,7 @@ class TurnRecord:
 
     label: str
     prompt: str
-    turn: OpencodeTurn
+    turn: Turn
     verdict: TurnVerdict
     latency_s: float
 
@@ -131,9 +131,10 @@ def _run_turn(
     agent: str,
     session: str | None,
     workspace_root: Path,
+    run_turn: TurnFn,
 ) -> TurnRecord:
     start = time.monotonic()
-    turn = opencode_run(
+    turn = run_turn(
         runner,
         sandbox,
         scripted.prompt,
@@ -168,13 +169,19 @@ def run_level0(
     workspace_root: Path,
     agent: str = DEFAULT_AGENT,
     script: tuple[ScriptedTurn, ...] = DEFAULT_SCRIPT,
+    run_turn: TurnFn | None = None,
 ) -> ConversationResult:
     """Run the Level-0 battery against `model` in `sandbox`, returning the result.
 
-    Turns share one opencode session (the session id of the first turn carries
-    forward). The nudge is appended only when the action turn fails to produce the
-    side effect, and decides *only-acts-on-nudge* vs a *fully-stalled* verdict.
+    Turns share one session (the session id of the first turn carries forward).
+    The nudge is appended only when the action turn fails to produce the side
+    effect, and decides *only-acts-on-nudge* vs a *fully-stalled* verdict.
+
+    `run_turn` is the turn producer — `opencode_run` by default (resolved at call
+    time so a monkeypatched `level0.opencode_run` still takes effect); the Claude
+    baseline passes `driver.claude_run` to drive the same script against claude.
     """
+    turn_fn = run_turn or opencode_run
     _reset_probe(workspace_root)
     result = ConversationResult(
         model=model, sandbox=sandbox, workspace_root=workspace_root, session_id=None
@@ -191,6 +198,7 @@ def run_level0(
             agent=agent,
             session=session,
             workspace_root=workspace_root,
+            run_turn=turn_fn,
         )
         result.records.append(record)
         session = session or record.turn.session_id
@@ -221,6 +229,7 @@ def run_level0(
         agent=agent,
         session=session,
         workspace_root=workspace_root,
+        run_turn=turn_fn,
     )
     result.records.append(nudge_record)
     result.session_id = session or nudge_record.turn.session_id
