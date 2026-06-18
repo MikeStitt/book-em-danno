@@ -107,7 +107,8 @@ class ConsoleReporter(Reporter):
         if result.menu_path is not None:
             console.print(f"  menu     {result.menu_path}")
             console.print(
-                "           [dim]↳ uncomment the [agents] line you want and copy it into "
+                # Escape the literal brackets so rich doesn't parse `[agents]` as markup.
+                r"           [dim]↳ uncomment the \[agents] line you want and copy it into "
                 "your danno.toml (validate never edits it)[/dim]"
             )
         if result.results_json is not None:
