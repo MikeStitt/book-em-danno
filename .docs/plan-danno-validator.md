@@ -24,7 +24,9 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] M4 — Level-2 software-dev oracle (1 small repo+tests task; hidden test suite run
   in-VM, L0→L1→L2 short-circuit, L2 column/section in the report; live-verified — see
   "M4 — DONE" below)
-- [ ] M5 — Claude Code baseline + comparison row
+- [x] M5 — Claude Code baseline + comparison row (agent-agnostic `Turn` seam,
+  in-sandbox `claude -p` driver, baseline row in the same matrix; live-verified —
+  see "M5 — DONE" below)
 - [ ] M6 — annotated "menu" danno.toml emitter
 - [ ] M7 — serve+SDK rich backend · llama.cpp model switching · full benchmark banks
 
@@ -412,6 +414,73 @@ hallucinated-tool class is reserved for *zero* tool calls.)
   `claude` agent headless, normalised into the same result record). The second matrix
   axis (per-model knobs / prompts) via regenerate-in-place, a larger L2 task bank /
   `--full`, and the general benchmark-adapter path also remain deferred.
+
+### M5 — DONE (2026-06-17), with these decisions
+
+Implemented on branch `danno-validator-m5` (branched off the merged `main` — the
+whole M0–M4 stack landed). `ninja check` green (202 passed). The pure-vs-I/O
+discipline holds: the new driver's parsing and the baseline wiring are pure and
+fully unit-tested; the orchestration is thin and faked in tests.
+
+**LIVE-VERIFIED (2026-06-17)** on fresh validator-owned sandboxes over one shared
+`prepare_workspace`-seeded mount (`/private/tmp/danno-validator-m5-live`): an
+**opencode** sandbox swept `gpt-oss-20b` and a **claude** sandbox ran the Claude
+Code baseline, combined into one report. Result matrix:
+
+    config        L0 verdict   L1 verdict   L2 verdict   turns  tokens   latency
+    gpt-oss-20b   pass         pass         pass            2   19056    122.1s
+    claude-code   pass         pass         pass            2     152     12.5s   (baseline)
+
+This proves the agent-agnostic comparison: **the same oracles graded both agents**
+(L0 probe file, L1 `line_count.txt == "7"`, L2 hidden fizzbuzz suite run in-VM →
+"ok — 12 cases passed", exit 0). Claude drove real tool use (L1 `Bash`+`Write`, L2
+`Read`+`Edit`) and the matrix surfaces a real datapoint the harness exists to
+capture — claude reaches the same oracle outcomes at ~125× fewer tokens and ~10×
+lower latency than the local model on these tasks.
+
+- **One agent-agnostic seam, two transcript formats.** A structural `Turn`
+  protocol (`driver.py`) captures exactly the read surface the oracle, the level
+  runners, and the reporter consume (`assistant_text`, `tool_calls`,
+  `tool_call_count`, `session_id`, `tokens`, `cost`, `errors`, `error_summary`);
+  both `OpencodeTurn` and the new `ClaudeTurn` satisfy it with no inheritance. The
+  level runners gained an injectable `run_turn: TurnFn` (resolved at call time so
+  existing monkeypatched-`opencode_run` tests still hold), and the per-variant
+  L0→L1→L2 short-circuit was extracted from `run_sweep` into a shared
+  `sweep.run_tiers` that both the model sweep (`run_turn=opencode_run`) and the
+  baseline (`run_turn=claude_run`) call. No oracle/report behavior changed.
+- **In-sandbox `claude -p`, no new deps.** `driver.claude_run` drives
+  `docker sandbox exec … claude -p --output-format stream-json --verbose`
+  (+`--resume`/`--dangerously-skip-permissions`), `ClaudeTurn` parses the JSONL
+  onto the `Turn` surface, and tool errors map from `tool_result.is_error`. Flags
+  AND the stream-json schema were **pinned live against claude 2.1.179** (M1
+  discipline) — this time the plan's assumptions held (`-p`,
+  `--output-format stream-json`, `--verbose`, `-r/--resume`,
+  `--dangerously-skip-permissions` all confirmed; no `-f`-style surprise). The
+  baseline is driven via the CLI in a claude sandbox, so the `danno[validator]`
+  extra stays empty (the Anthropic SDK still waits for M6's judge).
+- **The baseline is just another `SweepResult` row.** `baseline.run_baseline`
+  returns one `SweepResult` carrying a synthetic `claude-code` variant
+  (`BASELINE_MODEL`), so appending it to a sweep renders it as a matrix row + page
+  for free. The reporter flags it (`_(baseline)_`) and excludes it from the
+  swept-config tally and the failure-taxonomy counts — those describe the models
+  under test; the baseline is the reference.
+- **Auth was the one real gap (caught only live).** claude needs
+  `CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY` in its exec env, but danno injects
+  auth via `--env-file` only on interactive `launch`; a bare `docker sandbox exec`
+  inherits none, so the first live run scored every claude turn `error`
+  ("Not logged in"). Fix: `claude_run` accepts `env_file` → `--env-file`, and
+  `run_baseline` builds a chmod-600 auth env-file (reusing danno's `agent_env`
+  fail-loud + `_build_env_file`), binds it via a `TurnFn` wrapper kept out of the
+  agent-agnostic runner API, and removes it after. opencode is unaffected (it
+  reads Ollama from `opencode.jsonc`, not env) — exactly why the gap hid until the
+  claude path ran live. The host token is supplied out-of-band (`claude
+  setup-token` → exported), never committed.
+- **Open for M6:** the annotated "menu" danno.toml emitter, and the
+  Anthropic-SDK judge for fuzzy partial-credit on top of the objective oracles.
+  The second matrix axis (per-model knobs / prompts), larger task banks / `--full`,
+  and the general benchmark-adapter path remain deferred. (Live driver:
+  `scratch/m5_live_baseline.py`, gitignored — promote to a `danno_validator` entry
+  point if the sweep CLI is built later.)
 
 ## The annotated "menu" danno.toml
 
