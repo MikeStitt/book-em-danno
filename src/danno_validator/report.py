@@ -290,9 +290,15 @@ def write_sweep_report(results: list[SweepResult], out_dir: Path) -> tuple[list[
     `out_dir`. Returns `(per_config_paths, index_path)`.
 
     The toctree in the index is built from the actual written filenames, so the
-    index and its linked pages can never drift out of sync.
+    index and its linked pages can never drift out of sync. Stale `level0-*.md`
+    pages from a prior run are pruned first, so a re-run with a different model
+    set (different page slugs) leaves no orphaned pages the index no longer links
+    — only the per-config pages this writer owns are removed; anything else in
+    `out_dir` is left untouched.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    for stale in out_dir.glob("level0-*.md"):
+        stale.unlink()
     page_paths = [
         write_level0_page(s.result, out_dir, level1=s.level1, level2=s.level2) for s in results
     ]
