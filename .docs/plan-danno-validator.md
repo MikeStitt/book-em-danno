@@ -527,6 +527,26 @@ extra).
   reporter — the emitter stands alone; the live combined-report driver
   (`scratch/m5_live_baseline.py`) can call `write_menu` once a sweep CLI lands.
 
+### M6 — judge (DEFERRED, scope decided 2026-06-18)
+
+The Anthropic-SDK judge is the remaining M6 piece; the user **paused** it after the
+menu emitter shipped (adds the `anthropic` dep + live API calls — build it as its own
+change, not folded into the menu PR). Design decisions made up front so the next
+session doesn't re-litigate:
+- **Scope = L2 dev quality only.** Grade software-dev *quality beyond the hidden-test
+  pass/fail* (code clarity, over-/under-building) — the tier where partial credit
+  actually matters. NOT a fuzzy layer across all tiers; L0/L1 keep the objective
+  oracle only for now. (L0 coherence / L1 grading remain possible later extensions.)
+- **Judge model = configurable**, not hardcoded. Expose the model as a parameter
+  (opus/sonnet/haiku via the Claude API) and **record the model used per run** in the
+  result/report (same pin+track discipline as the M5 claude baseline). Pick a sensible
+  default but let the caller override.
+- **Keep the objective oracle primary**; the judge is fuzzy-on-top, never a replacement
+  (oracle.py docstring already states this). Build it with a pure scoring core + a thin
+  **mockable** Anthropic client seam so `ninja check` stays offline (the harness's
+  I/O-at-the-boundary pattern); live-verify separately. This is what finally populates
+  the still-empty `danno[validator]` extra.
+
 ## The annotated "menu" danno.toml
 
 The signature deliverable. The emitter writes a large `danno.toml` where every candidate
