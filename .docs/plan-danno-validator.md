@@ -29,7 +29,10 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
   see "M5 — DONE" below)
 - [x] M6 — annotated "menu" danno.toml emitter (DONE — see "M6 — menu emitter DONE"
   below) + Anthropic-SDK L2 dev-quality judge (DONE — see "M6 — judge DONE" below)
-- [ ] M7 — serve+SDK rich backend · llama.cpp model switching · full benchmark banks
+- [ ] M7 — `--html` rich (Sphinx/MyST) report + judge live-verify (small, offline;
+  finishes the `danno[validator]` extra — see "M7 — analysis & decomposition" below)
+- [ ] M8 — benchmark banks + `--trials` pass-rate aggregation (the authority upgrade)
+- [ ] M9+ (demand-driven) — serve+SDK rich streaming · llama.cpp backend · 2nd matrix axis
 
 ## Goal
 
@@ -561,6 +564,78 @@ Design decisions made up front (all honoured):
   I/O-at-the-boundary pattern); live-verify separately. This is what finally populates
   the still-empty `danno[validator]` extra.
 
+## M7 — analysis & decomposition (2026-06-18)
+
+The original roadmap collapsed everything-after-M6 into one line — *"serve+SDK rich
+backend · llama.cpp model switching · full benchmark banks."* Walking the
+`deferred`/`M7`/`stub` markers across the plan + source turns up **seven** distinct
+candidates of very different size and value, so "M7 as written" is really 3–4
+independent milestones bundled. This section is the decomposition; the bundled line is
+split into M7 / M8 / M9+ in the milestone checklist above.
+
+### The backlog (grounded)
+
+| # | Candidate | Promised at | State |
+|---|---|---|---|
+| A | `--html` rich report (Sphinx/MyST/Jinja2 → `<out>/html/`) | `cli.py` `--html`→exit 3 "tracked for M7"; UX doc | MyST report + toctree already written; needs offline render only |
+| B | `opencode serve` + `@opencode-ai/sdk` rich backend (per-token / intermediate-tool events via an in-VM driver writing JSON to the mount) | plan "Rich (M7)", "danno additions" | `-f json` exec driver today; plan calls it "sufficient for L0/L1/L2" |
+| C | llama.cpp backend | `generate.py` `_LLAMACPP_STUB`, `schema.py` | hard-stubbed, raises "not yet implemented" |
+| D | full benchmark banks + `--full` + adapter path (Aider-polyglot/Exercism, SWE-bench-Lite, Terminal-Bench, InterCode-Bash) | `level1.py`/`level2.py`, plan (many) | one curated `DEFAULT_TASK` per level |
+| E | `--trials N` pass-rate aggregation + `results.json` `runs[]` | UX doc; `_run_meta` hardcodes `trials: 1` | "design when N>1 is built" |
+| F | 2nd matrix axis (per-model knobs/prompts) | plan; `matrix.py` varies only model | deferred |
+| G | judge live-verify (real Anthropic round-trip) + `--dry-run` cost estimate | M6 close; UX doc | offline path done; round-trip pending |
+
+### Assessment (value ÷ risk)
+
+- **A — highest ratio, smallest.** Pure host-side render of an artifact that already
+  exists; no sandbox, fully gateable; the *only* candidate already advertised-but-broken
+  in the CLI; finishes the `[validator]` extra M6 started. **Low risk.**
+- **D — highest value, deepest.** What makes the validator *authoritative* (pass-rate
+  over a real bank, not "did it write fizzbuzz"). But architecturally open (bank schema,
+  per-task scoring generalization, hours of runtime) and **co-depends on E** (pass-rate
+  is meaningless on one task). Too deep to be "next".
+- **E — small, only meaningful paired with D.** Solo it measures local-model
+  nondeterminism; its real job is aggregating a bank.
+- **B — high cost, speculative.** `-f json` already carries tool-call/finish info and
+  side effects land in the mount; rich streaming is a live-UX nice-to-have, not a
+  correctness gap, and fights the VM-local-DB / WAL constraint. Build on concrete demand.
+- **C — value gated on demand.** Low technical risk (mirror the openai backend) but zero
+  value until a target project actually declares `llamacpp`. Demand-driven.
+- **F — defer.** No consumer pull.
+- **G — fold into M7's verify pass.** The round-trip is one session with a key; the
+  dry-run cost estimate is blocked on "no reliable local-model timing basis" — which D
+  would itself generate.
+
+### Decision: M7 = A + G; M8 = D + E; M9+ = B, C, F (demand-driven)
+
+Value/risk ordering is **A ≫ D > E > {B,C,F}**, but D is too architecturally open to be
+next. Leading with A banks a guaranteed, fully-gated win and finishes the extra; D
+becomes its own properly-scoped milestone instead of being rushed under an overloaded
+label. Rationale recorded so a future session doesn't re-bundle.
+
+### M7 first slice (≈1 PR)
+
+1. Add `sphinx` + `myst-parser` (+ `jinja2` if a template is wanted) to the
+   `danno[validator]` extra (M6 added `anthropic`; this completes it).
+2. Render the existing report's toctree to `<out>/html/` via a `sphinx-build` invocation
+   (host-side, deterministic, `ninja check`-able). Flip the `cli.py` `--html` exit-3
+   guard to a real render.
+3. Doc `--html` in `--help` + the UX flags table (drop the "deferred" note).
+4. **Judge live-verify (G):** one real `danno validate --judge` against a key; record the
+   round-trip result + any fixes in the M6-judge section (the call *shape* is already
+   verified against the claude-api reference — this exercises the round-trip).
+
+### M8 decisions to settle first (the deep one)
+
+1. **Bank schema** — N scaled `Level2Task`s vs a manifest format (the external-repo
+   adapter path implies a manifest).
+2. **Runtime budget** — real bank × sequential local models = hours; need sampling /
+   `--full`-gating or cloud-only parallelism (local is RAM-bound to sequential).
+3. **Scoring generalization** — per-task test discovery; the Exercism/Aider "repo + tests"
+   shape is cleanest (tests ship with the task).
+4. **`runs[]` schema bump** — settle the `results.json` shape (currently
+   `SCHEMA_VERSION = 1`) once, since both `--trials` and banks write into it.
+
 ## The annotated "menu" danno.toml
 
 The signature deliverable. The emitter writes a large `danno.toml` where every candidate
@@ -635,8 +710,10 @@ outcomes** (workspace side effects + tests), sidestepping transcript-format diff
 - **M3** Level-1 tool/bash oracle (one pulled benchmark task).
 - **M4** Level-2 dev oracle (one small repo+tests task).
 - **M5** Claude Code baseline + comparison row.
-- **M6** annotated "menu" danno.toml emitter.
-- **M7** serve+SDK rich backend; llama.cpp model switching; full benchmark banks.
+- **M6** annotated "menu" danno.toml emitter + L2 dev-quality judge.
+- **M7** `--html` rich report + judge live-verify (finishes the `danno[validator]` extra).
+- **M8** benchmark banks + `--trials` pass-rate aggregation (the authority upgrade).
+- **M9+** (demand-driven) serve+SDK rich streaming; llama.cpp backend; 2nd matrix axis.
 
 ## Relationship to current work
 
