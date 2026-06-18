@@ -3,6 +3,37 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.4.0] - 2026-06-18
+
+### Bug Fixes
+
+- *(validator)* Pass claude auth env-file to the baseline exec
+- *(validator)* Prune stale per-config pages on report re-run
+- *(cli)* Drive the sweep with opencode's run-agent, not the Docker agent
+- *(cli)* Escape [agents] in the validate summary so rich doesn't eat it
+
+### Documentation
+
+- *(validator)* Record M5 live Claude Code baseline verification
+- *(validator)* Record pinned-model live verification
+- *(validator)* Record M6 judge scope decision (deferred, L2-only)
+- *(validator)* Design the `danno validate` CLI (UX proposal)
+- *(pyproject)* Clarify the [validator] extra gates deps, not the command
+
+### Features
+
+- *(validator)* Add agent-agnostic Turn seam + Claude Code driver
+- *(validator)* Add Claude Code baseline row + report flag
+- *(validator)* Pin and track the Claude baseline model
+- *(validator)* Emit annotated "menu" danno.toml from a sweep
+- *(validator)* Add a progress-event seam to the tiered runner
+- *(validator)* Serialize sweep results to a results.json run record
+- *(cli)* Add the `danno validate` command
+
+### Testing
+
+- *(validator)* Patch _teardown so orchestration tests don't shell docker
+
 ## [0.3.0] - 2026-06-17
 
 ### Bug Fixes
