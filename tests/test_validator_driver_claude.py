@@ -32,7 +32,10 @@ def _patch_capture(
 # A trimmed but faithful capture of Claude Code `--output-format stream-json`
 # stdout: a system init, an assistant text turn, an assistant tool_use, the
 # tool_result, and the final result event carrying totals.
-_SYSTEM = '{"type":"system","subtype":"init","cwd":"/repo","session_id":"sess-abc"}'
+_SYSTEM = (
+    '{"type":"system","subtype":"init","cwd":"/repo","session_id":"sess-abc",'
+    '"model":"claude-opus-4-8[1m]"}'
+)
 _ASSISTANT_TEXT = (
     '{"type":"assistant","message":{"role":"assistant","content":'
     '[{"type":"text","text":"I will create the file."}],'
@@ -114,14 +117,33 @@ def test_claude_run_passes_env_file_for_auth(monkeypatch: pytest.MonkeyPatch) ->
     assert argv[7] == "box"
 
 
-def test_claude_run_ignores_agent_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    # agent/model exist only for TurnFn signature parity; claude has no -m/--agent.
+def test_claude_run_pins_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    # model is controlled like opencode's -m, via claude's --model.
     calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
-    driver.claude_run(Runner(), "box", "go", agent="build", model="ollama/x")
+    driver.claude_run(Runner(), "box", "go", model="opus")
     argv = calls[0]
-    assert "-m" not in argv
-    assert "--agent" not in argv
-    assert "ollama/x" not in argv
+    assert argv[argv.index("--model") + 1] == "opus"
+    assert "-m" not in argv  # claude uses --model, not opencode's -m
+
+
+def test_claude_run_omits_model_when_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
+    driver.claude_run(Runner(), "box", "go")
+    assert "--model" not in calls[0]  # no model → claude's install default
+
+
+def test_claude_run_ignores_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    # agent exists only for TurnFn signature parity; claude has no --agent.
+    calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
+    driver.claude_run(Runner(), "box", "go", agent="build")
+    assert "--agent" not in calls[0]
+
+
+def test_claude_turn_reports_resolved_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The actual model is tracked from the system init event (even if unpinned).
+    _patch_capture(monkeypatch, stdout=_FULL_TURN)
+    turn = driver.claude_run(Runner(), "box", "go")
+    assert turn.model == "claude-opus-4-8[1m]"
 
 
 def test_claude_turn_parses_full_turn(monkeypatch: pytest.MonkeyPatch) -> None:

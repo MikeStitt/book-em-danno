@@ -62,6 +62,11 @@ CLAUDE_FORMAT_FLAG = "--output-format"
 CLAUDE_FORMAT_VALUE = "stream-json"
 CLAUDE_RESUME_FLAG = "--resume"
 CLAUDE_SKIP_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
+# `--model <alias|full-name>` (e.g. "opus"/"sonnet"/"fable" or "claude-opus-4-8").
+# Pinning it is REQUIRED for a meaningful baseline: like opencode's `-m`, the
+# model drives cost/latency/behavior, so it must be controlled, not left to the
+# install default. CONFIRMED against claude 2.1.179 `claude --help`.
+CLAUDE_MODEL_FLAG = "--model"
 
 
 @runtime_checkable
@@ -359,6 +364,25 @@ class ClaudeTurn:
                 return str(sid)
         return None
 
+    @property
+    def model(self) -> str | None:
+        """The model claude actually resolved (e.g. "claude-opus-4-8[1m]").
+
+        Read from the ``system`` init event, which reports the resolved model even
+        when it was left to the install default — so the baseline always *tracks*
+        which model ran, not just which was requested. Falls back to an assistant
+        message's ``model`` (skipping the ``<synthetic>`` placeholder emitted on
+        some non-model turns)."""
+        for event in self.events:
+            if event.get("type") == "system" and (m := event.get("model")):
+                return str(m)
+        for event in self.events:
+            if event.get("type") == "assistant":
+                m = event.get("message", {}).get("model")
+                if m and m != "<synthetic>":
+                    return str(m)
+        return None
+
     def _assistant_blocks(self) -> list[dict]:
         """Every content block across all assistant message events, in order."""
         blocks: list[dict] = []
@@ -491,9 +515,14 @@ def claude_run(
     compatible signature so the level runners can drive either agent. `session`
     continues a session (`--resume`), `skip_permissions` adds
     `--dangerously-skip-permissions`, and `workspace` sets the in-VM exec cwd
-    (`-w`) so writes land in the mounted workspace the oracle probes. `agent` and
-    `model` are accepted for interface parity but ignored — the baseline is the
-    fixed default Claude config (claude has no opencode `--agent`/`-m`).
+    (`-w`) so writes land in the mounted workspace the oracle probes.
+
+    `model` pins claude's model via `--model` (an alias like "opus"/"sonnet" or a
+    full id like "claude-opus-4-8") — the counterpart of opencode's `-m`, so the
+    baseline controls which model runs instead of inheriting the install default
+    (which varies in cost/latency). When omitted, claude uses its default and the
+    actual resolved model is still tracked via `ClaudeTurn.model`. `agent` is
+    accepted for interface parity but ignored (claude has no opencode `--agent`).
 
     `env_file` is passed to `docker sandbox exec` as `--env-file` — REQUIRED for
     auth: unlike opencode (which reads Ollama from `opencode.jsonc`), claude needs
@@ -513,6 +542,8 @@ def claude_run(
     if env_file is not None:
         cmd += ["--env-file", str(env_file)]
     cmd += [name, "claude", CLAUDE_PRINT_FLAG, CLAUDE_FORMAT_FLAG, CLAUDE_FORMAT_VALUE, "--verbose"]
+    if model is not None:
+        cmd += [CLAUDE_MODEL_FLAG, model]
     if skip_permissions:
         cmd.append(CLAUDE_SKIP_PERMISSIONS_FLAG)
     if session is not None:

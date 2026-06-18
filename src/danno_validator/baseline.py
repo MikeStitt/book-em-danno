@@ -40,12 +40,21 @@ from danno_validator.sweep import SweepResult, run_tiers
 BASELINE_MODEL = "claude-code"
 
 
-def baseline_variant() -> ConfigVariant:
-    """The synthetic `ConfigVariant` identifying the Claude Code baseline row."""
+def baseline_variant(model: str | None = None) -> ConfigVariant:
+    """The synthetic `ConfigVariant` identifying the Claude Code baseline row.
+
+    `model` is the claude model the row used (the pinned alias/id, or the actual
+    resolved model once known — see `run_baseline`). It becomes the row's
+    `model_ref`, so the results matrix records *which* claude model the baseline
+    ran, exactly as it records `ollama/…` for a local config. `model_name` stays
+    `BASELINE_MODEL` so the reporter still flags the row and excludes it from the
+    swept-config tally.
+    """
+    shown = model or "(default model)"
     return ConfigVariant(
         model_name=BASELINE_MODEL,
-        model_ref="claude-code (baseline)",
-        description="Claude Code headless baseline",
+        model_ref=shown,
+        description=f"Claude Code headless baseline ({shown})",
     )
 
 
@@ -60,11 +69,14 @@ def _build_claude_auth_env_file() -> Path:
     return _build_env_file(agent_env("claude", DEFAULT_OLLAMA_URL), [], [])
 
 
-def _authed_claude_run(env_file: Path) -> TurnFn:
-    """A `TurnFn` that drives `claude_run` with `env_file` bound for auth.
+def _authed_claude_run(env_file: Path, claude_model: str | None) -> TurnFn:
+    """A `TurnFn` that drives `claude_run` with `env_file` and `claude_model` bound.
 
-    Keeps the auth env-file out of the agent-agnostic level-runner / `run_tiers`
-    API: the baseline binds it here and the runners just call a plain `TurnFn`.
+    Keeps the auth env-file and the pinned claude model out of the agent-agnostic
+    level-runner / `run_tiers` API: the baseline binds them here and the runners
+    just call a plain `TurnFn`. The `model` the runner passes (`variant.model_ref`,
+    a display string) is **ignored** — the bound `claude_model` (the real alias/id
+    or None for the default) is what reaches claude's `--model`.
     """
 
     def run(
@@ -84,7 +96,7 @@ def _authed_claude_run(env_file: Path) -> TurnFn:
             prompt,
             session=session,
             agent=agent,
-            model=model,
+            model=claude_model,
             skip_permissions=skip_permissions,
             workspace=workspace,
             env_file=env_file,
@@ -93,11 +105,29 @@ def _authed_claude_run(env_file: Path) -> TurnFn:
     return run
 
 
+def _record_actual_model(result: SweepResult, *, requested: str | None) -> None:
+    """Overwrite the baseline row's model with the one claude actually resolved.
+
+    Reads ground truth from the L0 turn (`ClaudeTurn.model`, from claude's `system`
+    init event) so the matrix shows e.g. `claude-opus-4-8[1m]` even when the model
+    was left to the default; falls back to the `requested` alias if claude reported
+    none. Mutating the freshly-built `SweepResult` (its `variant` and the L0
+    `result.model`) keeps the matrix row and the per-config page in agreement.
+    """
+    records = result.result.records
+    reported = getattr(records[0].turn, "model", None) if records else None
+    shown = reported or requested
+    if shown:
+        result.variant = baseline_variant(shown)
+        result.result.model = shown
+
+
 def run_baseline(
     runner: Runner,
     sandbox: str,
     *,
     workspace_root: Path,
+    model: str | None = None,
     reset: bool = True,
     script: tuple[ScriptedTurn, ...] = DEFAULT_SCRIPT,
     level1: bool = True,
@@ -114,6 +144,12 @@ def run_baseline(
     baseline first via the guarded `reset_workspace` — so the baseline starts from
     the same clean state as each swept model.
 
+    `model` pins claude's model (`--model`; an alias like "opus"/"sonnet" or a full
+    id) — the counterpart of the sweep's per-model `-m`, so the baseline controls
+    which model runs rather than inheriting the install default (which varies in
+    cost/latency). Whether pinned or default, the **actual** resolved model claude
+    reports is recorded as the row's model, so the matrix always tracks what ran.
+
     Claude auth (`CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY`) must be in the host
     environment: it is built into a chmod-600 env-file passed to each `claude`
     exec (the file is removed afterward), so a missing token fails loud up front.
@@ -122,17 +158,19 @@ def run_baseline(
     try:
         if reset:
             reset_workspace(runner, sandbox, workspace_root)
-        return run_tiers(
+        result = run_tiers(
             runner,
             sandbox,
-            variant=baseline_variant(),
+            variant=baseline_variant(model),
             workspace_root=workspace_root,
             script=script,
             level1=level1,
             level1_task=level1_task,
             level2=level2,
             level2_task=level2_task,
-            run_turn=_authed_claude_run(auth_file),
+            run_turn=_authed_claude_run(auth_file, model),
         )
     finally:
         auth_file.unlink(missing_ok=True)
+    _record_actual_model(result, requested=model)
+    return result

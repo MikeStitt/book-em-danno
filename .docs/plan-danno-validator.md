@@ -455,9 +455,16 @@ lower latency than the local model on these tasks.
   AND the stream-json schema were **pinned live against claude 2.1.179** (M1
   discipline) — this time the plan's assumptions held (`-p`,
   `--output-format stream-json`, `--verbose`, `-r/--resume`,
-  `--dangerously-skip-permissions` all confirmed; no `-f`-style surprise). The
-  baseline is driven via the CLI in a claude sandbox, so the `danno[validator]`
-  extra stays empty (the Anthropic SDK still waits for M6's judge).
+  `--dangerously-skip-permissions`, `--model` all confirmed; no `-f`-style
+  surprise). The baseline is driven via the CLI in a claude sandbox, so the
+  `danno[validator]` extra stays empty (the Anthropic SDK still waits for M6's judge).
+- **Pin AND track the claude model (like opencode's `-m`).** The default model
+  varies wildly in cost/latency/behaviour, so the baseline does not ride it:
+  `run_baseline(model=…)` pins `claude --model <alias|id>` (control), and the row
+  records the model claude **actually resolved** — `ClaudeTurn.model` reads it from
+  the `system` init event, so the matrix shows the real model (e.g.
+  `claude-opus-4-8[1m]`) even when unpinned (track). The bound model rides the same
+  `TurnFn` wrapper as the auth file, kept out of the agent-agnostic runner API.
 - **The baseline is just another `SweepResult` row.** `baseline.run_baseline`
   returns one `SweepResult` carrying a synthetic `claude-code` variant
   (`BASELINE_MODEL`), so appending it to a sweep renders it as a matrix row + page
