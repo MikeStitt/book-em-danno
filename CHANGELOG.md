@@ -3,6 +3,12 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.5.0] - 2026-06-18
+
+### Features
+
+- *(validator)* Inject cloud credentials into the validate sweep
+
 ## [0.4.0] - 2026-06-18
 
 ### Bug Fixes
