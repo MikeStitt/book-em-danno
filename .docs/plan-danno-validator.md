@@ -27,7 +27,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] M5 — Claude Code baseline + comparison row (agent-agnostic `Turn` seam,
   in-sandbox `claude -p` driver, baseline row in the same matrix; live-verified —
   see "M5 — DONE" below)
-- [ ] M6 — annotated "menu" danno.toml emitter
+- [~] M6 — annotated "menu" danno.toml emitter (DONE — see "M6 — menu emitter DONE"
+  below) + Anthropic-SDK judge (still to do)
 - [ ] M7 — serve+SDK rich backend · llama.cpp model switching · full benchmark banks
 
 ## Goal
@@ -492,6 +493,59 @@ that makes pinning-and-recording the model necessary, not optional.
   and the general benchmark-adapter path remain deferred. (Live driver:
   `scratch/m5_live_baseline.py`, gitignored — promote to a `danno_validator` entry
   point if the sweep CLI is built later.)
+
+## M6 — menu emitter DONE (2026-06-18) · branch `danno-validator-m6` (stacked on m5)
+
+The signature deliverable: `danno_validator/menu.py` turns a sweep's `SweepResult`s
+into an annotated, **loadable** danno.toml the user adopts by editing. `ninja check`
+green, 219 passed (11 new in `tests/test_validator_menu.py`). The Anthropic-SDK judge
+is the remaining M6 piece (separate commit; brings the still-empty `danno[validator]`
+extra).
+
+- **Round-trips the whole config, annotates the model surface.** `render_menu(config,
+  results, *, verified=None)` re-emits every block (project/defaults/sandbox/backends/
+  models/agents/tools/npm) so nothing the user declared is silently dropped (Rule 8),
+  then layers verdicts on the two model-selection surfaces:
+  - each `[models.*]` block is preceded by a `# [L0 … · L1 … · L2 …]` comment from its
+    `SweepResult` (✓ pass · ✗ fail+class · ~ only-acts-on-nudge · ! error · – not run);
+    all-three-pass adds `  RECOMMENDED`; a model the sweep skipped (outside an `only`
+    subset → no result) reads `# [not validated — outside the swept set]`.
+  - `[agents]` becomes the **comment/uncomment menu**: each role's active assignment
+    carries its model's badge, followed by *every other* declared model as a commented
+    `# role = "alt"   # [badge] — uncomment to use` line. TOML holds one value per key,
+    so the choice is comment/uncomment, not two live values (the plan's design).
+- **Hand-rolled TOML, no new dep.** The file is fundamentally a *commented* document
+  (no serializer emits comments) and the repo has no TOML writer, so a ~40-line generic
+  value serializer (`_fmt_value`: str/int/bool/list/inline-table, fails loud on anything
+  else) + `model_dump(exclude_none=True)` per block does it — mirrors `report.py`'s
+  stdlib string building. The baseline row (`BASELINE_MODEL`) is excluded (reference,
+  not a declarable model). `verified="YYYY-MM-DD"` (optional) stamps each verdict.
+- **Configuration-is-Code verified by exercising it:** a test renders → `write_menu` →
+  `load_config` round-trips back to an equal `DannoConfig` (the emitted menu is a real,
+  loadable danno.toml, not just a plausible string). `write_menu(config, results,
+  out_path, *, verified=None)` is the file writer. Not yet wired into the live harness /
+  reporter — the emitter stands alone; the live combined-report driver
+  (`scratch/m5_live_baseline.py`) can call `write_menu` once a sweep CLI lands.
+
+### M6 — judge (DEFERRED, scope decided 2026-06-18)
+
+The Anthropic-SDK judge is the remaining M6 piece; the user **paused** it after the
+menu emitter shipped (adds the `anthropic` dep + live API calls — build it as its own
+change, not folded into the menu PR). Design decisions made up front so the next
+session doesn't re-litigate:
+- **Scope = L2 dev quality only.** Grade software-dev *quality beyond the hidden-test
+  pass/fail* (code clarity, over-/under-building) — the tier where partial credit
+  actually matters. NOT a fuzzy layer across all tiers; L0/L1 keep the objective
+  oracle only for now. (L0 coherence / L1 grading remain possible later extensions.)
+- **Judge model = configurable**, not hardcoded. Expose the model as a parameter
+  (opus/sonnet/haiku via the Claude API) and **record the model used per run** in the
+  result/report (same pin+track discipline as the M5 claude baseline). Pick a sensible
+  default but let the caller override.
+- **Keep the objective oracle primary**; the judge is fuzzy-on-top, never a replacement
+  (oracle.py docstring already states this). Build it with a pure scoring core + a thin
+  **mockable** Anthropic client seam so `ninja check` stays offline (the harness's
+  I/O-at-the-boundary pattern); live-verify separately. This is what finally populates
+  the still-empty `danno[validator]` extra.
 
 ## The annotated "menu" danno.toml
 
