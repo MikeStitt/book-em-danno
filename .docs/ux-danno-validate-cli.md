@@ -95,7 +95,21 @@ flag, not a new verb.)
 | `--no-reset` | reset on | `run_sweep(reset=False)` | Skip the guarded per-config workspace reset (debugging only; configs can then leak into each other). |
 | `--strict` | off | exit code | Exit non-zero if any *swept* config fails its top tier (the baseline never affects the exit code). For CI gating. Default exit 0 — it's a reporting tool. |
 | `--agent NAME` | `opencode` | `provision(agent=…)`, `run_sweep(agent=…)` | The AUT for the *sweep* (the local models). The baseline is always `claude`. |
+| `--env KEY=VAL` (repeatable) | — | `run_sweep(env_file=…)` | Inject a credential into the sweep's opencode exec for cloud configs (e.g. `--env ANTHROPIC_API_KEY=sk-…`). Overrides the host-exported value. Lands only in a chmod-600 env-file, removed after the sweep. |
+| `--env-file FILE` (repeatable) | — | `run_sweep(env_file=…)` | Same, from a file of `KEY=VAL` lines. |
 | `--verbose`, `-v` | off | `Runner(verbose=True)` | Stream the agent transcripts live under each tier line. |
+
+**Cloud-config credentials.** A swept `cloud`/`openai`-backed model (anthropic,
+NVIDIA NIM, …) needs an API key inside the disposable sandbox or it errors at L0
+("x-api-key header is required"). danno auto-injects host-exported keys it can
+identify — every `{env:VAR}` the generated `opencode.jsonc` references (e.g.
+`NVIDIA_API_KEY`) plus each cloud provider's `<PROVIDER>_API_KEY` (anthropic →
+`ANTHROPIC_API_KEY`, which opencode's built-in provider resolves implicitly, so it
+is *not* a `{env:}` ref). Use `--env`/`--env-file` to supply or override. Unlike a
+missing `--baseline` token (a hard abort), a missing *sweep* key only **warns** —
+that one config errors loudly in its own row while the rest of the sweep proceeds,
+since a run may legitimately target only the local models. Local Ollama models
+need no credentials (their base URL is baked into the config).
 
 Tiers and tasks beyond the curated defaults (custom `ScriptedTurn`/`Level1Task`/
 `Level2Task`, larger task banks, the `--full` mode) stay in the Python API for now;

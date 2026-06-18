@@ -138,6 +138,12 @@ def validate(
         "--agent",
         help="Agent-under-test for the sweep (default opencode).",
     ),
+    env: list[str] = typer.Option(
+        None, "--env", help="KEY=VAL credential to inject into cloud-config sweeps (repeatable)."
+    ),
+    env_file: list[str] = typer.Option(
+        None, "--env-file", help="File of KEY=VAL credentials to inject (repeatable)."
+    ),
     workspace: Path = typer.Option(
         None, "--workspace", help="Throwaway workspace mount (default a temp dir)."
     ),
@@ -171,6 +177,13 @@ def validate(
     modified. `--dry-run` previews the plan. `--baseline` adds a Claude Code
     reference row (needs CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY). Outputs land
     under `.danno-validator/<timestamp>/` (report + menu + results.json).
+
+    Cloud configs (an anthropic/NVIDIA/… model) need credentials to clear L0:
+    danno auto-injects host-exported keys it can identify (the provider's
+    `<PROVIDER>_API_KEY`, e.g. `ANTHROPIC_API_KEY`, and any `{env:VAR}` the config
+    references); pass `--env KEY=VAL` / `--env-file` to supply or override. A
+    missing key only warns — that config errors loudly in its own row. Local Ollama
+    models need none.
     """
     from danno_validator.console import ConsoleReporter
     from danno_validator.run import ValidateOptions, run_validate
@@ -191,6 +204,8 @@ def validate(
         baseline=baseline,
         baseline_model=baseline_model,
         agent=agent,
+        env=env or [],
+        env_file=env_file or [],
         workspace=workspace,
         out_dir=out,
         menu=menu,

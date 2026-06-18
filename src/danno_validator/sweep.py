@@ -31,7 +31,7 @@ from book_em_danno.config.generate import generate
 from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import Runner
 from danno_validator import level0
-from danno_validator.driver import TurnFn, reset_workspace, seed_workspace
+from danno_validator.driver import Turn, TurnFn, opencode_run, reset_workspace, seed_workspace
 from danno_validator.events import ProgressFn, ValidateEvent
 from danno_validator.level0 import DEFAULT_AGENT, DEFAULT_SCRIPT, ConversationResult, ScriptedTurn
 from danno_validator.level1 import DEFAULT_TASK as DEFAULT_L1_TASK
@@ -82,6 +82,42 @@ def prepare_workspace(runner: Runner, workspace_root: Path, config: DannoConfig)
     return workspace_root
 
 
+def _authed_opencode_run(env_file: Path) -> TurnFn:
+    """A `TurnFn` that drives `opencode_run` with `env_file` bound.
+
+    Mirrors the baseline's `_authed_claude_run`: it keeps the credentials env-file
+    out of the agent-agnostic level-runner / `run_tiers` API so the runners just
+    call a plain `TurnFn`. The sweep binds the file once (it carries every cloud
+    config's keys) and every turn execs `opencode` with `--env-file` so anthropic /
+    NVIDIA / … backends authenticate. Local Ollama models ignore it.
+    """
+
+    def run(
+        runner: Runner,
+        name: str,
+        prompt: str,
+        *,
+        session: str | None = None,
+        agent: str | None = None,
+        model: str | None = None,
+        skip_permissions: bool = False,
+        workspace: str | Path | None = None,
+    ) -> Turn:
+        return opencode_run(
+            runner,
+            name,
+            prompt,
+            session=session,
+            agent=agent,
+            model=model,
+            skip_permissions=skip_permissions,
+            workspace=workspace,
+            env_file=env_file,
+        )
+
+    return run
+
+
 def run_sweep(
     runner: Runner,
     sandbox: str,
@@ -96,6 +132,7 @@ def run_sweep(
     level1_task: Level1Task = DEFAULT_L1_TASK,
     level2: bool = True,
     level2_task: Level2Task = DEFAULT_L2_TASK,
+    env_file: Path | None = None,
     on_event: ProgressFn | None = None,
 ) -> list[SweepResult]:
     """Run the tiered battery against each model variant of `config`, sequentially.
@@ -108,8 +145,15 @@ def run_sweep(
     L1 passed** (`level2`) — the plan's tiering, so a config that stalls early never
     wastes a run on a later tier (the skipped tier's `SweepResult` field stays
     `None`). The higher tiers need no extra reset: each task seeds its own clean
-    state surgically. Returns one `SweepResult` per variant, in matrix order.
+    state surgically.
+
+    `env_file`, when set, is a chmod-600 file of credentials (cloud configs' API
+    keys) bound into every opencode exec via `--env-file` — without it a swept
+    anthropic/NVIDIA/… model errors at L0 for missing auth (local Ollama models
+    need none). When `None`, the runners resolve `opencode_run` at call time as
+    before. Returns one `SweepResult` per variant, in matrix order.
     """
+    run_turn = _authed_opencode_run(env_file) if env_file is not None else None
     results: list[SweepResult] = []
     for variant in model_variants(config, only=only):
         if reset:
@@ -126,6 +170,7 @@ def run_sweep(
                 level1_task=level1_task,
                 level2=level2,
                 level2_task=level2_task,
+                run_turn=run_turn,
                 on_event=on_event,
             )
         )

@@ -278,6 +278,7 @@ def opencode_run(
     model: str | None = None,
     skip_permissions: bool = False,
     workspace: str | Path | None = None,
+    env_file: str | Path | None = None,
 ) -> OpencodeTurn:
     """Drive one headless `opencode run --format json` turn in sandbox `name`.
 
@@ -291,6 +292,12 @@ def opencode_run(
     - `workspace` sets the in-VM exec cwd (`-w`). Note opencode resolves file paths
       against its discovered project root (git/`.opencode` dir), **not** this cwd —
       true workspace isolation comes from mounting the sandbox at the workspace.
+    - `env_file` is passed to `docker sandbox exec` as `--env-file` — how cloud
+      configs in a sweep get their credentials: a bare exec inherits no host
+      environment, so a model whose provider needs e.g. `ANTHROPIC_API_KEY` /
+      `NVIDIA_API_KEY` errors at L0 without it. Local Ollama models need none (the
+      base URL is baked into `opencode.jsonc`). The sweep builds this chmod-600
+      file from `--env`/host-exported keys (see `sweep._authed_opencode_run`).
 
     Returns the parsed events alongside the raw capture — never raises on a
     non-zero AUT exit, since a stalled/errored agent turn is the signal the battery
@@ -299,6 +306,8 @@ def opencode_run(
     cmd = ["docker", "sandbox", "exec"]
     if workspace is not None:
         cmd += ["-w", str(workspace)]
+    if env_file is not None:
+        cmd += ["--env-file", str(env_file)]
     cmd += [name, "opencode", "run", OPENCODE_FORMAT_FLAG, "json"]
     if agent is not None:
         cmd += ["--agent", agent]

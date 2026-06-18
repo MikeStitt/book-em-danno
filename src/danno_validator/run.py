@@ -28,8 +28,8 @@ from importlib.metadata import version as pkg_version
 from pathlib import Path
 
 from book_em_danno.commands import sandbox as sb
-from book_em_danno.config.schema import DannoConfig
-from book_em_danno.core.exec import Runner
+from book_em_danno.config.schema import CloudBackend, DannoConfig
+from book_em_danno.core.exec import Runner, log_warn
 from danno_validator.baseline import BASELINE_MODEL, run_baseline
 from danno_validator.events import ValidateEvent
 from danno_validator.matrix import model_variants
@@ -51,6 +51,8 @@ class ValidateOptions:
     baseline: bool = False
     baseline_model: str | None = None
     agent: str = DEFAULT_AGENT
+    env: list[str] = field(default_factory=list)
+    env_file: list[str] = field(default_factory=list)
     workspace: Path | None = None
     out_dir: Path | None = None
     menu: bool = True
@@ -154,6 +156,47 @@ def _resolve_plan(config: DannoConfig, opts: ValidateOptions, *, timestamp: str)
     )
 
 
+def _cloud_env_vars(config: DannoConfig, only: list[str] | None) -> frozenset[str]:
+    """API-key env vars the swept cloud configs need that aren't `{env:}` refs.
+
+    A `cloud` backend (opencode's built-in provider, e.g. anthropic) carries no
+    `{env:VAR}` in opencode.jsonc — opencode resolves the provider's key from the
+    process env itself — so `resolve_env_refs` can't see it. Map each swept cloud
+    model's provider to opencode's `<PROVIDER>_API_KEY` convention (anthropic →
+    `ANTHROPIC_API_KEY`) so the sweep injects it from the host / `--env` too."""
+    wanted: set[str] = set()
+    for variant in model_variants(config, only=only):
+        backend = config.backends[config.models[variant.model_name].backend]
+        if isinstance(backend, CloudBackend):
+            wanted.add(f"{backend.provider.upper()}_API_KEY")
+    return frozenset(wanted)
+
+
+def _build_sweep_env_file(
+    config: DannoConfig, opts: ValidateOptions, workspace: Path
+) -> Path | None:
+    """Build the chmod-600 credentials file bound into every opencode sweep exec.
+
+    Combines `--env`/`--env-file` with host-exported values for every var the swept
+    config needs — `{env:}` refs in opencode.jsonc plus cloud providers' API keys
+    (see `_cloud_env_vars`). Missing keys only **warn** (the affected cloud config
+    will error loudly at L0 in its own row, which is informative) rather than
+    aborting the whole sweep, since a run may legitimately target only the local
+    models. Returns the file path, or `None` when nothing needs injecting (the
+    local-only case — the sweep then runs exactly as before)."""
+    augmented, missing = sb.resolve_env_refs(
+        workspace, opts.env, opts.env_file, extra=_cloud_env_vars(config, opts.only)
+    )
+    if missing:
+        log_warn(
+            f"no credentials for {', '.join(missing)} — those cloud configs will error at "
+            f"L0. Export them or pass `--env KEY=VAL` to inject them into the sweep."
+        )
+    if not augmented and not opts.env_file:
+        return None
+    return sb._build_env_file([], augmented, opts.env_file)
+
+
 def _teardown(runner: Runner, name: str) -> None:
     """Stop and remove a disposable validator sandbox (best effort under --apply)."""
     sb.stop(runner, name)
@@ -199,17 +242,25 @@ def run_validate(
     # agent name here would become `opencode run --agent opencode`, an invalid persona.
     reporter.phase(f"provision {opts.agent} sandbox  {plan.sweep_sandbox}")
     sb.provision(runner, plan.sweep_sandbox, plan.workspace, agent=opts.agent, registry_path=None)
-    results = run_sweep(
-        runner,
-        plan.sweep_sandbox,
-        config=config,
-        workspace_root=plan.workspace,
-        only=opts.only,
-        reset=opts.reset,
-        level1=level1,
-        level2=level2,
-        on_event=reporter.event,
-    )
+    # Credentials for swept cloud configs: bound into every opencode exec via
+    # --env-file, removed after the sweep (the secret never lingers on disk).
+    sweep_env_file = _build_sweep_env_file(config, opts, plan.workspace)
+    try:
+        results = run_sweep(
+            runner,
+            plan.sweep_sandbox,
+            config=config,
+            workspace_root=plan.workspace,
+            only=opts.only,
+            reset=opts.reset,
+            level1=level1,
+            level2=level2,
+            env_file=sweep_env_file,
+            on_event=reporter.event,
+        )
+    finally:
+        if sweep_env_file is not None:
+            sweep_env_file.unlink(missing_ok=True)
 
     if opts.baseline and plan.baseline_sandbox is not None:
         reporter.phase(f"provision claude sandbox  {plan.baseline_sandbox}")

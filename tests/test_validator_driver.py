@@ -60,6 +60,23 @@ def test_opencode_run_minimal_command(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
 
 
+def test_opencode_run_passes_env_file_for_cloud_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A swept cloud config's API key reaches opencode via --env-file (a bare exec
+    # inherits no host env); local Ollama models simply leave it unset.
+    calls = _patch_capture(monkeypatch, stdout=_TEXT_TURN)
+    driver.opencode_run(Runner(), "box", "go", workspace="/repo", env_file="/tmp/danno-env-xyz")
+    assert calls[0][:8] == [
+        "docker",
+        "sandbox",
+        "exec",
+        "-w",
+        "/repo",
+        "--env-file",
+        "/tmp/danno-env-xyz",
+        "box",
+    ]
+
+
 def test_opencode_run_with_session_agent_and_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _patch_capture(monkeypatch, stdout=_TOOL_TURN)
     driver.opencode_run(

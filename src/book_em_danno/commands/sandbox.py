@@ -425,18 +425,26 @@ def _provided_env(env_pairs: list[str], env_files: list[str]) -> dict[str, str]:
     return provided
 
 
-def reconcile_env_refs(target_abs: Path, env_pairs: list[str], env_files: list[str]) -> list[str]:
-    """Fail loud (Working Rule 8) if opencode.jsonc references an env var that isn't
-    supplied, and auto-inject any that are exported in danno's host environment.
+def resolve_env_refs(
+    target_abs: Path,
+    env_pairs: list[str],
+    env_files: list[str],
+    *,
+    extra: frozenset[str] = frozenset(),
+) -> tuple[list[str], list[str]]:
+    """Resolve the env vars opencode needs, WITHOUT raising — the shared core of
+    `reconcile_env_refs` (which raises) and the validator sweep (which warns).
 
-    Returns env_pairs augmented with host values for referenced vars the user did
-    not pass explicitly; raises `CommandFailedError` listing any that are neither
-    passed via --env/--env-file nor present (non-empty) in the host environment —
-    so a missing key fails up front instead of as a deep opencode 'authorization
-    missing' error."""
-    required = _required_env_refs(target_abs)
+    The required set is every `{env:VAR}` referenced in opencode.jsonc, plus any
+    `extra` the caller knows is needed but isn't a `{env:}` ref (e.g. the built-in
+    anthropic provider's `ANTHROPIC_API_KEY`). For each: keep the explicitly-passed
+    value, else auto-inject the host-exported one, else record it as missing.
+    Returns `(augmented_pairs, missing)` — `augmented_pairs` is `env_pairs` plus the
+    host-sourced additions; `missing` lists vars neither passed nor host-exported
+    (and ones passed empty, the footgun)."""
+    required = _required_env_refs(target_abs) | extra
     if not required:
-        return env_pairs
+        return list(env_pairs), []
     provided = _provided_env(env_pairs, env_files)
     augmented = list(env_pairs)
     missing: list[str] = []
@@ -452,6 +460,19 @@ def reconcile_env_refs(target_abs: Path, env_pairs: list[str], env_files: list[s
             log_info(f"injecting {name} from danno's host environment")
         else:
             missing.append(name)
+    return augmented, missing
+
+
+def reconcile_env_refs(target_abs: Path, env_pairs: list[str], env_files: list[str]) -> list[str]:
+    """Fail loud (Working Rule 8) if opencode.jsonc references an env var that isn't
+    supplied, and auto-inject any that are exported in danno's host environment.
+
+    Returns env_pairs augmented with host values for referenced vars the user did
+    not pass explicitly; raises `CommandFailedError` listing any that are neither
+    passed via --env/--env-file nor present (non-empty) in the host environment —
+    so a missing key fails up front instead of as a deep opencode 'authorization
+    missing' error."""
+    augmented, missing = resolve_env_refs(target_abs, env_pairs, env_files)
     if missing:
         names = ", ".join(missing)
         raise CommandFailedError(

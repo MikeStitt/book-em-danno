@@ -148,6 +148,7 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> dict:
         level1,
         level2,
         on_event,
+        env_file=None,
         agent="build",
     ):
         calls["sweep_kwargs"] = {
@@ -156,7 +157,12 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> dict:
             "level2": level2,
             "reset": reset,
             "agent": agent,
+            "env_file": env_file,
         }
+        # The file is unlinked once the sweep returns, so capture its contents now.
+        calls["env_file_contents"] = (
+            Path(env_file).read_text(encoding="utf-8") if env_file is not None else None
+        )
         on_event(ValidateEvent(phase="config-start", config="gptoss", model_ref="ollama/x"))
         names = list(only or ["gptoss", "gemma", "sonnet"])
         return [_pass(n, f"ollama/{n}") for n in names]
@@ -294,3 +300,45 @@ def test_reporter_receives_plan_events_and_summary(patched: dict, tmp_path: Path
     )
     assert rec.planned and rec.summarized
     assert "config-start" in rec.events
+
+
+# --- credential injection into the sweep ------------------------------------
+
+
+def test_cloud_key_auto_injected_from_host(
+    patched: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The config's `sonnet` is a cloud/anthropic model; its ANTHROPIC_API_KEY is
+    # exported, so the sweep gets an env-file carrying it.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-host")
+    _run(_opts(tmp_path))
+    assert "ANTHROPIC_API_KEY=sk-ant-host" in patched["env_file_contents"]
+
+
+def test_env_flag_overrides_and_is_injected(
+    patched: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-host")
+    _run(_opts(tmp_path, env=["ANTHROPIC_API_KEY=sk-ant-explicit"]))
+    contents = patched["env_file_contents"]
+    assert "ANTHROPIC_API_KEY=sk-ant-explicit" in contents
+    assert "sk-ant-host" not in contents  # explicit --env wins over the host value
+
+
+def test_missing_cloud_key_warns_but_sweep_runs(
+    patched: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    result = _run(_opts(tmp_path))
+    assert "ANTHROPIC_API_KEY" in capsys.readouterr().out  # warned, did not abort
+    assert patched["sweep_kwargs"]["env_file"] is None  # nothing to inject
+    assert result.results  # the sweep still ran (cloud row errors loudly in its own report)
+
+
+def test_local_only_sweep_needs_no_env_file(
+    patched: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Restricting to a local Ollama model pulls in no cloud key — no env-file at all.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    _run(_opts(tmp_path, only=["gptoss"]))
+    assert patched["sweep_kwargs"]["env_file"] is None
