@@ -104,6 +104,16 @@ def test_claude_run_session_skip_permissions_and_workspace(monkeypatch: pytest.M
     ]
 
 
+def test_claude_run_passes_env_file_for_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    # claude needs its auth token via --env-file; a bare exec inherits no env.
+    calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
+    driver.claude_run(Runner(), "box", "go", workspace="/repo", env_file="/tmp/danno-env-xyz")
+    argv = calls[0]
+    assert argv[:6] == ["docker", "sandbox", "exec", "-w", "/repo", "--env-file"]
+    assert argv[6] == "/tmp/danno-env-xyz"
+    assert argv[7] == "box"
+
+
 def test_claude_run_ignores_agent_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
     # agent/model exist only for TurnFn signature parity; claude has no -m/--agent.
     calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)

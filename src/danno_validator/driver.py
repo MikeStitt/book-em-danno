@@ -483,16 +483,25 @@ def claude_run(
     model: str | None = None,
     skip_permissions: bool = False,
     workspace: str | Path | None = None,
+    env_file: str | Path | None = None,
 ) -> ClaudeTurn:
     """Drive one headless `claude -p --output-format stream-json` turn in `name`.
 
-    The in-sandbox Claude Code counterpart of `opencode_run`, with the *same*
-    signature so it satisfies `TurnFn` and the level runners can drive either
-    agent. `session` continues a session (`--resume`), `skip_permissions` adds
+    The in-sandbox Claude Code counterpart of `opencode_run`, with a `TurnFn`-
+    compatible signature so the level runners can drive either agent. `session`
+    continues a session (`--resume`), `skip_permissions` adds
     `--dangerously-skip-permissions`, and `workspace` sets the in-VM exec cwd
     (`-w`) so writes land in the mounted workspace the oracle probes. `agent` and
     `model` are accepted for interface parity but ignored — the baseline is the
     fixed default Claude config (claude has no opencode `--agent`/`-m`).
+
+    `env_file` is passed to `docker sandbox exec` as `--env-file` — REQUIRED for
+    auth: unlike opencode (which reads Ollama from `opencode.jsonc`), claude needs
+    `CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY` in its exec environment, and a
+    bare `docker sandbox exec` inherits none. danno injects this only on
+    interactive `launch`, so the baseline builds the file itself (see
+    `baseline._build_claude_auth_env_file`). The secret stays in the chmod-600
+    file, never on the command line.
 
     Returns the parsed events alongside the raw capture — never raises on a
     non-zero exit, since a stalled/errored turn is the signal the battery
@@ -501,6 +510,8 @@ def claude_run(
     cmd = ["docker", "sandbox", "exec"]
     if workspace is not None:
         cmd += ["-w", str(workspace)]
+    if env_file is not None:
+        cmd += ["--env-file", str(env_file)]
     cmd += [name, "claude", CLAUDE_PRINT_FLAG, CLAUDE_FORMAT_FLAG, CLAUDE_FORMAT_VALUE, "--verbose"]
     if skip_permissions:
         cmd.append(CLAUDE_SKIP_PERMISSIONS_FLAG)

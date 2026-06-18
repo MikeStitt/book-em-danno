@@ -24,8 +24,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from book_em_danno.commands.sandbox import DEFAULT_OLLAMA_URL, _build_env_file, agent_env
 from book_em_danno.core.exec import Runner
-from danno_validator.driver import claude_run, reset_workspace
+from danno_validator.driver import Turn, TurnFn, claude_run, reset_workspace
 from danno_validator.level0 import DEFAULT_SCRIPT, ScriptedTurn
 from danno_validator.level1 import DEFAULT_TASK as DEFAULT_L1_TASK
 from danno_validator.level1 import Level1Task
@@ -48,6 +49,50 @@ def baseline_variant() -> ConfigVariant:
     )
 
 
+def _build_claude_auth_env_file() -> Path:
+    """Build a chmod-600 env-file carrying claude's auth, for the exec `--env-file`.
+
+    Reuses danno's own secret handling: `agent_env("claude", …)` resolves
+    `CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY` from the host environment and
+    fails loud when neither is set (Working Rule 8); `_build_env_file` writes them
+    to a 0600 temp file. The caller is responsible for unlinking it.
+    """
+    return _build_env_file(agent_env("claude", DEFAULT_OLLAMA_URL), [], [])
+
+
+def _authed_claude_run(env_file: Path) -> TurnFn:
+    """A `TurnFn` that drives `claude_run` with `env_file` bound for auth.
+
+    Keeps the auth env-file out of the agent-agnostic level-runner / `run_tiers`
+    API: the baseline binds it here and the runners just call a plain `TurnFn`.
+    """
+
+    def run(
+        runner: Runner,
+        name: str,
+        prompt: str,
+        *,
+        session: str | None = None,
+        agent: str | None = None,
+        model: str | None = None,
+        skip_permissions: bool = False,
+        workspace: str | Path | None = None,
+    ) -> Turn:
+        return claude_run(
+            runner,
+            name,
+            prompt,
+            session=session,
+            agent=agent,
+            model=model,
+            skip_permissions=skip_permissions,
+            workspace=workspace,
+            env_file=env_file,
+        )
+
+    return run
+
+
 def run_baseline(
     runner: Runner,
     sandbox: str,
@@ -68,18 +113,26 @@ def run_baseline(
     (the default), the validator-owned `workspace_root` is reset to its committed
     baseline first via the guarded `reset_workspace` — so the baseline starts from
     the same clean state as each swept model.
+
+    Claude auth (`CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY`) must be in the host
+    environment: it is built into a chmod-600 env-file passed to each `claude`
+    exec (the file is removed afterward), so a missing token fails loud up front.
     """
-    if reset:
-        reset_workspace(runner, sandbox, workspace_root)
-    return run_tiers(
-        runner,
-        sandbox,
-        variant=baseline_variant(),
-        workspace_root=workspace_root,
-        script=script,
-        level1=level1,
-        level1_task=level1_task,
-        level2=level2,
-        level2_task=level2_task,
-        run_turn=claude_run,
-    )
+    auth_file = _build_claude_auth_env_file()
+    try:
+        if reset:
+            reset_workspace(runner, sandbox, workspace_root)
+        return run_tiers(
+            runner,
+            sandbox,
+            variant=baseline_variant(),
+            workspace_root=workspace_root,
+            script=script,
+            level1=level1,
+            level1_task=level1_task,
+            level2=level2,
+            level2_task=level2_task,
+            run_turn=_authed_claude_run(auth_file),
+        )
+    finally:
+        auth_file.unlink(missing_ok=True)
