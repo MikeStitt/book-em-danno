@@ -180,6 +180,31 @@ def test_reconcile_env_refs_noop_without_refs(tmp_path: Path) -> None:
     assert sandbox.reconcile_env_refs(tmp_path, ["FOO=bar"], []) == ["FOO=bar"]
 
 
+def test_resolve_env_refs_reports_missing_without_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The non-raising core the validator uses: missing keys come back in the second
+    # tuple slot (to warn on) instead of aborting.
+    _write_opencode_cfg(tmp_path, '{ "apiKey": "{env:NVIDIA_API_KEY}" }')
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    augmented, missing = sandbox.resolve_env_refs(tmp_path, [], [])
+    assert augmented == []
+    assert missing == ["NVIDIA_API_KEY"]
+
+
+def test_resolve_env_refs_extra_injects_non_ref_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `extra` carries keys that aren't {env:} refs (e.g. the built-in anthropic
+    # provider's ANTHROPIC_API_KEY) — host-injected just like referenced ones.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-host")
+    augmented, missing = sandbox.resolve_env_refs(
+        tmp_path, [], [], extra=frozenset({"ANTHROPIC_API_KEY"})
+    )
+    assert augmented == ["ANTHROPIC_API_KEY=sk-ant-host"]
+    assert missing == []
+
+
 def test_shell_command() -> None:
     r = RecordingRunner()
     sandbox.shell(r, "probe")
