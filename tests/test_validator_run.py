@@ -133,9 +133,25 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setattr(sb, "agent_env", lambda *a, **k: ["TOKEN=x"])
 
     def fake_sweep(
-        runner, name, *, config, workspace_root, only, agent, reset, level1, level2, on_event
+        runner,
+        name,
+        *,
+        config,
+        workspace_root,
+        only,
+        reset,
+        level1,
+        level2,
+        on_event,
+        agent="build",
     ):
-        calls["sweep_kwargs"] = {"only": only, "level1": level1, "level2": level2, "reset": reset}
+        calls["sweep_kwargs"] = {
+            "only": only,
+            "level1": level1,
+            "level2": level2,
+            "reset": reset,
+            "agent": agent,
+        }
         on_event(ValidateEvent(phase="config-start", config="gptoss", model_ref="ollama/x"))
         names = list(only or ["gptoss", "gemma", "sonnet"])
         return [_pass(n, f"ollama/{n}") for n in names]
@@ -173,6 +189,15 @@ def test_max_level_drives_tier_toggles(patched: dict, tmp_path: Path) -> None:
     _run(_opts(tmp_path, max_level=1))
     assert patched["sweep_kwargs"]["level1"] is True
     assert patched["sweep_kwargs"]["level2"] is False
+
+
+def test_sweep_uses_the_opencode_run_agent_not_the_docker_agent(
+    patched: dict, tmp_path: Path
+) -> None:
+    # The Docker sandbox agent (--agent opencode) must NOT leak in as the opencode
+    # run-agent: the sweep drives `opencode run --agent build`, never `--agent opencode`.
+    _run(_opts(tmp_path, only=["gptoss"], agent="opencode"))
+    assert patched["sweep_kwargs"]["agent"] == "build"
 
 
 def test_only_passes_through_and_unknown_fails_loud(patched: dict, tmp_path: Path) -> None:

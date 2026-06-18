@@ -193,6 +193,10 @@ def run_validate(
     reporter.phase(f"prepare workspace  {plan.workspace}")
     prepare_workspace(runner, plan.workspace, config)
 
+    # `opts.agent` is the *Docker sandbox* agent (the prebuilt image, e.g. opencode);
+    # it selects the VM, not the opencode run-agent. The sweep drives opencode with
+    # its own read-write run-agent ("build", run_sweep's default) — passing the Docker
+    # agent name here would become `opencode run --agent opencode`, an invalid persona.
     reporter.phase(f"provision {opts.agent} sandbox  {plan.sweep_sandbox}")
     sb.provision(runner, plan.sweep_sandbox, plan.workspace, agent=opts.agent, registry_path=None)
     results = run_sweep(
@@ -201,7 +205,6 @@ def run_validate(
         config=config,
         workspace_root=plan.workspace,
         only=opts.only,
-        agent=opts.agent,
         reset=opts.reset,
         level1=level1,
         level2=level2,
