@@ -3,11 +3,18 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.5.1] - 2026-06-18
+
+### Documentation
+
+- *(validator)* Decompose the bundled M7 into M7/M8/M9+
+
 ## [0.5.0] - 2026-06-18
 
 ### Features
 
 - *(validator)* Inject cloud credentials into the validate sweep
+- *(validator)* Add the L2 dev-quality judge (completes M6)
 
 ## [0.4.0] - 2026-06-18
 
