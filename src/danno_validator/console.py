@@ -36,12 +36,14 @@ class ConsoleReporter(Reporter):
         baseline = (
             f"Claude Code @ {plan.baseline_model or '(default model)'}" if plan.baseline else "off"
         )
+        judge = f"L2 dev-quality @ {plan.judge_model or '(default model)'}" if plan.judge else "off"
         rows = [
             ("config", str(plan.config_path)),
             ("declared", declared),
             ("sweeping", swept),
             ("tiers", f"{tiers}  (--max-level {plan.max_level})"),
             ("baseline", baseline),
+            ("judge", judge),
             ("workspace", f"{plan.workspace}   (throwaway, validator-owned)"),
             ("report", str(plan.out_dir)),
         ]

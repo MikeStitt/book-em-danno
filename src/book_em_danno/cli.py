@@ -133,6 +133,12 @@ def validate(
         "--baseline-model",
         help="Pin the baseline's claude model (opus/sonnet/… or a full id).",
     ),
+    judge: bool = typer.Option(
+        False, "--judge", help="Grade L2 dev quality with an Anthropic judge (needs an API key)."
+    ),
+    judge_model: str = typer.Option(
+        None, "--judge-model", help="Pin the judge model (opus/sonnet/haiku or a full id)."
+    ),
     agent: str = typer.Option(
         sandbox_cmd.DEFAULT_AGENT,
         "--agent",
@@ -184,6 +190,12 @@ def validate(
     references); pass `--env KEY=VAL` / `--env-file` to supply or override. A
     missing key only warns — that config errors loudly in its own row. Local Ollama
     models need none.
+
+    `--judge` adds a host-side Anthropic judge that grades L2 software-dev *quality*
+    (clarity, over-/under-build) on top of the objective hidden-test verdict; it
+    never changes pass/fail. Needs `ANTHROPIC_API_KEY` (API billing) and the
+    `danno[validator]` extra; `--judge-model` pins the model (default opus). The
+    graded verdict lands in the report and results.json.
     """
     from danno_validator.console import ConsoleReporter
     from danno_validator.run import ValidateOptions, run_validate
@@ -203,6 +215,8 @@ def validate(
         max_level=max_level,
         baseline=baseline,
         baseline_model=baseline_model,
+        judge=judge,
+        judge_model=judge_model,
         agent=agent,
         env=env or [],
         env_file=env_file or [],

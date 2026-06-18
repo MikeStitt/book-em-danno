@@ -39,6 +39,7 @@ from pathlib import Path
 
 from book_em_danno.core.exec import CommandFailedError, Runner
 from danno_validator.driver import Turn, TurnFn, capture_exec, opencode_run
+from danno_validator.judge import DevWork, JudgeFn, Judgement
 from danno_validator.level0 import DEFAULT_AGENT
 from danno_validator.oracle import FailureClass, TurnVerdict, classify_turn
 
@@ -178,6 +179,9 @@ class DevTaskResult:
     verdict: TurnVerdict
     test_run: TestRun
     latency_s: float = field(default=0.0)
+    # The fuzzy dev-quality verdict, layered on top of the objective `verdict`.
+    # `None` when no judge was supplied (the default — keeps `ninja check` offline).
+    judgement: Judgement | None = field(default=None)
 
     @property
     def passed(self) -> bool:
@@ -223,6 +227,20 @@ def run_tests(runner: Runner, sandbox: str, *, workspace_root: Path, task: Level
     )
 
 
+def _read_produced(workspace_root: Path, task: Level2Task) -> tuple[tuple[str, str | None], ...]:
+    """Read back each task source file the agent may have edited (None if absent).
+
+    The workspace is the bidirectional mount, so the produced code is readable
+    host-side — this is what the dev-quality judge grades. Reading happens after
+    `run_tests` writes the hidden test in, but that never touches the source files.
+    """
+    produced: list[tuple[str, str | None]] = []
+    for name, _stub in task.sources:
+        path = workspace_root / name
+        produced.append((name, path.read_text() if path.exists() else None))
+    return tuple(produced)
+
+
 def run_level2(
     runner: Runner,
     sandbox: str,
@@ -232,6 +250,7 @@ def run_level2(
     task: Level2Task = DEFAULT_TASK,
     agent: str = DEFAULT_AGENT,
     run_turn: TurnFn | None = None,
+    judge: JudgeFn | None = None,
 ) -> DevTaskResult:
     """Run one Level-2 dev task against `model` in `sandbox`, returning the result.
 
@@ -244,6 +263,11 @@ def run_level2(
     `run_turn` is the turn producer — `opencode_run` by default (resolved at call
     time so a monkeypatched `level2.opencode_run` still applies); the Claude
     baseline passes `driver.claude_run`.
+
+    `judge`, when supplied, grades the produced code's *quality* on top of the
+    objective test verdict (clarity, over-/under-build) and the result is attached
+    as `DevTaskResult.judgement`. It's off by default so the harness — and
+    `ninja check` — stay offline; the live CLI wires in an `AnthropicJudgeClient`.
     """
     turn_fn = run_turn or opencode_run
     task.seed(workspace_root)
@@ -260,6 +284,15 @@ def run_level2(
     latency = time.monotonic() - start
     test_run = run_tests(runner, sandbox, workspace_root=workspace_root, task=task)
     verdict = classify_turn(turn, side_effect=test_run.passed, expects_action=True)
+    judgement = None
+    if judge is not None:
+        work = DevWork(
+            prompt=task.prompt,
+            sources=_read_produced(workspace_root, task),
+            test_passed=test_run.passed,
+            test_output=(test_run.stdout + test_run.stderr).strip(),
+        )
+        judgement = judge(work)
     return DevTaskResult(
         model=model,
         sandbox=sandbox,
@@ -270,4 +303,5 @@ def run_level2(
         verdict=verdict,
         test_run=test_run,
         latency_s=latency,
+        judgement=judgement,
     )
