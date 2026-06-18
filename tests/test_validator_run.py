@@ -124,12 +124,17 @@ def _config() -> DannoConfig:
 
 @pytest.fixture
 def patched(monkeypatch: pytest.MonkeyPatch) -> dict:
-    """Monkeypatch every Docker-touching step; record the calls."""
-    calls: dict = {"provision": [], "stop": [], "rm": [], "sweep_kwargs": {}, "baseline": 0}
+    """Monkeypatch every Docker-touching step; record the calls.
+
+    Includes `_teardown` (which shells `docker sandbox rm` via `runner.advise`) so a
+    full `run_validate` never touches a real Docker daemon — the gate runs on hosts
+    without one.
+    """
+    calls: dict = {"provision": [], "teardown": [], "sweep_kwargs": {}, "baseline": 0}
 
     monkeypatch.setattr(run_mod, "prepare_workspace", lambda runner, ws, config: ws)
     monkeypatch.setattr(sb, "provision", lambda r, name, ws, **kw: calls["provision"].append(name))
-    monkeypatch.setattr(sb, "stop", lambda r, name: calls["stop"].append(name))
+    monkeypatch.setattr(run_mod, "_teardown", lambda r, name: calls["teardown"].append(name))
     monkeypatch.setattr(sb, "agent_env", lambda *a, **k: ["TOKEN=x"])
 
     def fake_sweep(
@@ -246,10 +251,10 @@ def test_no_menu_skips_menu(patched: dict, tmp_path: Path) -> None:
 
 def test_teardown_runs_unless_kept(patched: dict, tmp_path: Path) -> None:
     _run(_opts(tmp_path, only=["gptoss"]))
-    assert any("validate" in n for n in patched["stop"])  # torn down
-    patched["stop"].clear()
+    assert any("validate" in n for n in patched["teardown"])  # torn down
+    patched["teardown"].clear()
     _run(_opts(tmp_path, only=["gptoss"], keep_sandboxes=True))
-    assert patched["stop"] == []  # left up
+    assert patched["teardown"] == []  # left up
 
 
 def test_strict_failed_only_when_strict_and_a_config_fails(
@@ -257,7 +262,7 @@ def test_strict_failed_only_when_strict_and_a_config_fails(
 ) -> None:
     monkeypatch.setattr(run_mod, "prepare_workspace", lambda *a, **k: None)
     monkeypatch.setattr(sb, "provision", lambda *a, **k: None)
-    monkeypatch.setattr(sb, "stop", lambda *a, **k: None)
+    monkeypatch.setattr(run_mod, "_teardown", lambda *a, **k: None)
 
     def sweep_with_a_stall(runner, name, *, on_event, **kw):
         return [_pass("gptoss", "ollama/gpt-oss:20b"), _stall("gemma", "ollama/gemma3:27b")]
