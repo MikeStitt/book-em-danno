@@ -32,6 +32,7 @@ from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import Runner
 from danno_validator import level0
 from danno_validator.driver import TurnFn, reset_workspace, seed_workspace
+from danno_validator.events import ProgressFn, ValidateEvent
 from danno_validator.level0 import DEFAULT_AGENT, DEFAULT_SCRIPT, ConversationResult, ScriptedTurn
 from danno_validator.level1 import DEFAULT_TASK as DEFAULT_L1_TASK
 from danno_validator.level1 import Level1Task, TaskResult, run_level1
@@ -95,6 +96,7 @@ def run_sweep(
     level1_task: Level1Task = DEFAULT_L1_TASK,
     level2: bool = True,
     level2_task: Level2Task = DEFAULT_L2_TASK,
+    on_event: ProgressFn | None = None,
 ) -> list[SweepResult]:
     """Run the tiered battery against each model variant of `config`, sequentially.
 
@@ -124,6 +126,7 @@ def run_sweep(
                 level1_task=level1_task,
                 level2=level2,
                 level2_task=level2_task,
+                on_event=on_event,
             )
         )
     return results
@@ -142,6 +145,7 @@ def run_tiers(
     level2: bool = True,
     level2_task: Level2Task = DEFAULT_L2_TASK,
     run_turn: TurnFn | None = None,
+    on_event: ProgressFn | None = None,
 ) -> SweepResult:
     """Run the tiered L0→L1→L2 short-circuit for one `variant`, returning its result.
 
@@ -153,7 +157,19 @@ def run_tiers(
     (`level1`), then L2 if L1 passed (`level2`); a skipped tier's field stays
     `None`. `variant.model_ref` is passed as the model to the turn producer
     (opencode uses it for `-m`; `claude_run` ignores it).
+
+    `on_event`, when given, receives a `ValidateEvent` at each config/tier boundary
+    (start, done-with-verdict, or skip) for live status reporting — purely
+    observational; the returned `SweepResult` is identical whether or not anyone is
+    watching.
     """
+
+    def emit(**kw: object) -> None:
+        if on_event is not None:
+            on_event(ValidateEvent(config=variant.model_name, model_ref=variant.model_ref, **kw))  # type: ignore[arg-type]
+
+    emit(phase="config-start")
+    emit(phase="tier-start", level=0, label="liveness")
     result = level0.run_level0(
         runner,
         sandbox,
@@ -163,26 +179,67 @@ def run_tiers(
         script=script,
         run_turn=run_turn,
     )
+    emit(
+        phase="tier-done",
+        level=0,
+        label="liveness",
+        overall=result.overall,
+        passed=result.passed,
+        latency_s=result.total_latency_s,
+        tokens=result.total_tokens,
+    )
     l1: TaskResult | None = None
-    if level1 and result.passed:
-        l1 = run_level1(
-            runner,
-            sandbox,
-            model=variant.model_ref,
-            workspace_root=workspace_root,
-            task=level1_task,
-            agent=agent,
-            run_turn=run_turn,
-        )
+    if level1:
+        if result.passed:
+            emit(phase="tier-start", level=1, label="tool/bash")
+            l1 = run_level1(
+                runner,
+                sandbox,
+                model=variant.model_ref,
+                workspace_root=workspace_root,
+                task=level1_task,
+                agent=agent,
+                run_turn=run_turn,
+            )
+            emit(
+                phase="tier-done",
+                level=1,
+                label="tool/bash",
+                overall=l1.overall,
+                passed=l1.passed,
+                latency_s=l1.latency_s,
+                tokens=l1.tokens,
+            )
+        else:
+            emit(phase="tier-skip", level=1, label="tool/bash", reason="L0 did not pass")
     l2: DevTaskResult | None = None
-    if level2 and l1 is not None and l1.passed:
-        l2 = run_level2(
-            runner,
-            sandbox,
-            model=variant.model_ref,
-            workspace_root=workspace_root,
-            task=level2_task,
-            agent=agent,
-            run_turn=run_turn,
-        )
+    if level2:
+        if l1 is not None and l1.passed:
+            emit(phase="tier-start", level=2, label="software-dev")
+            l2 = run_level2(
+                runner,
+                sandbox,
+                model=variant.model_ref,
+                workspace_root=workspace_root,
+                task=level2_task,
+                agent=agent,
+                run_turn=run_turn,
+            )
+            emit(
+                phase="tier-done",
+                level=2,
+                label="software-dev",
+                overall=l2.overall,
+                passed=l2.passed,
+                latency_s=l2.latency_s,
+                tokens=l2.tokens,
+            )
+        else:
+            emit(
+                phase="tier-skip",
+                level=2,
+                label="software-dev",
+                reason="an earlier tier did not pass",
+            )
+    emit(phase="config-done")
     return SweepResult(variant=variant, result=result, level1=l1, level2=l2)

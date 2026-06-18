@@ -11,11 +11,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Host-side validation harness (danno_validator). Heavy deps land here so a base
-# `pip install danno` stays lean and pip-friendly (no uv assumed): the Anthropic
-# SDK for the administrator-AI judge (M5) and Sphinx/MyST/Jinja2 for the report
-# (M1/M6). M0 ships only stdlib + book_em_danno primitives, so this is empty for
-# now — populated as those milestones land. Install with `pip install danno[validator]`.
+# Extra *dependencies* for the validation harness — NOT the harness itself. The
+# danno_validator package and the `danno validate` command always ship in the base
+# wheel (see tool.hatch.build below) and run on the base deps alone: the sweep,
+# MyST report, annotated menu, and results.json need only stdlib + book_em_danno.
+# This extra gates only the heavy optional deps, so a base `pip install danno` stays
+# lean and pip-friendly (no uv assumed): the Anthropic SDK for the administrator-AI
+# judge, and Sphinx/MyST/Jinja2 for `danno validate --html`. Both are still pending,
+# so this is empty for now; the features that need them fail loud until you
+# `pip install danno[validator]`.
 validator = []
 
 [project.scripts]
