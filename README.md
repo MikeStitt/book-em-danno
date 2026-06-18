@@ -292,6 +292,49 @@ writes the config and runs the setup step post-create; then `danno sandbox start
 launches OpenCode, which installs the plugins in-sandbox on first run. A `package`
 with no `config`/`setup` is the minimum — `config` and `setup` are both optional.
 
+## Validate which models actually work (`danno validate`)
+
+Declaring a model in `danno.toml` doesn't mean it can *do the job* — many local
+models can't tool-call, stall instead of acting, or pass a chat but fail a real
+edit. `danno validate` sweeps every model your `danno.toml` declares through a
+tiered battery in a disposable sandbox and reports which ones converge.
+
+```bash
+cd ./my-project
+danno validate --dry-run                 # preview the plan (models, tiers, sandboxes)
+danno validate                           # run it — provisions, sweeps, writes the report
+danno validate --only gemma4 --max-level 1   # just one model, liveness + tool/bash
+danno validate --baseline --baseline-model opus   # add a Claude Code reference row
+```
+
+It **runs immediately** (like `sandbox start`, no `--apply`) and is
+**non-destructive**: the battery runs in a throwaway, validator-owned sandbox
+seeded from a *copy* of your `danno.toml` — your project, your real sandbox, and
+your `danno.toml` are never touched. The tiers short-circuit (a model that fails
+liveness never wastes a run on the dev task):
+
+- **L0 — liveness:** a scripted greet → act → nudge; catches the *promised-but-
+  didn't-act* stall (says it will act, makes no tool call).
+- **L1 — tool/bash:** a deterministic file task (count lines → write the number);
+  graded by an objective file check.
+- **L2 — software-dev:** implement a function against a **hidden** test suite run
+  *in* the sandbox (exit 0 = pass).
+
+Each run writes, under `.danno-validator/<timestamp>/` (gitignored):
+
+- `index.md` + per-config pages — a MyST report: results matrix, per-tier
+  transcripts, failure taxonomy;
+- `menu.danno.toml` — an annotated **"menu"** config: every `[models.*]` block
+  tagged with its `[L0 · L1 · L2]` verdict and `[agents]` rendered as a
+  comment/uncomment menu, so you assemble a working config by editing assignments;
+- `results.json` — the machine-readable run record (CI/`--strict`, dashboards).
+
+`--baseline` needs a Claude token (`CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY`)
+and fails loud up front if it's missing. See
+[`.docs/ux-danno-validate-cli.md`](.docs/ux-danno-validate-cli.md) for the full
+command surface and [`.docs/plan-danno-validator.md`](.docs/plan-danno-validator.md)
+for the harness design.
+
 ## Network model (Docker sandbox)
 
 The agents run in a Docker **microVM** — its own kernel, filesystem, and network.
@@ -537,6 +580,10 @@ edit `danno.toml`, not the generated file (see
 
 - [`docs/ux-requirements.md`](docs/ux-requirements.md) — the reconciled command
   surface, network model, and `danno.toml` schema (the design-of-record).
+- [`.docs/ux-danno-validate-cli.md`](.docs/ux-danno-validate-cli.md) — the
+  `danno validate` command surface, status reporting, and `results.json` schema;
+  [`.docs/plan-danno-validator.md`](.docs/plan-danno-validator.md) — the validator
+  harness design.
 - [`.specify/memory/constitution.md`](.specify/memory/constitution.md) — the
   authoritative development practices, with per-work-type detail in
   [`.specify/memory/parts/`](.specify/memory/parts/).

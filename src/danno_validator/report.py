@@ -41,6 +41,15 @@ _BADGE = {
 }
 
 
+def verdict_label(cls: FailureClass) -> str:
+    """The glanceable badge for a verdict (e.g. `✓ pass`, `✗ early-stop`).
+
+    Shared by the report and the `danno validate` live status / summary so the two
+    surfaces always show the same wording for a given `FailureClass`.
+    """
+    return _BADGE.get(cls, cls.value)
+
+
 def strip_ansi(text: str) -> str:
     """Remove ANSI escape sequences so they don't leak into the report."""
     return _ANSI_RE.sub("", text)

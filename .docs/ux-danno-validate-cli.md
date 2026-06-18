@@ -8,6 +8,14 @@
 > command surface). `.docs/` is exempt from markdown/format checks. Nothing here
 > changes behaviour yet; it exists so the CLI is designed before it is built.
 
+> **Implementation status (2026-06-18): SHIPPED**, except `--html`. The command
+> (`danno validate`), live status reporting, `--dry-run` plan, the disposable
+> sweep+baseline orchestration, `results.json`, `--strict`, and teardown are built
+> and tested (`danno_validator/run.py`, `console.py`, `serialize.py`, `events.py`;
+> the `cli.py` command). `--html` is **deferred to M7** — HTML rendering needs the
+> Sphinx wiring that the (still-empty) `danno[validator]` extra will carry; until
+> then the command rejects `--html` up front and writes the MyST report regardless.
+
 ## Why a CLI
 
 The harness is complete and tested (M0–M5 + the M6 menu emitter), but it has **no

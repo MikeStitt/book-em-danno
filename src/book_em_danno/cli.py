@@ -1,7 +1,9 @@
-"""The `danno` CLI. Three commands — `install`, `doctor`, `sandbox` — over the
+"""The `danno` CLI. Commands — `install`, `doctor`, `sandbox`, `validate` — over the
 two-mode automation policy: advise by default, execute under `--apply`. `install`
 is the one provisioning path; `sandbox` operates the provisioned VM; `doctor` is a
-read-only preflight. `--apply` is a per-command option (`danno install --apply`)."""
+read-only preflight; `validate` sweeps danno.toml's models through the tiered
+battery (it runs immediately, like `sandbox start`). `--apply` is a per-command
+option (`danno install --apply`)."""
 
 from __future__ import annotations
 
@@ -109,6 +111,105 @@ def doctor() -> None:
     """Read-only preflight: report environment readiness with copy-paste fixes."""
     failed = doctor_cmd.run_doctor()
     if failed:
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def validate(
+    target: Path = typer.Option(
+        Path("."), "--target", "-C", help="Project whose danno.toml is swept."
+    ),
+    only: list[str] = typer.Option(
+        None, "--only", help="Restrict the sweep to these danno.toml model keys (repeatable)."
+    ),
+    max_level: int = typer.Option(
+        2, "--max-level", min=0, max=2, help="Highest tier (0 liveness · 1 +tool/bash · 2 +dev)."
+    ),
+    baseline: bool = typer.Option(
+        False, "--baseline", help="Also run the Claude Code baseline row (needs a host token)."
+    ),
+    baseline_model: str = typer.Option(
+        None,
+        "--baseline-model",
+        help="Pin the baseline's claude model (opus/sonnet/… or a full id).",
+    ),
+    agent: str = typer.Option(
+        sandbox_cmd.DEFAULT_AGENT,
+        "--agent",
+        help="Agent-under-test for the sweep (default opencode).",
+    ),
+    workspace: Path = typer.Option(
+        None, "--workspace", help="Throwaway workspace mount (default a temp dir)."
+    ),
+    out: Path = typer.Option(
+        None, "--out", help="Report output dir (default .danno-validator/<timestamp>/)."
+    ),
+    menu: bool = typer.Option(
+        True, "--menu/--no-menu", help="Emit the annotated menu danno.toml into the run dir."
+    ),
+    html: bool = typer.Option(
+        False, "--html", help="Render the report to HTML (deferred — see help)."
+    ),
+    keep_sandboxes: bool = typer.Option(
+        False, "--keep-sandboxes", help="Leave the disposable sandboxes up for debugging."
+    ),
+    reset: bool = typer.Option(
+        True, "--reset/--no-reset", help="Guarded per-config workspace reset between configs."
+    ),
+    strict: bool = typer.Option(
+        False, "--strict", help="Exit non-zero if any swept config fails its requested tiers."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print the plan and exit without provisioning or running."
+    ),
+    verbose: bool = _VERBOSE_OPT,
+) -> None:
+    """Sweep danno.toml's models through the tiered battery and write the report.
+
+    Runs immediately (like `sandbox start`), over disposable, validator-owned
+    sandboxes seeded from a copy of your danno.toml — your project is never
+    modified. `--dry-run` previews the plan. `--baseline` adds a Claude Code
+    reference row (needs CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY). Outputs land
+    under `.danno-validator/<timestamp>/` (report + menu + results.json).
+    """
+    from danno_validator.console import ConsoleReporter
+    from danno_validator.run import ValidateOptions, run_validate
+
+    if html:
+        log_err(
+            "--html is not yet wired: HTML rendering ships with the danno[validator] "
+            "Sphinx extra (tracked for M7). Re-run without --html; the MyST report is "
+            "still written to the run dir."
+        )
+        raise typer.Exit(code=3)
+
+    cfg = _load(target / "danno.toml")
+    opts = ValidateOptions(
+        target=target,
+        only=only or None,
+        max_level=max_level,
+        baseline=baseline,
+        baseline_model=baseline_model,
+        agent=agent,
+        workspace=workspace,
+        out_dir=out,
+        menu=menu,
+        keep_sandboxes=keep_sandboxes,
+        reset=reset,
+        strict=strict,
+        dry_run=dry_run,
+    )
+    try:
+        result = run_validate(
+            cfg, opts, Runner(apply=True, verbose=verbose), reporter=ConsoleReporter()
+        )
+    except ValueError as exc:  # e.g. --only names an undeclared model (fail loud)
+        log_err(str(exc))
+        raise typer.Exit(code=3) from exc
+    except (CommandFailedError, CommandNotFoundError) as exc:  # missing token / Docker
+        log_err(str(exc))
+        raise typer.Exit(code=4) from exc
+    if result.strict_failed:
         raise typer.Exit(code=1)
 
 
