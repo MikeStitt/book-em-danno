@@ -27,13 +27,13 @@ def _example() -> DannoConfig:
 
 def test_render_maps_agents_to_backends() -> None:
     doc = json.loads(_strip_comments(render_config(_example())))
-    assert doc["default_agent"] == "pm"
-    # pm -> sonnet (cloud) so the top-level model is the cloud id
-    assert doc["model"] == "anthropic/claude-sonnet-4-6"
-    assert doc["agent"]["architect"]["model"] == "anthropic/claude-sonnet-4-6"
-    assert doc["agent"]["committer"]["model"] == "ollama/gemma3:27b"
+    assert doc["default_agent"] == "build"
+    # build -> sonnet (cloud) so the top-level model is the cloud id
+    assert doc["model"] == "ollama/qwen3-coder-next"
+    assert doc["agent"]["plan"]["model"] == "ollama/qwen3-coder-next"
+    assert doc["agent"]["build"]["model"] == "ollama/qwen3-coder-next"
     # an ollama provider block is emitted for the local model
-    assert doc["provider"]["ollama"]["models"]["gemma3:27b"]["tool_call"] is True
+    assert doc["provider"]["ollama"]["models"]["gemma3:27b"]["tool_call"] is False
     # provider options carry ONLY baseURL/apiKey — no inert stream/thinking/num_ctx.
     opts = doc["provider"]["ollama"]["options"]
     assert set(opts) == {"baseURL", "apiKey"}
