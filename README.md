@@ -34,7 +34,6 @@ uv sync            # install danno + its locked deps (in-project)
 uv run danno --help
 uv run danno --version
 
-
 # Install danno as a global tool.
 
 uv tool install .   # then `danno` is on PATH
@@ -63,7 +62,6 @@ export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-YOUR-KEY
 export NVIDIA_API_KEY=nvapi-YOUR-KEY
 
 # Perhaps preview what danno will provision:
-
 danno install
 
 # actually do it: write config, pull models, create + wire the sandbox
@@ -78,7 +76,7 @@ danno sandbox start
 
 Perhaps type `hi` to talk to your AI agent.
 
-Perhaps type '!ls -Flag' to show what the agent can see.
+Perhaps type `!ls -Flag` to show what the agent can see.
 
 `/exit` to exit opencode.
 
