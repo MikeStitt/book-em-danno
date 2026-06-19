@@ -1,7 +1,7 @@
 [project]
 name = "danno"
 version = "0.5.1"
-description = "Declarative, transparent setup of OpenCode hybrid local/cloud model runtimes in a Docker sandbox, driven by danno.toml."
+description = "Declarative, transparent setup of OpenCode in a Docker Sandbox, driven by danno.toml."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

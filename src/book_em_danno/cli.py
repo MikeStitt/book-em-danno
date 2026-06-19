@@ -24,7 +24,7 @@ from .core.exec import CommandFailedError, CommandNotFoundError, Runner, console
 
 app = typer.Typer(
     no_args_is_help=True,
-    help="Declarative, transparent OpenCode hybrid-runtime setup driven by danno.toml.",
+    help="Declarative, transparent setup of OpenCode in a Docker Sandbox, driven by danno.toml.",
 )
 sandbox_app = typer.Typer(no_args_is_help=True, help="Operate the provisioned Docker sandbox.")
 app.add_typer(sandbox_app, name="sandbox")

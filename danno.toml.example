@@ -6,7 +6,7 @@
 target = "."                       # project to configure
 
 [defaults]
-default_agent = "pm"               # OpenCode default_agent
+default_agent = "build"            # OpenCode default_agent
 profile       = "hybrid"           # hybrid | cloud-only | local-only
 
 # --- Sandbox: where the agent's home (chat history, settings, onboarding) lives. ---
@@ -38,9 +38,29 @@ kind     = "llamacpp"
 base_url = "http://host.docker.internal:8080/v1"
 
 # --- Models: a named (backend, tag/id) pair. ---
-[models.gemma]
+[backends.nvidia]                  # IMPLEMENTED — any OpenAI-compatible endpoint (NVIDIA NIM)
+kind        = "openai"
+base_url    = "https://integrate.api.nvidia.com/v1"
+api_key_env = "NVIDIA_API_KEY"     # emitted as {env:NVIDIA_API_KEY}; the secret is NEVER
+                                   #   written here — inject it at launch with
+                                   #   `danno sandbox start --env NVIDIA_API_KEY=nvapi-...`
+context_budget = 1000000
+output_limit   = 8192
+
+[models.gemma3-27b]
 backend          = "ollama"
 tag              = "gemma3:27b"    # local models MUST support tool-calling (gemma3:1b does NOT)
+tool_call        = false
+reasoning_effort = "none"          # forwarded as model-level options.reasoningEffort into the /v1
+                                   #   body. "none" disables the thinking trace — faster for
+                                   #   high-volume local agents, and sidesteps opencode hang #21903.
+                                   #   Omit to forward nothing. gpt-oss-style models reject "none"
+                                   #   (use low/medium/high). Values: none | low | medium | high.
+
+# --- Models: a named (backend, tag/id) pair. ---
+[models.qwen3-coder-next]
+backend          = "ollama"
+tag              = "qwen3-coder-next"    # local models MUST support tool-calling (gemma3:1b does NOT)
 tool_call        = true
 reasoning_effort = "none"          # forwarded as model-level options.reasoningEffort into the /v1
                                    #   body. "none" disables the thinking trace — faster for
@@ -48,27 +68,53 @@ reasoning_effort = "none"          # forwarded as model-level options.reasoningE
                                    #   Omit to forward nothing. gpt-oss-style models reject "none"
                                    #   (use low/medium/high). Values: none | low | medium | high.
 
+# --- Models: a named (backend, tag/id) pair. ---
+[models.quen3p6-27b-q4_K_M]
+backend          = "ollama"
+tag              = "qwen3.6:27b-q4_K_M"    # local models MUST support tool-calling (gemma3:1b does NOT)
+tool_call        = true
+reasoning_effort = "medium"          # forwarded as model-level options.reasoningEffort into the /v1
+                                   #   body. "none" disables the thinking trace — faster for
+                                   #   high-volume local agents, and sidesteps opencode hang #21903.
+                                   #   Omit to forward nothing. gpt-oss-style models reject "none"
+                                   #   (use low/medium/high). Values: none | low | medium | high.
+
+# --- Models: a named (backend, tag/id) pair. ---
+[models.gpt-oss-20b]
+backend          = "ollama"
+tag              = "gpt-oss:20b"    # local models MUST support tool-calling (gemma3:1b does NOT)
+tool_call        = true
+reasoning_effort = "none"          # forwarded as model-level options.reasoningEffort into the /v1
+                                   #   body. "none" disables the thinking trace — faster for
+                                   #   high-volume local agents, and sidesteps opencode hang #21903.
+                                   #   Omit to forward nothing. gpt-oss-style models reject "none"
+                                   #   (use low/medium/high). Values: none | low | medium | high.
+
+
+
 [models.sonnet]
 backend = "cloud"
 id      = "anthropic/claude-sonnet-4-6"
 
+# --- NVIDIA NIM model via the openai-compatible backend above. ---
+[models.nemotron-ultra]
+backend   = "nvidia"
+tag       = "nvidia/nemotron-3-ultra-550b-a55b"   # the model id the endpoint expects
+tool_call = true
+
 # --- Agent -> model. Unlisted agents fall back to the profile tier default (Phase 2). ---
 [agents]
-architect           = "sonnet"
-reviewer            = "sonnet"
-pm                  = "sonnet"
-coder               = "sonnet"
-committer           = "gemma"
-runner              = "gemma"
-external-researcher = "gemma"
+plan                = "qwen3-coder-next"
+build               = "qwen3-coder-next"
+
 
 # --- Tool catalog: IMPERATIVE installs. Each entry runs its own installer (ADOS
 #     copies agent/command defs project-local + runs its --local step). For OpenCode
 #     npm plugins use [[npm]] below, not here. ---
-[[tools]]
-name       = "ados"
-source     = "https://github.com/juliusz-cwiakalski/agentic-delivery-os"
-install_to = "sandbox"
+#[[tools]]
+#name       = "ados"
+#source     = "https://github.com/juliusz-cwiakalski/agentic-delivery-os"
+#install_to = "sandbox"
 
 # --- OpenCode npm plugins: DECLARATIVE. Each becomes an entry in the generated
 #     opencode.jsonc "plugin" array; OpenCode (Bun) auto-installs them in the sandbox

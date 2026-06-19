@@ -1,36 +1,89 @@
 # book-em-danno
 
-**`danno`** is a Python CLI that declaratively provisions an [OpenCode](https://opencode.ai)
-**hybrid local/cloud model runtime inside a Docker sandbox**, driven by a single
-`danno.toml`. Cheap, high-volume agents run on local [Ollama](https://ollama.com)
-models on your own machine; high-stakes agents run on a cloud model. From one file
-`danno` writes the OpenCode config, pulls the local models, installs a catalog of
-agentic tools (including [ADOS](https://github.com/juliusz-cwiakalski/agentic-delivery-os)),
-and creates a Docker Desktop microVM sandbox wired to host Ollama.
+`danno` CLI reads a single `danno.toml` then declaratively provisions 
+an [OpenCode](https://opencode.ai) or [Claude Code](https://github.com/anthropics/claude-code) 
+agentic coding tool **inside a Docker Sandbox**. The `--target` folder defaults to `.`
+which is the `cwd` for the sandboxed coding tool. The sandboxed coding tool shares the `--target`
+folder, and a local host [ollama](https://ollama.com/) server, accesses the **internet**,
+but is sandboxed from the rest of the host and the host **intranet**.
+
+From the sandbox, `claude` uses its normal cast of AI Reasoning models;
+while `danno` uses `danno.toml` to configure `opencode` agents to use local or 
+cloud AI Reasoning models.
+
+From one file, `danno` writes the OpenCode config, pulls the local models, 
+installs a catalog of agentic tools (including [ADOS](https://github.com/juliusz-cwiakalski/agentic-delivery-os)),
+and creates a Docker Desktop microVM sandbox wired to the host `ollama`.
 
 Everything is **transparent and non-destructive**: by default `danno` *advises* —
 it prints the exact copy-paste commands it would run, without executing them.
 Pass `--apply` (a per-command flag, e.g. `danno install --apply`) to execute.
 
-## Install
+## Install and Tryout
+
+- Install [uv](https://docs.astral.sh/uv/)
+- Install [ollama](https://ollama.com/) command line
+- Install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
 
 ```bash
+mkdir tryout
+cd tryout
+git clone https://github.com/MikeStitt/book-em-danno
+cd book-em-danno
 uv sync            # install danno + its locked deps (in-project)
 uv run danno --help
 uv run danno --version
-```
 
-Or install it as a global tool — the distribution is named `danno`, so the
-command and the package match:
 
-```bash
+# Install danno as a global tool.
+
 uv tool install .   # then `danno` is on PATH
 danno --help        # also works: uv tool run danno --help
+danno --version
+
+cd ..
+mkdir example-project
+cd example-project
+git init
+curl -L -o danno.toml https://raw.githubusercontent.com/MikeStitt/book-em-danno/refs/heads/main/danno.toml.example
+
+docker desktop start
+
+# From a different terminal window, start ollama  command line.
+# Please ensure only one ollama is running.
+#
+# An example command: 
+# OLLAMA_HOST=0.0.0.0:11434 OLLAMA_KEEP_ALIVE=30m OLLAMA_KV_CACHE_TYPE=q8_0 ollama serve
+
+danno doctor
+
+# Perhaps set cloud API keys
+export ANTHROPIC_API_KEY=sk-ant-api03-YOUR-KEY
+export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-YOUR-KEY
+export NVIDIA_API_KEY=nvapi-YOUR-KEY
+
+# Perhaps preview what danno will provision:
+
+danno install
+
+# actually do it: write config, pull models, create + wire the sandbox
+danno install --apply
+
+touch I-MADE-THIS-FILE
+
+ls -Flag
+
+danno sandbox start
 ```
 
-`danno` is the entry point; `book-em-danno` is a legacy script alias.
+Perhaps type `hi` to talk to your AI agent.
 
-## Getting started
+Perhaps type '!ls -Flag' to show what the agent can see.
+
+`/exit` to exit opencode.
+
+
+## More detailed Getting Started
 
 ### 1. Preflight
 
