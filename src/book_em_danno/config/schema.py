@@ -101,6 +101,34 @@ class Model(BaseModel):
     reasoning_effort: Literal["none", "low", "medium", "high"] | None = None
 
 
+class AgentSpec(BaseModel):
+    """The rich `[agents.<name>]` form: danno's model lever plus the safe OpenCode
+    agent pass-through fields, emitted verbatim into the generated opencode.jsonc
+    `agent.<name>` block. The string shorthand (`agent = "model"`) covers the common
+    case; this table form unlocks (1) routing a built-in subagent to a local model
+    and (2) fully defining a danno-owned agent in JSON (no markdown needed).
+
+    `model` resolves by the same '/'-rule as the shorthand (a value with '/' is a raw
+    OpenCode ref, else a [models] name). The remaining fields mirror OpenCode's JSON
+    agent schema and are emitted as-is. `prompt`/`tools`/`mode` etc. are OpenCode's,
+    and where a markdown agent def already sets a field, OpenCode's MARKDOWN WINS over
+    our JSON (verified) — the generator warns loud at that collision rather than
+    emitting a value that will be silently ignored."""
+
+    model_config = ConfigDict(extra="forbid")
+    model: str | None = None
+    mode: Literal["primary", "subagent", "all"] | None = None
+    description: str | None = None
+    prompt: str | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    steps: int | None = None
+    disable: bool | None = None
+    hidden: bool | None = None
+    color: str | None = None
+    permission: dict[str, Any] | None = None
+
+
 class Tool(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
@@ -162,7 +190,7 @@ class DannoConfig(BaseModel):
     defaults: Defaults = Field(default_factory=Defaults)
     backends: dict[str, Backend] = Field(default_factory=dict)
     models: dict[str, Model] = Field(default_factory=dict)
-    agents: dict[str, str] = Field(default_factory=dict)
+    agents: dict[str, str | AgentSpec] = Field(default_factory=dict)
     tools: list[Tool] = Field(default_factory=list)
     npm: list[NpmPlugin] = Field(default_factory=list)
     sandbox: Sandbox = Field(default_factory=Sandbox)
@@ -187,8 +215,12 @@ class DannoConfig(BaseModel):
                     f"model '{model_name}' references unknown backend '{model.backend}'"
                 )
         for agent, value in self.agents.items():
+            # The model ref is the string value itself, or the rich form's `model`
+            # field (which may be unset — e.g. an agent that only pins mode/permission
+            # and lets a markdown def or built-in supply the model).
+            ref = value if isinstance(value, str) else value.model
             # A '/' marks a raw OpenCode ref (passed through verbatim); otherwise the
             # value names a [models] entry, which must exist.
-            if "/" not in value and value not in self.models:
-                raise ValueError(f"agent '{agent}' references unknown model '{value}'")
+            if ref is not None and "/" not in ref and ref not in self.models:
+                raise ValueError(f"agent '{agent}' references unknown model '{ref}'")
         return self

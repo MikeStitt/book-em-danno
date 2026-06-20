@@ -252,6 +252,18 @@ source     = "https://github.com/juliusz-cwiakalski/agentic-delivery-os"
 install_to = "sandbox"
 ```
 
+#### Rich agents
+
+The string form (`agent = "model"`) sets only the model. For more, use the table
+form `[agents.<name>]` — `model` (same `/` rule) plus OpenCode agent fields
+(`mode`, `prompt`, `temperature`, `permission`, …) emitted verbatim into the
+generated `agent.<name>` block. Two uses: route a built-in subagent to a local
+model (`[agents.explore]` → `model = "gemma4"`), or fully define a danno-owned
+agent in JSON. danno **never** writes `.opencode/agent[s]/*.md`; where a markdown
+agent def already sets a field, OpenCode's **markdown wins** over the generated
+JSON, so `danno install` warns loud at that collision rather than emitting a value
+that will be silently ignored.
+
 ### Ollama context & runtime knobs
 
 danno translates two `[backends.ollama]` fields and one per-model field into the

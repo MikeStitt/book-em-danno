@@ -5,9 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from book_em_danno.config.generate import Action, generate, render_config
+from book_em_danno.config.generate import (
+    Action,
+    agent_markdown_collisions,
+    generate,
+    render_config,
+    scan_agent_frontmatter,
+)
 from book_em_danno.config.loader import load_config
 from book_em_danno.config.schema import (
+    AgentSpec,
     DannoConfig,
     Defaults,
     LlamacppBackend,
@@ -237,6 +244,127 @@ def test_npm_plugins_render_plugin_array() -> None:
 def test_no_plugin_key_when_npm_empty() -> None:
     doc = json.loads(_strip_comments(render_config(_npm_config([]))))
     assert "plugin" not in doc
+
+
+# --- rich [agents] AgentSpec form ------------------------------------------
+
+
+def _ollama_cfg(agents: dict, **kw: object) -> DannoConfig:
+    return DannoConfig(
+        defaults=Defaults(default_agent="pm"),
+        backends={
+            "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1")
+        },
+        models={"local": Model(backend="ollama", tag="qwen3-coder-next", tool_call=True)},
+        agents=agents,
+        **kw,  # type: ignore[arg-type]
+    )
+
+
+def test_rich_agent_emits_passthrough_fields_with_resolved_model() -> None:
+    cfg = _ollama_cfg(
+        {
+            "pm": "local",
+            "architect": AgentSpec(
+                model="anthropic/claude-sonnet-4-6",
+                mode="subagent",
+                temperature=0.1,
+                permission={"edit": "deny"},
+            ),
+        }
+    )
+    agent = json.loads(_strip_comments(render_config(cfg)))["agent"]["architect"]
+    assert agent["model"] == "anthropic/claude-sonnet-4-6"  # raw ref passed through
+    assert agent["mode"] == "subagent"
+    assert agent["temperature"] == 0.1
+    assert agent["permission"] == {"edit": "deny"}
+
+
+def test_rich_agent_resolves_a_bare_model_name() -> None:
+    # A rich agent can route a built-in subagent to a local [models] entry.
+    cfg = _ollama_cfg({"pm": "local", "explore": AgentSpec(model="local")})
+    agent = json.loads(_strip_comments(render_config(cfg)))["agent"]["explore"]
+    assert agent["model"] == "ollama/qwen3-coder-next"  # resolved via [models]
+
+
+def test_rich_agent_without_model_omits_the_model_key() -> None:
+    # An agent that only pins behavior (no model) emits no `model` key — OpenCode /
+    # a markdown def supplies it. The top-level model falls back to a declared model.
+    cfg = _ollama_cfg({"pm": "local", "locked": AgentSpec(permission={"edit": "deny"})})
+    doc = json.loads(_strip_comments(render_config(cfg)))
+    assert "model" not in doc["agent"]["locked"]
+    assert doc["agent"]["locked"]["permission"] == {"edit": "deny"}
+    assert doc["model"] == "ollama/qwen3-coder-next"  # default_agent pm -> local
+
+
+def test_default_agent_rich_spec_drives_top_level_model() -> None:
+    cfg = _ollama_cfg({"pm": AgentSpec(model="anthropic/claude-sonnet-4-6", mode="primary")})
+    doc = json.loads(_strip_comments(render_config(cfg)))
+    assert doc["model"] == "anthropic/claude-sonnet-4-6"
+
+
+# --- markdown collision warnings -------------------------------------------
+
+
+def _write_agent_md(target: Path, name: str, frontmatter: str, *, singular: bool = True) -> None:
+    sub = "agent" if singular else "agents"
+    d = target / ".opencode" / sub
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{name}.md").write_text(f"---\n{frontmatter}---\nbody is the prompt\n", encoding="utf-8")
+
+
+def test_scan_reads_frontmatter_keys_from_both_dirs(tmp_path: Path) -> None:
+    _write_agent_md(tmp_path, "reviewer", "mode: subagent\ntemperature: 0.2\n", singular=True)
+    _write_agent_md(tmp_path, "planner", "description: plan\n", singular=False)
+    found = scan_agent_frontmatter(tmp_path)
+    assert found["reviewer"] == {"mode", "temperature"}
+    assert found["planner"] == {"description"}
+
+
+def test_scan_skips_nested_keys(tmp_path: Path) -> None:
+    # Indented keys belong to a parent map (e.g. permission:) — not top-level fields.
+    _write_agent_md(tmp_path, "r", "permission:\n  edit: deny\nmode: subagent\n")
+    assert scan_agent_frontmatter(tmp_path)["r"] == {"permission", "mode"}
+
+
+def test_collision_warns_when_markdown_sets_the_same_field(tmp_path: Path) -> None:
+    _write_agent_md(tmp_path, "reviewer", "model: gpt-oss:20b\ntemperature: 0.9\n")
+    cfg = _ollama_cfg(
+        {"pm": "local", "reviewer": AgentSpec(model="local", temperature=0.1, mode="subagent")}
+    )
+    result = generate(cfg, tmp_path)
+    assert len(result.warnings) == 1
+    msg = result.warnings[0]
+    # only the overlapping fields are listed (sorted); mode is danno-only, not shadowed.
+    assert "reviewer" in msg and "both set model, temperature —" in msg
+
+
+def test_no_collision_when_fields_are_disjoint(tmp_path: Path) -> None:
+    _write_agent_md(tmp_path, "reviewer", "description: reviews code\n")
+    cfg = _ollama_cfg({"pm": "local", "reviewer": AgentSpec(model="local", temperature=0.1)})
+    assert generate(cfg, tmp_path).warnings == []
+
+
+def test_markdown_body_shadows_a_danno_prompt(tmp_path: Path) -> None:
+    # `prompt` never appears in frontmatter (the body IS the prompt), but a markdown
+    # file still shadows a danno-set prompt — special-cased so it's not missed.
+    _write_agent_md(tmp_path, "writer", "mode: subagent\n")
+    cfg = _ollama_cfg({"pm": "local", "writer": AgentSpec(model="local", prompt="{file:./p.md}")})
+    warnings = generate(cfg, tmp_path).warnings
+    assert len(warnings) == 1 and "prompt" in warnings[0]
+
+
+def test_string_shorthand_collides_only_on_model(tmp_path: Path) -> None:
+    # The string form sets only `model`; a markdown `model:` is the classic shadow.
+    _write_agent_md(tmp_path, "pm", "model: gpt-oss:20b\n")
+    cfg = _ollama_cfg({"pm": "local"})
+    warnings = generate(cfg, tmp_path).warnings
+    assert len(warnings) == 1 and "model" in warnings[0]
+
+
+def test_no_warnings_without_any_markdown(tmp_path: Path) -> None:
+    cfg = _ollama_cfg({"pm": AgentSpec(model="local", temperature=0.1, prompt="x")})
+    assert agent_markdown_collisions(cfg, scan_agent_frontmatter(tmp_path)) == []
 
 
 def _strip_comments(text: str) -> str:

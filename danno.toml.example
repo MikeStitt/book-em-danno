@@ -108,6 +108,22 @@ plan                = "qwen3-coder-next"             # bare name → resolved vi
 build               = "qwen3-coder-next"
 pm                  = "anthropic/claude-sonnet-4-6"  # raw ref → passed through verbatim
 
+# Rich form: a table sets `model` (same "/" rule) plus OpenCode agent fields, emitted
+# verbatim into the generated agent block. Two uses: (1) route a built-in subagent to
+# a local model, (2) fully define a danno-owned agent in JSON (no markdown needed).
+#[agents.explore]                        # route OpenCode's built-in explorer local
+#model = "qwen3-coder-next"
+#
+#[agents.architect]
+#model  = "anthropic/claude-sonnet-4-6"
+#mode   = "subagent"
+#prompt = "{file:./prompts/architect.md}"
+#[agents.architect.permission]
+#edit = "deny"
+# NOTE: danno never edits .opencode/agent[s]/*.md. Where a markdown agent def already
+# sets a field (model/temperature/…), OpenCode's markdown WINS over this generated
+# JSON — `danno install` warns loud at that collision instead of emitting a dead value.
+
 
 # --- Tool catalog: IMPERATIVE installs. Each entry runs its own installer (ADOS
 #     copies agent/command defs project-local + runs its --local step). For OpenCode

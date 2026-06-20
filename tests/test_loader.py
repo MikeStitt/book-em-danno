@@ -86,6 +86,42 @@ def test_inline_raw_ref_agent_ok(tmp_path: Path) -> None:
     assert load_config(cfg_path).agents["pm"] == "anthropic/claude-sonnet-4-6"
 
 
+def test_rich_agent_spec_loads(tmp_path: Path) -> None:
+    # The table form [agents.<name>] parses to an AgentSpec with model + passthrough.
+    cfg_path = tmp_path / "danno.toml"
+    cfg_path.write_text(
+        "[agents]\nplan = 'anthropic/claude-sonnet-4-6'\n\n"
+        "[agents.architect]\nmodel = 'anthropic/claude-sonnet-4-6'\nmode = 'subagent'\n"
+        "temperature = 0.1\n[agents.architect.permission]\nedit = 'deny'\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.agents["plan"] == "anthropic/claude-sonnet-4-6"  # string shorthand
+    spec = cfg.agents["architect"]
+    assert not isinstance(spec, str)
+    assert spec.model == "anthropic/claude-sonnet-4-6"
+    assert spec.mode == "subagent"
+    assert spec.permission == {"edit": "deny"}
+
+
+def test_rich_agent_unknown_field_fails_loud(tmp_path: Path) -> None:
+    bad = tmp_path / "danno.toml"
+    bad.write_text(
+        "[agents.architect]\nmodel = 'anthropic/claude-sonnet-4-6'\nbogus = true\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DannoConfigError, match="invalid danno.toml"):
+        load_config(bad)
+
+
+def test_rich_agent_dangling_model_fails_loud(tmp_path: Path) -> None:
+    # A bare (no-slash) model in the rich form must still name a [models] entry.
+    bad = tmp_path / "danno.toml"
+    bad.write_text("[agents.architect]\nmodel = 'ghost'\n", encoding="utf-8")
+    with pytest.raises(DannoConfigError, match="unknown model"):
+        load_config(bad)
+
+
 def test_slash_in_model_name_fails_loud(tmp_path: Path) -> None:
     # danno names must not contain "/" — that's what disambiguates a [models] name
     # from a raw OpenCode ref in [agents].

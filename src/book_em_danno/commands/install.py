@@ -13,7 +13,7 @@ from ..config.generate import Action, generate
 from ..config.loader import DannoConfigError
 from ..config.schema import DannoConfig, OllamaBackend
 from ..core import registry
-from ..core.exec import CommandFailedError, Runner, log_err, log_info
+from ..core.exec import CommandFailedError, Runner, log_err, log_info, log_warn
 from . import ollama, sandbox, tools
 
 
@@ -31,6 +31,10 @@ def _resolve_target(target: Path) -> Path:
 def _emit_config(cfg: DannoConfig, target_abs: Path, runner: Runner) -> None:
     """Tier-1: write/diff .opencode/opencode.jsonc (we own this file)."""
     result = generate(cfg, target_abs, apply=runner.apply)
+    # Fail loud (Working Rule 8): a danno.toml field a markdown agent def also sets is
+    # silently overridden by OpenCode, so warn rather than emit a value that won't win.
+    for warning in result.warnings:
+        log_warn(warning)
     if result.action is Action.WROTE:
         log_info(f"[green]wrote[/green] {result.path}")
     elif result.action is Action.UNCHANGED:

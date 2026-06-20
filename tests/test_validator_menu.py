@@ -11,6 +11,7 @@ from pathlib import Path
 
 from book_em_danno.config.loader import load_config
 from book_em_danno.config.schema import (
+    AgentSpec,
     DannoConfig,
     Model,
     NpmPlugin,
@@ -205,6 +206,15 @@ def test_menu_agents_block_is_a_comment_uncomment_menu() -> None:
     # Every other model appears as a commented alternative under the role.
     assert '# plan = "gemma3-27b"   # [L0 ✗ stall · L1 – · L2 –] — uncomment to use' in menu
     assert '# plan = "qwen"   # [not validated] — uncomment to use' in menu
+
+
+def test_menu_reads_model_from_a_rich_agent_spec() -> None:
+    # The menu is a model-selection surface: a rich [agents.<name>] agent's selected
+    # model (its `model` field) drives the active line and its verdict badge.
+    config = _config()
+    config.agents["coder"] = AgentSpec(model="gptoss", mode="subagent")
+    menu = render_menu(config, _results())
+    assert 'coder = "gptoss"   # [L0 ✓ · L1 ✓ · L2 ✓]' in menu
 
 
 def test_menu_verified_stamp_is_optional() -> None:
