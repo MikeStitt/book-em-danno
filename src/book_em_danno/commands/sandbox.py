@@ -483,29 +483,34 @@ def reconcile_env_refs(target_abs: Path, env_pairs: list[str], env_files: list[s
     return augmented
 
 
-def launch(
+def _exec_session(
     runner: Runner,
     name: str,
     target_abs: Path,
     *,
-    agent: str = DEFAULT_AGENT,
-    ollama_url: str = DEFAULT_OLLAMA_URL,
-    env_pairs: list[str] | None = None,
-    env_files: list[str] | None = None,
-    home: Path | None = None,
-    agent_args: list[str] | None = None,
+    agent: str,
+    ollama_url: str,
+    env_pairs: list[str],
+    env_files: list[str],
+    home: Path | None,
+    container_argv: list[str],
+    why: str,
 ) -> list[str]:
-    """Launch the in-container agent in the mounted repo (`-w <target>`), wired to
-    host Ollama / agent auth via an env-file. Launching is the command's purpose, so
-    it always executes (not gated by `--apply`). With a persistent `home`, the
-    agent's config/history is relocated onto it; for claude, onboarding and
-    workspace trust are pre-seeded so neither wizard nor the trust dialog blocks the
-    launch. The exec runs with `check=False`: quitting the TUI is not a danno error.
+    """Set up the in-container session and exec `container_argv` inside it.
 
-    `agent_args` are forwarded verbatim to the agent binary (e.g.
-    `["--resume", "<id>"]` for `claude`), appended after the agent name."""
-    env_pairs = env_pairs or []
-    env_files = env_files or []
+    SYNC REQUIREMENT: this is the single shared core of `launch` (runs the agent) and
+    `shell` (runs bash). `danno sandbox shell` MUST stay environmentally identical to
+    `danno sandbox start`: same mounted repo working dir (`-w <target>`), same
+    chmod-600 env-file (agent auth / Ollama URL / relocated config home / resolved
+    `{env:VAR}` refs), same claude onboarding seeding — differing ONLY in
+    `container_argv` (the agent binary vs `bash`). Both callers route through here so
+    the two paths cannot drift; never add env/`-w`/mount wiring to one path without
+    the other.
+
+    With a persistent `home`, the agent's config is relocated onto it; for claude,
+    onboarding and workspace trust are pre-seeded so neither wizard nor the trust
+    dialog blocks the session. The exec runs with `check=False`: quitting the TUI or
+    exiting the shell is not a danno error."""
     if agent == "claude" and home is not None:
         seed_onboarding(home, target_abs)
     if agent == DEFAULT_AGENT:
@@ -526,13 +531,75 @@ def launch(
         "--env-file",
         str(env_path),
         name,
-        agent,
-        *(agent_args or []),
+        *container_argv,
     ]
     try:
-        return runner.run(cmd, why=f"launch {agent} in sandbox '{name}'", check=False)
+        return runner.run(cmd, why=why, check=False)
     finally:
         env_path.unlink(missing_ok=True)
+
+
+def launch(
+    runner: Runner,
+    name: str,
+    target_abs: Path,
+    *,
+    agent: str = DEFAULT_AGENT,
+    ollama_url: str = DEFAULT_OLLAMA_URL,
+    env_pairs: list[str] | None = None,
+    env_files: list[str] | None = None,
+    home: Path | None = None,
+    agent_args: list[str] | None = None,
+) -> list[str]:
+    """Launch the in-container agent in the mounted repo, wired to host Ollama /
+    agent auth. Launching is the command's purpose, so it always executes (not gated
+    by `--apply`). The session setup is shared with `shell` via `_exec_session` (see
+    its SYNC REQUIREMENT); this path's only specialisation is the container command —
+    the agent binary plus `agent_args` forwarded verbatim (e.g. `["--resume", "<id>"]`
+    for `claude`)."""
+    return _exec_session(
+        runner,
+        name,
+        target_abs,
+        agent=agent,
+        ollama_url=ollama_url,
+        env_pairs=env_pairs or [],
+        env_files=env_files or [],
+        home=home,
+        container_argv=[agent, *(agent_args or [])],
+        why=f"launch {agent} in sandbox '{name}'",
+    )
+
+
+def _ensure_provisioned(
+    runner: Runner,
+    name: str,
+    target_abs: Path,
+    *,
+    agent: str,
+    allow_hosts: tuple[str, ...],
+    home: Path | None,
+    registry_path: Path | None,
+) -> None:
+    """The pre-session gate shared by `start` and `shell`: under `--apply`, provision
+    (idempotent); otherwise require the sandbox to already exist, failing loud
+    (Working Rule 8) rather than letting `docker sandbox exec` error on a missing
+    sandbox. Kept in one place so both interactive commands gate identically."""
+    if runner.apply:
+        provision(
+            runner,
+            name,
+            target_abs,
+            agent=agent,
+            allow_hosts=allow_hosts,
+            home=home,
+            registry_path=registry_path,
+        )
+    elif not sandbox_exists(name):
+        raise CommandFailedError(
+            f"sandbox '{name}' is not provisioned. Run `danno sandbox start --apply` "
+            f"(provisions then launches) or `danno install --apply` first."
+        )
 
 
 def start(
@@ -549,26 +616,24 @@ def start(
     registry_path: Path | None = None,
     agent_args: list[str] | None = None,
 ) -> None:
-    """Launch the in-container agent. Under `--apply`, provision (idempotent) first;
-    otherwise just launch the already-provisioned sandbox, failing loud if it is
-    missing rather than letting `docker sandbox exec` error on a missing sandbox.
+    """Provision (under `--apply`, idempotent) then launch the in-container AGENT.
+
+    SYNC REQUIREMENT: `start` and `shell` are deliberately the same command with a
+    different last step — `start` runs the agent, `shell` runs `bash`. Both gate via
+    `_ensure_provisioned` and set up the session via `_exec_session`; put any new
+    provisioning/env/mount behaviour in those shared helpers, not in one command
+    only, so the two cannot drift.
 
     `agent_args` are forwarded verbatim to the agent binary (e.g. `--resume <id>`)."""
-    if runner.apply:
-        provision(
-            runner,
-            name,
-            target_abs,
-            agent=agent,
-            allow_hosts=allow_hosts,
-            home=home,
-            registry_path=registry_path,
-        )
-    elif not sandbox_exists(name):
-        raise CommandFailedError(
-            f"sandbox '{name}' is not provisioned. Run `danno sandbox start --apply` "
-            f"(provisions then launches) or `danno install --apply` first."
-        )
+    _ensure_provisioned(
+        runner,
+        name,
+        target_abs,
+        agent=agent,
+        allow_hosts=allow_hosts,
+        home=home,
+        registry_path=registry_path,
+    )
     launch(
         runner,
         name,
@@ -609,14 +674,48 @@ def run_npm_setup(runner: Runner, name: str, plugins: list[NpmPlugin]) -> list[l
     return cmds
 
 
-def shell(runner: Runner, name: str) -> list[str]:
-    """Open an interactive bash shell inside the sandbox VM (always executes — the
-    interactive shell is the command's purpose, not a gated side effect). Runs with
-    `check=False` so exiting the shell (non-zero status) is not a danno error."""
-    return runner.run(
-        ["docker", "sandbox", "exec", "-it", name, "bash"],
+def shell(
+    runner: Runner,
+    name: str,
+    target_abs: Path,
+    *,
+    agent: str = DEFAULT_AGENT,
+    ollama_url: str = DEFAULT_OLLAMA_URL,
+    allow_hosts: tuple[str, ...] = DEFAULT_ALLOW_HOSTS,
+    env_pairs: list[str] | None = None,
+    env_files: list[str] | None = None,
+    home: Path | None = None,
+    registry_path: Path | None = None,
+) -> list[str]:
+    """Open an interactive bash shell inside the sandbox VM — `start` minus the agent
+    launch.
+
+    SYNC REQUIREMENT: see `start`. `shell` MUST stay identical to `start` except for
+    the final in-container command: same provisioning gate (`_ensure_provisioned`)
+    and same session setup (`_exec_session`: `-w <target>`, the env-file with agent
+    auth / Ollama URL / relocated config home / resolved `{env:}` refs), so a tool you
+    run by hand from this shell is wired exactly as `start` would wire the agent. The
+    ONLY difference is the container command — `bash` instead of the agent binary."""
+    _ensure_provisioned(
+        runner,
+        name,
+        target_abs,
+        agent=agent,
+        allow_hosts=allow_hosts,
+        home=home,
+        registry_path=registry_path,
+    )
+    return _exec_session(
+        runner,
+        name,
+        target_abs,
+        agent=agent,
+        ollama_url=ollama_url,
+        env_pairs=env_pairs or [],
+        env_files=env_files or [],
+        home=home,
+        container_argv=["bash"],
         why=f"open a shell in sandbox '{name}'",
-        check=False,
     )
 
 

@@ -205,10 +205,40 @@ def test_resolve_env_refs_extra_injects_non_ref_keys(
     assert missing == []
 
 
-def test_shell_command() -> None:
+def test_shell_mirrors_start_with_bash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # shell is start minus the agent launch: same -w/env-file session setup, the
+    # only difference being the container command (`bash`, not the agent binary).
+    monkeypatch.setattr(sandbox, "sandbox_exists", lambda name: True)
     r = RecordingRunner()
-    sandbox.shell(r, "probe")
-    assert r.joined() == ["docker sandbox exec -it probe bash"]
+    sandbox.shell(r, "probe", tmp_path)
+    assert len(r.commands) == 1  # only the exec, no create/proxy/stop
+    _assert_launch_cmd(r.commands[0], "probe", "bash", repo=str(tmp_path))
+
+
+def test_shell_fails_loud_when_not_provisioned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Like start: opening a shell on an unprovisioned sandbox without --apply must
+    # fail loud, not let `docker sandbox exec` error on a missing sandbox.
+    monkeypatch.setattr(sandbox, "sandbox_exists", lambda name: False)
+    with pytest.raises(CommandFailedError, match="not provisioned"):
+        sandbox.shell(RecordingRunner(), "probe", tmp_path)
+
+
+def test_shell_provisions_under_apply(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Under --apply, shell provisions first (create/proxy/stop) then opens the shell,
+    # exactly as start provisions then launches.
+    monkeypatch.setattr(ollama, "loopback_warning", lambda **kw: None)
+    monkeypatch.setattr(sandbox, "sandbox_exists", lambda name: False)
+    r = RecordingRunner()
+    r.apply = True
+    sandbox.shell(r, "probe", tmp_path)
+    assert r.joined()[:3] == [
+        f"docker sandbox create --name probe opencode {tmp_path}",
+        "docker sandbox network proxy probe --policy allow --allow-host localhost:11434",
+        "docker sandbox stop probe",
+    ]
+    _assert_launch_cmd(r.commands[3], "probe", "bash", repo=str(tmp_path))
 
 
 def test_start_fails_loud_when_not_provisioned(

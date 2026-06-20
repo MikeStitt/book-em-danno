@@ -115,10 +115,12 @@ diff and needs `--apply`.
 The confusion-resistant flow is to `cd` into the project and omit `--target`: it
 defaults to `.`, so danno derives the same sandbox name every time.
 
-`start` and `shell` are interactive: launching is their purpose, so they run
-without `--apply`. (On an unprovisioned sandbox, `start` fails loud — provision it
-first with `danno install --apply` or `danno sandbox start --apply`.) The
-management commands keep the advise/`--apply` split.
+`start` and `shell` are interactive and behave identically except that `shell`
+drops you at a bash prompt instead of launching the agent: launching is their
+purpose, so they run without `--apply`, and `--apply` additionally provisions. (On
+an unprovisioned sandbox, `start`/`shell` fail loud — provision first with `danno
+install --apply` or `danno sandbox start --apply`.) The management commands keep the
+advise/`--apply` split.
 
 ```bash
 cd ./my-project
