@@ -19,6 +19,7 @@ from book_em_danno.config.schema import (
 )
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "danno.toml.example"
+MAXIMAL = Path(__file__).resolve().parent / "data" / "danno.toml.maximal.example"
 
 
 def _example() -> DannoConfig:
@@ -28,7 +29,7 @@ def _example() -> DannoConfig:
 def test_render_maps_agents_to_backends() -> None:
     doc = json.loads(_strip_comments(render_config(_example())))
     assert doc["default_agent"] == "build"
-    # build -> sonnet (cloud) so the top-level model is the cloud id
+    # build -> qwen3-coder-next (ollama) so the top-level model is the local ref
     assert doc["model"] == "ollama/qwen3-coder-next"
     assert doc["agent"]["plan"]["model"] == "ollama/qwen3-coder-next"
     assert doc["agent"]["build"]["model"] == "ollama/qwen3-coder-next"
@@ -38,6 +39,30 @@ def test_render_maps_agents_to_backends() -> None:
     opts = doc["provider"]["ollama"]["options"]
     assert set(opts) == {"baseURL", "apiKey"}
     assert doc["provider"]["ollama"]["models"]["gemma3:27b"]["limit"]["output"] == 8192
+
+
+def test_render_maximal_maps_cloud_default_and_mixed_backends() -> None:
+    # The maximal fixture's default_agent (pm) maps to a CLOUD model, so the
+    # top-level `model` renders as the cloud id — the cloud-as-default path the
+    # small example no longer drives end-to-end from a file. Agents also span
+    # ollama and nvidia (openai-compatible) backends.
+    cfg = load_config(MAXIMAL)
+    doc = json.loads(_strip_comments(render_config(cfg)))
+    assert doc["default_agent"] == "pm"
+    assert doc["model"] == "anthropic/claude-sonnet-4-6"  # cloud id, not a <prov>/<tag> ref
+    assert doc["agent"]["pm"]["model"] == "anthropic/claude-sonnet-4-6"
+    assert doc["agent"]["build"]["model"] == "ollama/gemma3:27b"
+    assert doc["agent"]["research"]["model"] == "nvidia/nvidia/nemotron-3-ultra-550b-a55b"
+    # the nvidia (openai-compatible) provider carries an env-substituted key
+    assert doc["provider"]["nvidia"]["options"]["apiKey"] == "{env:NVIDIA_API_KEY}"
+
+
+def test_generate_maximal_writes_despite_unused_llamacpp(tmp_path: Path) -> None:
+    # The fixture declares a llamacpp backend but no model uses it, so the stub
+    # must not fire — generate() writes the config.
+    result = generate(load_config(MAXIMAL), tmp_path)
+    assert result.action is Action.WROTE
+    assert (tmp_path / ".opencode" / "opencode.jsonc").is_file()
 
 
 def test_all_defined_ollama_models_emitted_even_when_unassigned() -> None:

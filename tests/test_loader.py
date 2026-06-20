@@ -7,6 +7,7 @@ import pytest
 from book_em_danno.config.loader import DannoConfigError, load_config
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "danno.toml.example"
+MAXIMAL = Path(__file__).resolve().parent / "data" / "danno.toml.maximal.example"
 
 
 def test_load_example_ok() -> None:
@@ -21,6 +22,25 @@ def test_load_example_ok() -> None:
     # assert cfg.tools[0].install_to == "sandbox"
     assert [p.package for p in cfg.npm] == ["opencode-planner", "@plannotator/opencode@latest"]
     assert cfg.npm[1].config == {"workflow": "plan-agent", "planningAgents": ["plan"]}
+
+
+def test_load_maximal_example_ok() -> None:
+    # The kitchen-sink fixture covers what the small shipped example dropped: a
+    # `[[tools]]` block (both install_to literals), every backend kind, a cloud
+    # default_agent, mixed-backend agents, and a non-default sandbox agent_home.
+    cfg = load_config(MAXIMAL)
+    assert cfg.defaults.default_agent == "pm"
+    assert cfg.sandbox.agent_home == "group:team-a"
+    assert set(cfg.backends) == {"ollama", "cloud", "nvidia", "llamacpp"}
+    # [[tools]] parses to Tool objects with both install_to literals — the only
+    # test that drives this path from TOML (elsewhere Tool is built inline).
+    assert [(t.name, t.install_to) for t in cfg.tools] == [
+        ("ados", "sandbox"),
+        ("house-style", "project"),
+    ]
+    # agents span cloud / ollama / nvidia backends
+    assert cfg.agents == {"pm": "sonnet", "build": "gemma3-27b", "research": "nemotron-ultra"}
+    assert cfg.models["nemotron-ultra"].backend == "nvidia"
 
 
 def test_missing_file_fails_loud(tmp_path: Path) -> None:

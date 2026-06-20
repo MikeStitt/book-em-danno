@@ -1,0 +1,87 @@
+# Maximal danno.toml — a test-only "kitchen-sink" fixture (NOT a shipped example).
+#
+# The shipped danno.toml.example is deliberately small for readability. This file
+# exists so the test suite exercises, in a single load_config + render pass, the
+# config surface that the small example does not: every backend kind, a `[[tools]]`
+# block with BOTH install_to literals, a CLOUD default_agent (so the top-level
+# `model` renders as a cloud id), agents mapping to a mix of backends, and a
+# non-default sandbox agent_home. See tests/test_loader.py and tests/test_generate.py.
+
+[project]
+target = "."
+
+[defaults]
+default_agent = "pm"               # -> sonnet (cloud): top-level `model` is the cloud id
+profile       = "hybrid"
+
+[sandbox]
+agent_home = "group:team-a"        # non-default agent_home (the keyword path is the small example)
+
+# --- Backends: all four kinds. llamacpp is declared but UNUSED so render/generate
+#     still works (the stub raises only for a model actually ON a llamacpp backend). ---
+[backends.ollama]
+kind           = "ollama"
+base_url       = "http://host.docker.internal:11434/v1"
+context_budget = 32000
+output_limit   = 8192
+
+[backends.cloud]
+kind     = "cloud"
+provider = "anthropic"
+
+[backends.nvidia]                  # generic OpenAI-compatible endpoint (NVIDIA NIM)
+kind        = "openai"
+base_url    = "https://integrate.api.nvidia.com/v1"
+api_key_env = "NVIDIA_API_KEY"     # emitted as {env:NVIDIA_API_KEY}; secret never written
+context_budget = 1000000
+output_limit   = 8192
+
+[backends.llamacpp]                # declared but unused (stubbed runtime)
+kind     = "llamacpp"
+base_url = "http://host.docker.internal:8080/v1"
+
+# --- Models across the three implemented backends. ---
+[models.gemma3-27b]
+backend          = "ollama"
+tag              = "gemma3:27b"
+tool_call        = true
+reasoning_effort = "none"
+
+[models.sonnet]
+backend = "cloud"
+id      = "anthropic/claude-sonnet-4-6"
+
+[models.nemotron-ultra]
+backend   = "nvidia"
+tag       = "nvidia/nemotron-3-ultra-550b-a55b"
+tool_call = true
+
+# --- Agents: a mix of cloud, ollama, and nvidia backends. pm is the default_agent. ---
+[agents]
+pm       = "sonnet"            # cloud -> drives the top-level `model`
+build    = "gemma3-27b"        # ollama (local)
+research = "nemotron-ultra"    # nvidia (openai-compatible)
+
+# --- Tool catalog: IMPERATIVE installs. Both install_to literals so the loader
+#     parses each (sandbox + project). ---
+[[tools]]
+name       = "ados"
+source     = "https://github.com/juliusz-cwiakalski/agentic-delivery-os"
+install_to = "sandbox"
+
+[[tools]]
+name       = "house-style"
+source     = "https://example.com/house-style"
+install_to = "project"
+
+# --- OpenCode npm plugins: a bare one and a configured one with setup steps. ---
+[[npm]]
+package = "opencode-planner"
+
+[[npm]]
+package = "@plannotator/opencode@latest"
+setup   = ["curl -fsSL https://plannotator.ai/install.sh | bash"]
+
+[npm.config]
+workflow       = "plan-agent"
+planningAgents = ["plan"]
