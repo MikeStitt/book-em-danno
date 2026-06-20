@@ -1,5 +1,12 @@
 # Agents & cloud-backend refactor — research, findings, proposal
 
+> **Status (2026-06-20): IMPLEMENTED** on branch `agents-cloud-backend-refactor`
+> (commits `019ac42` Refactor A — inline `[agents]` refs + retire `cloud`;
+> `b2f1b5d` the rich `[agents]`/`AgentSpec` layer + markdown-collision warnings).
+> One scope item beyond §4's "Code surface": retiring `cloud` left the validator's
+> cloud-key auto-injection (`_cloud_env_vars` + `resolve_env_refs(extra=…)`) with no
+> swept cloud model to act on, so it and its tests were removed (user-confirmed).
+>
 > **Living document.** Research + design captured June 2026 while debugging the
 > `temp/example-project` install. Started as "why doesn't the `cloud` backend
 > reach `opencode.jsonc`?" and grew into how danno should integrate with
