@@ -89,6 +89,23 @@ def test_sandbox_start_forwards_args_after_double_dash(
     assert captured["agent_args"] == ["--resume", "id1"]
 
 
+def test_sandbox_shell_passes_apply_env_and_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `sandbox shell` mirrors `start`'s wiring: it resolves the agent home and
+    # forwards --apply / --env through to sandbox_cmd.shell.
+    import book_em_danno.cli as cli
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(cli.sandbox_cmd, "shell", lambda *a, **k: captured.update(k))
+    monkeypatch.setattr(cli, "_resolve_home", lambda *a, **k: tmp_path / "home")
+    argv = ["sandbox", "shell", "--apply", "--target", str(tmp_path), "--env", "K=V"]
+    result = runner.invoke(app, argv)
+    assert result.exit_code == 0
+    assert captured["home"] == tmp_path / "home"
+    assert captured["env_pairs"] == ["K=V"]
+
+
 def test_install_missing_config_exits_2(tmp_path: Path) -> None:
     result = runner.invoke(
         app, ["install", "--config", str(tmp_path / "nope.toml"), "--target", str(tmp_path)]

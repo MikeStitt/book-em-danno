@@ -317,11 +317,32 @@ def sandbox_shell(
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
     name: str = typer.Option(None, "--name", help=_NAME_OPT_HELP),
     agent: str = _AGENT_OPT,
+    env: list[str] = typer.Option(None, "--env", help="KEY=VAL to inject (repeatable)."),
+    env_file: list[str] = typer.Option(None, "--env-file", help="File of KEY=VAL to inject."),
+    apply: bool = _APPLY_OPT,
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
-    """Open an interactive bash shell inside the sandbox VM."""
-    _, sandbox_name = _sandbox_target(target, name, agent)
-    _guard(lambda: sandbox_cmd.shell(Runner(verbose=verbose), sandbox_name))
+    """Open an interactive bash shell inside the sandbox VM.
+
+    Identical to `sandbox start` except it drops you at a bash prompt instead of
+    launching the agent: same provisioning (under `--apply`), same `-w <project>`
+    working dir, and the same injected env (agent auth / Ollama URL / relocated
+    config home). So a tool you run by hand here is wired exactly as `start` wires
+    it. On an unprovisioned sandbox without `--apply`, it fails loud with the fix."""
+    abs_target, sandbox_name = _sandbox_target(target, name, agent)
+    home = _resolve_home(abs_target, sandbox_name)
+    _guard(
+        lambda: sandbox_cmd.shell(
+            Runner(apply=apply, verbose=verbose),
+            sandbox_name,
+            abs_target,
+            agent=agent,
+            env_pairs=env or [],
+            env_files=env_file or [],
+            home=home,
+            registry_path=registry.default_path(),
+        )
+    )
 
 
 @sandbox_app.command("stop")

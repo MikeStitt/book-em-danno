@@ -75,8 +75,9 @@ auth token. Full model: README "Sandboxed agents: repo, agent-home, auth".
 ### Flags
 
 `--version` is the only top-level flag. The mode/IO flags are **per-command**
-(after the subcommand): `--apply` (execute, on every side-effecting command except
-the launch-by-default `sandbox shell`), `--verbose`/`-v`, and `--config <path>`
+(after the subcommand): `--apply` (execute, on every side-effecting command; the
+interactive `sandbox start`/`sandbox shell` launch without it and treat `--apply` as
+"provision first, then launch"), `--verbose`/`-v`, and `--config <path>`
 (danno.toml, `install` only). E.g. `danno install --apply`, `danno sandbox stop
 --apply`. There is no `--dry-run` — the default (advise) already prints without
 executing.
