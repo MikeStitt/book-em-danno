@@ -18,7 +18,7 @@ profile       = "hybrid"           # hybrid | cloud-only | local-only
 agent_home = "per-project"
 
 # --- Backends: where models run. `kind` selects the runtime. ---
-[backends.ollama]                  # IMPLEMENTED
+[backends.danno-ollama]                  # IMPLEMENTED
 kind           = "ollama"
 base_url       = "http://host.docker.internal:11434/v1"   # use http://localhost:11434/v1 for host-only runs
 context_budget = 32000   # OpenCode's CLIENT-SIDE belief of the window (models.<tag>.limit.context);
@@ -29,7 +29,7 @@ output_limit   = 8192    # tokens OpenCode reserves for the reply (usable input 
 # Note: there is no stream/thinking knob — opencode always streams, and those keys
 # never reached Ollama. Reasoning control is per-model (see reasoning_effort below).
 
-[backends.cloud]                   # IMPLEMENTED
+[backends.danno-anthropic]                   # IMPLEMENTED
 kind     = "cloud"
 provider = "anthropic"             # API key stays in the env / OpenCode provider — never written here
 
@@ -38,7 +38,7 @@ kind     = "llamacpp"
 base_url = "http://host.docker.internal:8080/v1"
 
 # --- Models: a named (backend, tag/id) pair. ---
-[backends.nvidia]                  # IMPLEMENTED — any OpenAI-compatible endpoint (NVIDIA NIM)
+[backends.danno-nvidia]                  # IMPLEMENTED — any OpenAI-compatible endpoint (NVIDIA NIM)
 kind        = "openai"
 base_url    = "https://integrate.api.nvidia.com/v1"
 api_key_env = "NVIDIA_API_KEY"     # emitted as {env:NVIDIA_API_KEY}; the secret is NEVER
@@ -48,7 +48,7 @@ context_budget = 1000000
 output_limit   = 8192
 
 [models.gemma3-27b]
-backend          = "ollama"
+backend          = "danno-ollama"
 tag              = "gemma3:27b"    # local models MUST support tool-calling (gemma3:1b does NOT)
 tool_call        = false
 reasoning_effort = "none"          # forwarded as model-level options.reasoningEffort into the /v1
@@ -59,7 +59,7 @@ reasoning_effort = "none"          # forwarded as model-level options.reasoningE
 
 # --- Models: a named (backend, tag/id) pair. ---
 [models.qwen3-coder-next]
-backend          = "ollama"
+backend          = "danno-ollama"
 tag              = "qwen3-coder-next"    # local models MUST support tool-calling (gemma3:1b does NOT)
 tool_call        = true
 reasoning_effort = "none"          # forwarded as model-level options.reasoningEffort into the /v1
@@ -70,7 +70,7 @@ reasoning_effort = "none"          # forwarded as model-level options.reasoningE
 
 # --- Models: a named (backend, tag/id) pair. ---
 [models.quen3p6-27b-q4_K_M]
-backend          = "ollama"
+backend          = "danno-ollama"
 tag              = "qwen3.6:27b-q4_K_M"    # local models MUST support tool-calling (gemma3:1b does NOT)
 tool_call        = true
 reasoning_effort = "medium"          # forwarded as model-level options.reasoningEffort into the /v1
@@ -81,7 +81,7 @@ reasoning_effort = "medium"          # forwarded as model-level options.reasonin
 
 # --- Models: a named (backend, tag/id) pair. ---
 [models.gpt-oss-20b]
-backend          = "ollama"
+backend          = "danno-ollama"
 tag              = "gpt-oss:20b"    # local models MUST support tool-calling (gemma3:1b does NOT)
 tool_call        = true
 reasoning_effort = "none"          # forwarded as model-level options.reasoningEffort into the /v1
@@ -92,13 +92,13 @@ reasoning_effort = "none"          # forwarded as model-level options.reasoningE
 
 
 
-[models.sonnet]
-backend = "cloud"
+[models.sonnet-danno]
+backend = "danno-anthropic"
 id      = "anthropic/claude-sonnet-4-6"
 
 # --- NVIDIA NIM model via the openai-compatible backend above. ---
-[models.nemotron-ultra]
-backend   = "nvidia"
+[models.nemotron-ultra-danno]
+backend   = "danno-nvidia"
 tag       = "nvidia/nemotron-3-ultra-550b-a55b"   # the model id the endpoint expects
 tool_call = true
 

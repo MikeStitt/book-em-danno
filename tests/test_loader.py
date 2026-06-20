@@ -14,9 +14,9 @@ def test_load_example_ok() -> None:
     cfg = load_config(EXAMPLE)
     assert cfg.defaults.default_agent == "build"
     assert cfg.defaults.profile == "hybrid"
-    assert set(cfg.backends) == {"ollama", "cloud", "llamacpp", "nvidia"}
+    assert set(cfg.backends) == {"danno-ollama", "danno-anthropic", "llamacpp", "danno-nvidia"}
     assert cfg.models["gemma3-27b"].tag == "gemma3:27b"
-    assert cfg.models["sonnet"].id == "anthropic/claude-sonnet-4-6"
+    assert cfg.models["sonnet-danno"].id == "anthropic/claude-sonnet-4-6"
     assert cfg.agents["build"] == "qwen3-coder-next"
     # assert [t.name for t in cfg.tools] == ["ados"]
     # assert cfg.tools[0].install_to == "sandbox"

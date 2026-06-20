@@ -29,16 +29,16 @@ def _example() -> DannoConfig:
 def test_render_maps_agents_to_backends() -> None:
     doc = json.loads(_strip_comments(render_config(_example())))
     assert doc["default_agent"] == "build"
-    # build -> qwen3-coder-next (ollama) so the top-level model is the local ref
-    assert doc["model"] == "ollama/qwen3-coder-next"
-    assert doc["agent"]["plan"]["model"] == "ollama/qwen3-coder-next"
-    assert doc["agent"]["build"]["model"] == "ollama/qwen3-coder-next"
+    # build -> qwen3-coder-next (danno-ollama) so the top-level model is the local ref
+    assert doc["model"] == "danno-ollama/qwen3-coder-next"
+    assert doc["agent"]["plan"]["model"] == "danno-ollama/qwen3-coder-next"
+    assert doc["agent"]["build"]["model"] == "danno-ollama/qwen3-coder-next"
     # an ollama provider block is emitted for the local model
-    assert doc["provider"]["ollama"]["models"]["gemma3:27b"]["tool_call"] is False
+    assert doc["provider"]["danno-ollama"]["models"]["gemma3:27b"]["tool_call"] is False
     # provider options carry ONLY baseURL/apiKey — no inert stream/thinking/num_ctx.
-    opts = doc["provider"]["ollama"]["options"]
+    opts = doc["provider"]["danno-ollama"]["options"]
     assert set(opts) == {"baseURL", "apiKey"}
-    assert doc["provider"]["ollama"]["models"]["gemma3:27b"]["limit"]["output"] == 8192
+    assert doc["provider"]["danno-ollama"]["models"]["gemma3:27b"]["limit"]["output"] == 8192
 
 
 def test_render_maximal_maps_cloud_default_and_mixed_backends() -> None:
