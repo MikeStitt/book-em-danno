@@ -47,14 +47,6 @@ class OllamaBackend(BaseModel):
     output_limit: int = 8192
 
 
-class CloudBackend(BaseModel):
-    """A cloud provider configured in OpenCode; keys stay in the env. IMPLEMENTED."""
-
-    model_config = ConfigDict(extra="forbid")
-    kind: Literal["cloud"]
-    provider: str
-
-
 class LlamacppBackend(BaseModel):
     """Local models via llama.cpp's OpenAI-compatible llama-server. STUBBED.
 
@@ -87,13 +79,13 @@ class OpenAIBackend(BaseModel):
 
 
 Backend = Annotated[
-    OllamaBackend | CloudBackend | LlamacppBackend | OpenAIBackend,
+    OllamaBackend | LlamacppBackend | OpenAIBackend,
     Field(discriminator="kind"),
 ]
 
 
 class Model(BaseModel):
-    """A named (backend, tag/id) pair. `tag` for ollama/llamacpp, `id` for cloud.
+    """A named (backend, tag) pair. `tag` is the model id on the backend.
 
     `reasoning_effort` (ollama only) is emitted as the model-level camelCase
     `options.reasoningEffort`, which @ai-sdk/openai-compatible spreads raw into the
@@ -105,7 +97,6 @@ class Model(BaseModel):
     model_config = ConfigDict(extra="forbid")
     backend: str
     tag: str | None = None
-    id: str | None = None
     tool_call: bool = False
     reasoning_effort: Literal["none", "low", "medium", "high"] | None = None
 
@@ -178,12 +169,26 @@ class DannoConfig(BaseModel):
 
     @model_validator(mode="after")
     def _check_references(self) -> DannoConfig:
+        # danno names never contain '/': that is the bit that disambiguates a bare
+        # [models] reference from a raw OpenCode ref (e.g. anthropic/claude-sonnet-4-6)
+        # in an [agents] value. Guard it at the boundary so the rule can't silently
+        # break (Working Rule 8).
+        for kind, names in (
+            ("backend", self.backends),
+            ("model", self.models),
+            ("agent", self.agents),
+        ):
+            for name in names:
+                if "/" in name:
+                    raise ValueError(f"{kind} name '{name}' must not contain '/'")
         for model_name, model in self.models.items():
             if model.backend not in self.backends:
                 raise ValueError(
                     f"model '{model_name}' references unknown backend '{model.backend}'"
                 )
-        for agent, model_name in self.agents.items():
-            if model_name not in self.models:
-                raise ValueError(f"agent '{agent}' references unknown model '{model_name}'")
+        for agent, value in self.agents.items():
+            # A '/' marks a raw OpenCode ref (passed through verbatim); otherwise the
+            # value names a [models] entry, which must exist.
+            if "/" not in value and value not in self.models:
+                raise ValueError(f"agent '{agent}' references unknown model '{value}'")
         return self

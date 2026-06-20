@@ -429,20 +429,17 @@ def resolve_env_refs(
     target_abs: Path,
     env_pairs: list[str],
     env_files: list[str],
-    *,
-    extra: frozenset[str] = frozenset(),
 ) -> tuple[list[str], list[str]]:
     """Resolve the env vars opencode needs, WITHOUT raising — the shared core of
     `reconcile_env_refs` (which raises) and the validator sweep (which warns).
 
-    The required set is every `{env:VAR}` referenced in opencode.jsonc, plus any
-    `extra` the caller knows is needed but isn't a `{env:}` ref (e.g. the built-in
-    anthropic provider's `ANTHROPIC_API_KEY`). For each: keep the explicitly-passed
+    The required set is every `{env:VAR}` referenced in opencode.jsonc (e.g. an
+    openai-compatible backend's `api_key_env`). For each: keep the explicitly-passed
     value, else auto-inject the host-exported one, else record it as missing.
     Returns `(augmented_pairs, missing)` — `augmented_pairs` is `env_pairs` plus the
     host-sourced additions; `missing` lists vars neither passed nor host-exported
     (and ones passed empty, the footgun)."""
-    required = _required_env_refs(target_abs) | extra
+    required = _required_env_refs(target_abs)
     if not required:
         return list(env_pairs), []
     provided = _provided_env(env_pairs, env_files)

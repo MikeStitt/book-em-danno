@@ -216,9 +216,9 @@ base_url       = "http://host.docker.internal:11434/v1"
 context_budget = 32000            # OpenCode's client-side window belief; see knobs below
 output_limit   = 8192
 
-[backends.cloud]
-kind     = "cloud"
-provider = "anthropic"            # API keys stay in the env, never in this file
+# Cloud models need NO backend or [models] entry: OpenCode knows them via its
+# built-in catalog and launch-time auth. Reference one inline in [agents] as a raw
+# OpenCode ref (any value containing "/"); the API key stays in the env.
 
 [backends.nvidia]                 # any OpenAI-compatible endpoint (NVIDIA NIM, vLLM, OpenAI)
 kind        = "openai"
@@ -233,17 +233,15 @@ tag              = "gemma4:26b"   # local models MUST be tool-capable (gemma3:1b
 tool_call        = true
 reasoning_effort = "none"         # disable the thinking trace; see knobs below
 
-[models.sonnet]
-backend = "cloud"
-id      = "anthropic/claude-sonnet-4-6"
-
 [models.nemotron]
 backend = "nvidia"
 tag     = "nvidia/nemotron-3-ultra-550b-a55b"   # the model id the endpoint expects
 tool_call = true
 
-[agents]                          # agent -> model: high-stakes cloud, high-volume local
-pm        = "sonnet"
+[agents]                          # agent -> model. A value WITH "/" is a raw OpenCode
+                                  #   ref (built-in cloud model, no backend needed); a
+                                  #   value WITHOUT "/" names a [models] entry above.
+pm        = "anthropic/claude-sonnet-4-6"   # raw ref → high-stakes cloud, passed through
 architect = "nemotron"
 runner    = "gemma4"
 committer = "gemma4"

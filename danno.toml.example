@@ -29,15 +29,17 @@ output_limit   = 8192    # tokens OpenCode reserves for the reply (usable input 
 # Note: there is no stream/thinking knob — opencode always streams, and those keys
 # never reached Ollama. Reasoning control is per-model (see reasoning_effort below).
 
-[backends.danno-anthropic]                   # IMPLEMENTED
-kind     = "cloud"
-provider = "anthropic"             # API key stays in the env / OpenCode provider — never written here
+# Cloud models need NO backend or [models] entry: OpenCode knows them via its
+# built-in catalog and launch-time auth. Reference one inline in [agents] as a raw
+# OpenCode ref (any value containing "/", e.g. "anthropic/claude-sonnet-4-6"). The
+# API key stays in the env — inject it at launch with
+# `danno sandbox start --env ANTHROPIC_API_KEY=...`.
 
 [backends.llamacpp]                # STUBBED (generator raises "not yet implemented" if used)
 kind     = "llamacpp"
 base_url = "http://host.docker.internal:8080/v1"
 
-# --- Models: a named (backend, tag/id) pair. ---
+# --- Models: a named (backend, tag) pair. ---
 [backends.danno-nvidia]                  # IMPLEMENTED — any OpenAI-compatible endpoint (NVIDIA NIM)
 kind        = "openai"
 base_url    = "https://integrate.api.nvidia.com/v1"
@@ -57,7 +59,7 @@ reasoning_effort = "none"          # forwarded as model-level options.reasoningE
                                    #   Omit to forward nothing. gpt-oss-style models reject "none"
                                    #   (use low/medium/high). Values: none | low | medium | high.
 
-# --- Models: a named (backend, tag/id) pair. ---
+# --- Models: a named (backend, tag) pair. ---
 [models.qwen3-coder-next]
 backend          = "danno-ollama"
 tag              = "qwen3-coder-next"    # local models MUST support tool-calling (gemma3:1b does NOT)
@@ -68,7 +70,7 @@ reasoning_effort = "none"          # forwarded as model-level options.reasoningE
                                    #   Omit to forward nothing. gpt-oss-style models reject "none"
                                    #   (use low/medium/high). Values: none | low | medium | high.
 
-# --- Models: a named (backend, tag/id) pair. ---
+# --- Models: a named (backend, tag) pair. ---
 [models.quen3p6-27b-q4_K_M]
 backend          = "danno-ollama"
 tag              = "qwen3.6:27b-q4_K_M"    # local models MUST support tool-calling (gemma3:1b does NOT)
@@ -79,7 +81,7 @@ reasoning_effort = "medium"          # forwarded as model-level options.reasonin
                                    #   Omit to forward nothing. gpt-oss-style models reject "none"
                                    #   (use low/medium/high). Values: none | low | medium | high.
 
-# --- Models: a named (backend, tag/id) pair. ---
+# --- Models: a named (backend, tag) pair. ---
 [models.gpt-oss-20b]
 backend          = "danno-ollama"
 tag              = "gpt-oss:20b"    # local models MUST support tool-calling (gemma3:1b does NOT)
@@ -92,20 +94,19 @@ reasoning_effort = "none"          # forwarded as model-level options.reasoningE
 
 
 
-[models.sonnet-danno]
-backend = "danno-anthropic"
-id      = "anthropic/claude-sonnet-4-6"
-
 # --- NVIDIA NIM model via the openai-compatible backend above. ---
 [models.nemotron-ultra-danno]
 backend   = "danno-nvidia"
 tag       = "nvidia/nemotron-3-ultra-550b-a55b"   # the model id the endpoint expects
 tool_call = true
 
-# --- Agent -> model. Unlisted agents fall back to the profile tier default (Phase 2). ---
+# --- Agent -> model. A value WITHOUT "/" names a [models] entry above; a value WITH
+#     "/" is a raw OpenCode ref passed through verbatim (built-in cloud model, no
+#     backend/[models] needed). Unlisted agents fall back to the profile tier default. ---
 [agents]
-plan                = "qwen3-coder-next"
+plan                = "qwen3-coder-next"             # bare name → resolved via [models]
 build               = "qwen3-coder-next"
+pm                  = "anthropic/claude-sonnet-4-6"  # raw ref → passed through verbatim
 
 
 # --- Tool catalog: IMPERATIVE installs. Each entry runs its own installer (ADOS

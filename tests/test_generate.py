@@ -8,7 +8,6 @@ import pytest
 from book_em_danno.config.generate import Action, generate, render_config
 from book_em_danno.config.loader import load_config
 from book_em_danno.config.schema import (
-    CloudBackend,
     DannoConfig,
     Defaults,
     LlamacppBackend,
@@ -33,6 +32,9 @@ def test_render_maps_agents_to_backends() -> None:
     assert doc["model"] == "danno-ollama/qwen3-coder-next"
     assert doc["agent"]["plan"]["model"] == "danno-ollama/qwen3-coder-next"
     assert doc["agent"]["build"]["model"] == "danno-ollama/qwen3-coder-next"
+    # pm uses a raw OpenCode ref (contains "/") — passed through verbatim, no provider block
+    assert doc["agent"]["pm"]["model"] == "anthropic/claude-sonnet-4-6"
+    assert "anthropic" not in doc.get("provider", {})
     # an ollama provider block is emitted for the local model
     assert doc["provider"]["danno-ollama"]["models"]["gemma3:27b"]["tool_call"] is False
     # provider options carry ONLY baseURL/apiKey — no inert stream/thinking/num_ctx.
@@ -41,19 +43,20 @@ def test_render_maps_agents_to_backends() -> None:
     assert doc["provider"]["danno-ollama"]["models"]["gemma3:27b"]["limit"]["output"] == 8192
 
 
-def test_render_maximal_maps_cloud_default_and_mixed_backends() -> None:
-    # The maximal fixture's default_agent (pm) maps to a CLOUD model, so the
-    # top-level `model` renders as the cloud id — the cloud-as-default path the
-    # small example no longer drives end-to-end from a file. Agents also span
+def test_render_maximal_maps_raw_ref_default_and_mixed_backends() -> None:
+    # The maximal fixture's default_agent (pm) maps to a raw inline OpenCode ref, so
+    # the top-level `model` renders as that ref verbatim with no provider block — the
+    # cloud-as-default path after retiring the `cloud` backend. Agents also span
     # ollama and nvidia (openai-compatible) backends.
     cfg = load_config(MAXIMAL)
     doc = json.loads(_strip_comments(render_config(cfg)))
     assert doc["default_agent"] == "pm"
-    assert doc["model"] == "anthropic/claude-sonnet-4-6"  # cloud id, not a <prov>/<tag> ref
+    assert doc["model"] == "anthropic/claude-sonnet-4-6"  # raw ref, not a <prov>/<tag> ref
     assert doc["agent"]["pm"]["model"] == "anthropic/claude-sonnet-4-6"
     assert doc["agent"]["build"]["model"] == "ollama/gemma3:27b"
     assert doc["agent"]["research"]["model"] == "nvidia/nvidia/nemotron-3-ultra-550b-a55b"
-    # the nvidia (openai-compatible) provider carries an env-substituted key
+    # a raw ref gets no provider block; the nvidia (openai-compatible) one still does
+    assert "anthropic" not in doc["provider"]
     assert doc["provider"]["nvidia"]["options"]["apiKey"] == "{env:NVIDIA_API_KEY}"
 
 
@@ -211,9 +214,7 @@ def test_llamacpp_backend_is_stubbed(tmp_path: Path) -> None:
 def _npm_config(plugins: list[NpmPlugin]) -> DannoConfig:
     return DannoConfig(
         defaults=Defaults(default_agent="pm"),
-        backends={"cloud": CloudBackend(kind="cloud", provider="anthropic")},
-        models={"sonnet": Model(backend="cloud", id="anthropic/claude-sonnet-4-6")},
-        agents={"pm": "sonnet"},
+        agents={"pm": "anthropic/claude-sonnet-4-6"},  # raw inline ref — no backend/[models]
         npm=plugins,
     )
 

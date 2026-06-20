@@ -14,9 +14,10 @@ def test_load_example_ok() -> None:
     cfg = load_config(EXAMPLE)
     assert cfg.defaults.default_agent == "build"
     assert cfg.defaults.profile == "hybrid"
-    assert set(cfg.backends) == {"danno-ollama", "danno-anthropic", "llamacpp", "danno-nvidia"}
+    assert set(cfg.backends) == {"danno-ollama", "llamacpp", "danno-nvidia"}
     assert cfg.models["gemma3-27b"].tag == "gemma3:27b"
-    assert cfg.models["sonnet-danno"].id == "anthropic/claude-sonnet-4-6"
+    # cloud model referenced inline as a raw OpenCode ref, no backend/[models] entry
+    assert cfg.agents["pm"] == "anthropic/claude-sonnet-4-6"
     assert cfg.agents["build"] == "qwen3-coder-next"
     # assert [t.name for t in cfg.tools] == ["ados"]
     # assert cfg.tools[0].install_to == "sandbox"
@@ -26,20 +27,25 @@ def test_load_example_ok() -> None:
 
 def test_load_maximal_example_ok() -> None:
     # The kitchen-sink fixture covers what the small shipped example dropped: a
-    # `[[tools]]` block (both install_to literals), every backend kind, a cloud
-    # default_agent, mixed-backend agents, and a non-default sandbox agent_home.
+    # `[[tools]]` block (both install_to literals), every implemented backend kind +
+    # the llamacpp stub, a default_agent on a raw inline ref, mixed agents, and a
+    # non-default sandbox agent_home.
     cfg = load_config(MAXIMAL)
     assert cfg.defaults.default_agent == "pm"
     assert cfg.sandbox.agent_home == "group:team-a"
-    assert set(cfg.backends) == {"ollama", "cloud", "nvidia", "llamacpp"}
+    assert set(cfg.backends) == {"ollama", "nvidia", "llamacpp"}
     # [[tools]] parses to Tool objects with both install_to literals — the only
     # test that drives this path from TOML (elsewhere Tool is built inline).
     assert [(t.name, t.install_to) for t in cfg.tools] == [
         ("ados", "sandbox"),
         ("house-style", "project"),
     ]
-    # agents span cloud / ollama / nvidia backends
-    assert cfg.agents == {"pm": "sonnet", "build": "gemma3-27b", "research": "nemotron-ultra"}
+    # agents mix a raw inline cloud ref with ollama / nvidia [models] entries
+    assert cfg.agents == {
+        "pm": "anthropic/claude-sonnet-4-6",
+        "build": "gemma3-27b",
+        "research": "nemotron-ultra",
+    }
     assert cfg.models["nemotron-ultra"].backend == "nvidia"
 
 
@@ -56,14 +62,41 @@ def test_unknown_key_fails_loud(tmp_path: Path) -> None:
 
 
 def test_dangling_agent_reference_fails_loud(tmp_path: Path) -> None:
+    # A bare value (no "/") must name a [models] entry; a missing one fails loud.
     bad = tmp_path / "danno.toml"
     bad.write_text(
-        "[backends.cloud]\nkind = 'cloud'\nprovider = 'anthropic'\n"
-        "[models.sonnet]\nbackend = 'cloud'\nid = 'anthropic/claude-sonnet-4-6'\n"
+        "[backends.ollama]\nkind = 'ollama'\n"
+        "base_url = 'http://host.docker.internal:11434/v1'\n"
+        "[models.gemma]\nbackend = 'ollama'\ntag = 'gemma3:27b'\n"
         "[agents]\npm = 'does-not-exist'\n",
         encoding="utf-8",
     )
     with pytest.raises(DannoConfigError, match="unknown model"):
+        load_config(bad)
+
+
+def test_inline_raw_ref_agent_ok(tmp_path: Path) -> None:
+    # A value containing "/" is a raw OpenCode ref, passed through without a [models]
+    # entry — the cloud path after retiring the `cloud` backend.
+    cfg_path = tmp_path / "danno.toml"
+    cfg_path.write_text(
+        "[agents]\npm = 'anthropic/claude-sonnet-4-6'\n",
+        encoding="utf-8",
+    )
+    assert load_config(cfg_path).agents["pm"] == "anthropic/claude-sonnet-4-6"
+
+
+def test_slash_in_model_name_fails_loud(tmp_path: Path) -> None:
+    # danno names must not contain "/" — that's what disambiguates a [models] name
+    # from a raw OpenCode ref in [agents].
+    bad = tmp_path / "danno.toml"
+    bad.write_text(
+        "[backends.ollama]\nkind = 'ollama'\n"
+        "base_url = 'http://host.docker.internal:11434/v1'\n"
+        "[models.'bad/name']\nbackend = 'ollama'\ntag = 'gemma3:27b'\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DannoConfigError, match="must not contain"):
         load_config(bad)
 
 

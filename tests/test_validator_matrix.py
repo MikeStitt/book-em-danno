@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from book_em_danno.config.schema import (
-    CloudBackend,
     DannoConfig,
     LlamacppBackend,
     Model,
@@ -19,35 +18,33 @@ def _config() -> DannoConfig:
     return DannoConfig(
         backends={
             "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1"),
-            "anthropic": CloudBackend(kind="cloud", provider="anthropic"),
             "nvidia": OpenAIBackend(
                 kind="openai", base_url="https://nim/v1", api_key_env="NVIDIA_API_KEY"
             ),
         },
         models={
             "gemma": Model(backend="ollama", tag="gemma3:27b", tool_call=True),
-            "sonnet": Model(backend="anthropic", id="anthropic/claude-sonnet-4-6"),
             "nemotron": Model(backend="nvidia", tag="nvidia/nemotron"),
         },
-        agents={"pm": "sonnet"},
+        # cloud agents are raw inline refs and are NOT swept (not [models] entries).
+        agents={"pm": "anthropic/claude-sonnet-4-6"},
     )
 
 
 def test_one_variant_per_declared_model_sorted_by_key() -> None:
     variants = model_variants(_config())
-    assert [v.model_name for v in variants] == ["gemma", "nemotron", "sonnet"]
+    assert [v.model_name for v in variants] == ["gemma", "nemotron"]
 
 
 def test_refs_resolve_per_backend_kind() -> None:
     refs = {v.model_name: v.model_ref for v in model_variants(_config())}
     assert refs["gemma"] == "ollama/gemma3:27b"  # ollama -> backend/tag
     assert refs["nemotron"] == "nvidia/nvidia/nemotron"  # openai -> backend/tag
-    assert refs["sonnet"] == "anthropic/claude-sonnet-4-6"  # cloud -> id
 
 
 def test_only_restricts_and_preserves_sort_order() -> None:
-    variants = model_variants(_config(), only=["sonnet", "gemma"])
-    assert [v.model_name for v in variants] == ["gemma", "sonnet"]
+    variants = model_variants(_config(), only=["nemotron", "gemma"])
+    assert [v.model_name for v in variants] == ["gemma", "nemotron"]
 
 
 def test_only_unknown_model_fails_loud() -> None:

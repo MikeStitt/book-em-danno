@@ -6,7 +6,6 @@ import pytest
 
 from book_em_danno.commands import install, ollama, sandbox, tools
 from book_em_danno.config.schema import (
-    CloudBackend,
     DannoConfig,
     Model,
     NpmPlugin,
@@ -21,13 +20,11 @@ def _config() -> DannoConfig:
     return DannoConfig(
         backends={
             "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1"),
-            "cloud": CloudBackend(kind="cloud", provider="anthropic"),
         },
         models={
             "gemma": Model(backend="ollama", tag="gemma4:26b", tool_call=True),
-            "sonnet": Model(backend="cloud", id="anthropic/claude-sonnet-4-6"),
         },
-        agents={"pm": "sonnet", "runner": "gemma"},
+        agents={"pm": "anthropic/claude-sonnet-4-6", "runner": "gemma"},  # pm = raw inline ref
         npm=[
             NpmPlugin(
                 package="@plannotator/opencode@latest",
@@ -63,7 +60,8 @@ def test_install_orchestration_order(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
 
 def test_ollama_tags_deduped_and_only_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Two agents pointing at the same ollama model yield one pull; cloud excluded.
+    # Two agents pointing at the same ollama model yield one pull; the raw-ref
+    # (cloud) agent contributes no tag.
     cfg = _config()
     cfg.agents["committer"] = "gemma"
     assert install._ollama_tags(cfg) == ["gemma4:26b"]
