@@ -115,7 +115,7 @@ wheels = [
 
 [[package]]
 name = "danno"
-version = "0.5.2"
+version = "0.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },

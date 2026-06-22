@@ -3,6 +3,31 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.6.0] - 2026-06-22
+
+### Documentation
+
+- *(example)* Use unique backend names in danno.toml.example
+- Research+proposal for agents & cloud-backend refactor
+- Plannotator-in-docker-sandbox research, comparison, and tunnel plan
+- Mark agents-and-cloud-backend-refactor as implemented
+- *(sandbox-agents)* Guide to the prebuilt sandbox agents
+
+### Features
+
+- *(config)* Rich [agents] form + markdown-collision warnings
+- *(config)* Merge managed regions in opencode.jsonc + route agent models to .md
+- *(validator)* Add `danno benchmark` to compare whole configs for editing perf
+
+### Refactor
+
+- *(sandbox)* Make `shell` mirror `start`, share session core
+- *(config)* Inline [agents] refs, retire the cloud backend
+
+### Testing
+
+- *(config)* Add maximal danno.toml fixture to restore lost coverage
+
 ## [0.5.1] - 2026-06-18
 
 ### Documentation
