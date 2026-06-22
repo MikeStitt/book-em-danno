@@ -35,7 +35,12 @@ agent/command defs project-local (the sandbox can't see host
 `~/.config/opencode`). We do **not** fork ADOS agent/command behavior — per
 constitution Working Rule 6 and the _ADOS provenance_ rule, we configure model
 assignment and provide the install glue only, and record which ADOS version a
-target was installed from.
+target was installed from. Model assignment is written into a danno-managed,
+marker-delimited region of the agent `.md`'s frontmatter when that `.md` controls
+the agent (markdown beats the generated `opencode.jsonc`, so `model` set there would
+be shadowed); the body and behavior fields (`prompt`/`tools`/`mode`) are never
+touched. The merge is surgical/idempotent/reversible (`config/generate.py`
+`generate_md`).
 
 **Two install lanes.** `[[tools]]` is for **imperative** tools that have their own
 installer (ADOS is the archetype). OpenCode **npm plugins** (e.g. `opencode-planner`,

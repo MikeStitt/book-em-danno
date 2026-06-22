@@ -40,6 +40,21 @@ checklist for any change to `constitution.md` or a part.
 
 ## Changelog
 
+- **2.2.0 (2026-06-22)** — MINOR: the _ADOS provenance_ rule now permits danno to
+  write **model assignment** into a danno-managed, marker-delimited region of an
+  agent `.md`'s frontmatter when that `.md` controls the agent. _Why:_ OpenCode
+  resolves a markdown agent def OVER the generated `.opencode/opencode.jsonc` on any
+  field conflict — including `model` — so for an md-defined agent the model lever is
+  only effective if danno writes it into the md; setting it in the JSON is silently
+  shadowed. This **fulfils, not forks**, the existing "configure model assignment"
+  mandate; only the mechanism clause ("via opencode.jsonc, not in-place md edits") is
+  relaxed, and the body + behavior fields (`prompt`/`tools`/`mode`) remain off-limits.
+  On-disk companion: the marker-delimited merge/routing in `config/generate.py`
+  (`merge`/`generate_md`, diff-then-stop, idempotent) was **built and exercised by
+  hand before this amendment** (manual `generate`+`generate_md` run: model routed into
+  the frontmatter region, body + other frontmatter preserved verbatim, idempotent
+  re-merge, jsonc model omitted for routed agents, collision-warn narrowed to
+  non-routable fields) per the _Configuration is code_ rule.
 - **2.1.0 (2026-06-14)** — MINOR: added a *Stacking* rule to the Branch & Push
   Policy. _Why:_ the agent's default of founding every branch on `main` (and even
   rebasing already-stacked work back onto `main` to keep a "pure" diff) pushes

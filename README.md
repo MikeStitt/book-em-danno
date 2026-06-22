@@ -298,12 +298,21 @@ never reached Ollama through `@ai-sdk/openai-compatible`.
 danno generates `.opencode/opencode.jsonc` from `danno.toml` — **the happy path is
 to edit `danno.toml`, not the generated file.** When you do hand-edit it:
 
-- **Only `danno install` regenerates it.** The first run writes it automatically. On
-  a re-run, danno compares the proposed output to what's on disk: if they differ it
-  prints a unified diff and **refuses to write unless you pass `--apply`**. So plain
-  `danno install` will *not* clobber your edits (it shows the diff);
-  **`danno install --apply` overwrites them.** `sandbox`/`doctor`/etc. never touch
-  the file.
+- **danno owns only a marked region.** Its keys live between
+  `// >>> danno:managed …` and `// <<< danno:managed <<<` markers. `danno install`
+  **merges** (not overwrites): it rewrites only that region and **preserves everything
+  outside it** — your extra top-level keys and inline comments survive across re-runs.
+  Edits *inside* the markers are reasserted from `danno.toml`.
+- **Only `danno install` touches it.** First run writes it automatically. On a re-run,
+  danno compares the merged result to what's on disk: if they differ it prints a
+  unified diff and **refuses to write unless you pass `--apply`**. `sandbox`/`doctor`/
+  etc. never touch the file. (Adopting a *pre-existing, unmarked* `opencode.jsonc` is a
+  one-time wholesale write that installs the markers — review the diff first; every run
+  after that is an in-place region merge.)
+- **Agent models can land in `.md` instead.** If an agent is defined by an
+  `.opencode/agent[s]/<name>.md` (markdown wins over the JSON), danno writes that
+  agent's `model` into a danno-managed region of the md's **frontmatter** — never its
+  body or behavior fields. Same marker discipline; same merge.
 - **It's already diff-friendly.** danno emits one key per line (no dense single-line
   objects), so edits and diffs stay readable.
 - **Edits reach the sandbox on the next launch.** The project is bind-mounted
@@ -397,6 +406,26 @@ and fails loud up front if it's missing. See
 [`.docs/ux-danno-validate-cli.md`](.docs/ux-danno-validate-cli.md) for the full
 command surface and [`.docs/plan-danno-validator.md`](.docs/plan-danno-validator.md)
 for the harness design.
+
+### Benchmark whole configs (`danno benchmark`)
+
+Where `validate` sweeps your `danno.toml`'s *models*, `danno benchmark` sweeps
+whole **configs** for editing performance — to A/B different prompts, permissions,
+or model assignments. Each subdirectory of the configs dir is a candidate holding
+its own `.opencode/` tree (opencode.jsonc + agent `.md`); danno applies each into
+the throwaway, validator-owned workspace and runs the *same* tiered battery (plus
+the optional Claude `--baseline`), then writes a comparison report + `results.json`
+under `.danno-benchmark/<timestamp>/`.
+
+```bash
+danno benchmark ./candidate-configs --dry-run        # preview which configs run
+danno benchmark ./candidate-configs --baseline       # run + a Claude reference row
+danno benchmark ./candidate-configs --judge          # add L2 dev-quality grading
+```
+
+Each candidate carries its own model (in its opencode.jsonc), so no `-m` override
+is applied. Your project and real `danno.toml` are never touched — `danno.toml` is
+read only for sandbox/env setup.
 
 ## Network model (Docker sandbox)
 
