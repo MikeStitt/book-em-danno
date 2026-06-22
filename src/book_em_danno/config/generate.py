@@ -37,6 +37,26 @@ _HEADER = (
 
 _LLAMACPP_STUB = "llama.cpp backend not yet implemented (stubbed slot in danno.toml)"
 
+# Partial-ownership markers. danno owns only the region between begin/end; everything
+# outside (user keys/comments in jsonc; other frontmatter keys + the body in md) is
+# preserved verbatim on merge. One primitive, two formats — JSONC `//` comments inside
+# the top-level object, YAML `#` comments inside the `---` frontmatter fence.
+_JSONC_BEGIN = (
+    "// >>> danno:managed — generated from danno.toml; edits between the danno markers "
+    "are overwritten >>>"
+)
+_JSONC_END = "// <<< danno:managed <<<"
+_MD_BEGIN = (
+    "# >>> danno:managed — model assignment from danno.toml; edits between the danno "
+    "markers are overwritten >>>"
+)
+_MD_END = "# <<< danno:managed <<<"
+
+# Fields danno writes into md frontmatter (where markdown wins over JSON) rather than
+# the opencode.jsonc agent block. Phase 1 routes only `model` (the guaranteed lever);
+# scalar tuning routing is a trivial follow-on.
+_ROUTED_TO_MD = frozenset({"model"})
+
 
 class Action(StrEnum):
     WROTE = "wrote"
@@ -90,7 +110,12 @@ def agent_model_name(value: str | AgentSpec) -> str | None:
     return value if isinstance(value, str) else value.model
 
 
-def render_config(config: DannoConfig) -> str:
+def _danno_doc(config: DannoConfig, md_routed_agents: frozenset[str]) -> dict[str, Any]:
+    """The danno-owned opencode.jsonc members as a dict (no markers/braces).
+
+    `md_routed_agents` are agents whose `model` danno writes into their `.md`
+    frontmatter (where markdown wins) instead of the jsonc `agent.<name>` block — so
+    their model is omitted here, and an agent left with no jsonc fields is dropped."""
     # Model NAMES the agent map selects, in either [agents] form (raw refs included).
     used_models = {
         name for value in config.agents.values() if (name := agent_model_name(value)) is not None
@@ -139,16 +164,23 @@ def render_config(config: DannoConfig) -> str:
 
     # Each agent renders to its opencode.jsonc `agent.<name>` block. The string
     # shorthand is just a model; the rich form's other fields are emitted verbatim
-    # (its `model`, if set, resolved to a ref the same way).
+    # (its `model`, if set, resolved to a ref the same way). For an md-routed agent
+    # the model is written to its `.md` frontmatter instead, so it is omitted here.
     agent_block: dict[str, dict[str, Any]] = {}
     for agent, value in config.agents.items():
+        routed = agent in md_routed_agents
         if isinstance(value, str):
+            if routed:
+                continue  # only carried a model; the .md now owns it → no jsonc block
             agent_block[agent] = {"model": agent_ref(config, value)}
             continue
         entry = value.model_dump(exclude_none=True)
-        if value.model is not None:
+        if routed:
+            entry.pop("model", None)  # routed to the .md frontmatter
+        elif value.model is not None:
             entry["model"] = agent_ref(config, value.model)
-        agent_block[agent] = entry
+        if entry:  # drop an agent left with no jsonc-side fields
+            agent_block[agent] = entry
 
     default_agent = config.defaults.default_agent
     default_model = (
@@ -188,7 +220,65 @@ def render_config(config: DannoConfig) -> str:
         doc["plugin"] = [
             p.package if p.config is None else [p.package, p.config] for p in config.npm
         ]
-    return _HEADER + json.dumps(doc, indent=2) + "\n"
+    return doc
+
+
+def _region_inner(config: DannoConfig, md_routed_agents: frozenset[str]) -> list[str]:
+    """The lines danno owns inside the opencode.jsonc managed region: the header
+    comments + the JSON member lines (2-space indented, no enclosing braces)."""
+    doc = _danno_doc(config, md_routed_agents)
+    member_lines = json.dumps(doc, indent=2).splitlines()[1:-1]  # drop the `{` / `}`
+    header_lines = ["  " + ln for ln in _HEADER.rstrip("\n").splitlines()]
+    return header_lines + member_lines
+
+
+def _fresh_jsonc(region_inner: list[str]) -> str:
+    """A complete opencode.jsonc written from scratch: the danno region wrapped in
+    markers inside the top-level object, with no user members."""
+    lines = ["{", "  " + _JSONC_BEGIN, *region_inner, "  " + _JSONC_END, "}"]
+    return "\n".join(lines) + "\n"
+
+
+def _has_jsonc_member(after: list[str]) -> bool:
+    """True if the lines after the managed region hold a JSON member before the closing
+    brace — i.e. the managed block's last member needs a trailing comma."""
+    for ln in after:
+        s = ln.strip()
+        if not s or s == "}" or s.startswith("//"):
+            continue
+        return True
+    return False
+
+
+def _merge_jsonc(existing: str, region_inner: list[str]) -> str:
+    """Splice danno's managed region into an existing opencode.jsonc, preserving every
+    byte outside the markers (user keys + comments). A file with no markers is rewritten
+    wholesale (this installs the markers; same blast radius as the prior overwrite-only
+    behaviour) so that every subsequent run is an in-place region merge."""
+    lines = existing.splitlines()
+    begin = end = None
+    for i, ln in enumerate(lines):
+        if _JSONC_BEGIN in ln:
+            begin = i
+        elif _JSONC_END in ln and begin is not None:
+            end = i
+            break
+    if begin is None or end is None:
+        return _fresh_jsonc(region_inner)
+    after = lines[end + 1 :]
+    inner = list(region_inner)
+    if _has_jsonc_member(after):
+        inner[-1] = inner[-1] + ","  # last danno member needs a comma before user keys
+    merged = [*lines[:begin], "  " + _JSONC_BEGIN, *inner, "  " + _JSONC_END, *after]
+    return "\n".join(merged) + "\n"
+
+
+def render_config(config: DannoConfig, *, md_routed_agents: frozenset[str] = frozenset()) -> str:
+    """The full opencode.jsonc danno would write fresh (danno region wrapped in markers).
+
+    `md_routed_agents` omit their `model` here because danno writes it into their `.md`
+    frontmatter instead (see `generate_md`)."""
+    return _fresh_jsonc(_region_inner(config, md_routed_agents))
 
 
 # Markdown agent defs live under either dir (docs use plural, ADOS uses singular);
@@ -245,16 +335,18 @@ def _danno_agent_fields(value: str | AgentSpec) -> set[str]:
 
 def agent_markdown_collisions(config: DannoConfig, md_fields: dict[str, set[str]]) -> list[str]:
     """Loud warnings (Working Rule 8) for fields danno.toml sets that a markdown agent
-    def ALSO sets. OpenCode resolves markdown over our generated JSON on any conflict
-    (verified), so a shadowed danno.toml value would be silently ignored — surface it
-    instead of emitting a lie. `prompt` is special-cased: a markdown def's body IS the
-    system prompt, so any markdown file shadows a danno-set `prompt`."""
+    def ALSO sets and that danno does NOT route into the md itself. OpenCode resolves
+    markdown over our generated JSON on conflict (verified), so such a value would be
+    silently ignored — surface it. Fields in `_ROUTED_TO_MD` (model) are excluded: danno
+    writes them into the md frontmatter where they win, so there is no shadow. `prompt`
+    is special-cased: a markdown def's body IS the system prompt, so any markdown file
+    shadows a danno-set `prompt`."""
     warnings: list[str] = []
     for agent, value in config.agents.items():
         if agent not in md_fields:
             continue
         danno_fields = _danno_agent_fields(value)
-        clash = danno_fields & md_fields[agent]
+        clash = (danno_fields & md_fields[agent]) - _ROUTED_TO_MD
         if "prompt" in danno_fields:  # markdown body is always the prompt
             clash = clash | {"prompt"}
         if clash:
@@ -267,34 +359,126 @@ def agent_markdown_collisions(config: DannoConfig, md_fields: dict[str, set[str]
     return warnings
 
 
+def _md_routed_agents(config: DannoConfig, md_fields: dict[str, set[str]]) -> frozenset[str]:
+    """Agents whose model danno writes into their `.md` frontmatter: those that have a
+    markdown def AND a model danno can resolve (markdown wins, so jsonc would be a no-op)."""
+    return frozenset(
+        agent
+        for agent in config.agents
+        if agent in md_fields and agent_model_name(config.agents[agent]) is not None
+    )
+
+
+def render_md_frontmatter_block(config: DannoConfig, value: str | AgentSpec) -> list[str]:
+    """The danno-managed frontmatter lines for one agent (the routed assignment fields).
+
+    Phase 1 routes only `model`. Returns an empty list when there is nothing to route
+    (an agent with no model — e.g. a rich spec that only pins mode/permission)."""
+    model = agent_model_name(value)
+    if model is None:
+        return []
+    return [f"model: {agent_ref(config, model)}"]
+
+
+def _agent_md_paths(target: Path, agent: str) -> list[Path]:
+    """Existing `.md` def(s) for an agent across both dir spellings (both load in
+    opencode, so danno edits each that exists)."""
+    paths = []
+    for sub in _AGENT_DIRS:
+        p = Path(target) / ".opencode" / sub / f"{agent}.md"
+        if p.is_file():
+            paths.append(p)
+    return paths
+
+
+def _merge_md(existing: str, block_lines: list[str]) -> str:
+    """Splice danno's managed frontmatter region into an agent `.md`, preserving every
+    other frontmatter key AND the entire body verbatim. Replaces an existing managed
+    region if present; else inserts it before the closing `---`; else (no frontmatter)
+    creates a minimal `---` fence above the untouched body."""
+    region = [_MD_BEGIN, *block_lines, _MD_END]
+    lines = existing.splitlines()
+    begin = end = None
+    for i, ln in enumerate(lines):
+        if _MD_BEGIN in ln:
+            begin = i
+        elif _MD_END in ln and begin is not None:
+            end = i
+            break
+    if begin is not None and end is not None:
+        return "\n".join([*lines[:begin], *region, *lines[end + 1 :]]) + "\n"
+    if lines and lines[0].strip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":  # insert just before the closing fence
+                return "\n".join([*lines[:i], *region, *lines[i:]]) + "\n"
+    return "\n".join(["---", *region, "---", *lines]) + "\n"
+
+
+def _diff(existing: str, proposed: str, dest: Path) -> str:
+    return "".join(
+        difflib.unified_diff(
+            existing.splitlines(keepends=True),
+            proposed.splitlines(keepends=True),
+            fromfile=str(dest),
+            tofile="proposed",
+        )
+    )
+
+
 def generate(
     config: DannoConfig,
     target: Path,
     *,
     apply: bool = False,
 ) -> GenerateResult:
-    content = render_config(config)
+    """Merge danno's managed region into <target>/.opencode/opencode.jsonc (Tier-1).
+
+    Edits, not overwrites: only the bytes between the danno markers change; user keys
+    and comments outside them survive. Model assignment for agents that have a `.md`
+    def is routed out of here into the md (see `generate_md`)."""
+    md_fields = scan_agent_frontmatter(target)
+    region_inner = _region_inner(config, _md_routed_agents(config, md_fields))
     dest = Path(target) / ".opencode" / "opencode.jsonc"
-    warnings = agent_markdown_collisions(config, scan_agent_frontmatter(target))
+    warnings = agent_markdown_collisions(config, md_fields)
 
     if dest.is_file():
         existing = dest.read_text(encoding="utf-8")
-        if existing == content:
-            return GenerateResult(Action.UNCHANGED, dest, content, warnings=warnings)
-        diff = "".join(
-            difflib.unified_diff(
-                existing.splitlines(keepends=True),
-                content.splitlines(keepends=True),
-                fromfile=str(dest),
-                tofile="proposed",
-            )
-        )
+        merged = _merge_jsonc(existing, region_inner)
+        if merged == existing:
+            return GenerateResult(Action.UNCHANGED, dest, merged, warnings=warnings)
+        diff = _diff(existing, merged, dest)
         if not apply:
-            return GenerateResult(Action.DIFF, dest, content, diff, warnings=warnings)
-        dest.write_text(content, encoding="utf-8")
-        return GenerateResult(Action.WROTE, dest, content, diff, warnings=warnings)
+            return GenerateResult(Action.DIFF, dest, merged, diff, warnings=warnings)
+        dest.write_text(merged, encoding="utf-8")
+        return GenerateResult(Action.WROTE, dest, merged, diff, warnings=warnings)
 
-    # First run: nothing to clobber, so write automatically.
+    # First run: nothing to clobber, so write the fresh managed file automatically.
+    fresh = _fresh_jsonc(region_inner)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(content, encoding="utf-8")
-    return GenerateResult(Action.WROTE, dest, content, warnings=warnings)
+    dest.write_text(fresh, encoding="utf-8")
+    return GenerateResult(Action.WROTE, dest, fresh, warnings=warnings)
+
+
+def generate_md(config: DannoConfig, target: Path, *, apply: bool = False) -> list[GenerateResult]:
+    """Merge danno's managed model-assignment region into each agent `.md` that controls
+    an agent danno assigns a model to. One `GenerateResult` per edited file; same Tier-1
+    semantics as `generate` (WROTE / UNCHANGED / DIFF). The body and all other
+    frontmatter keys are preserved — danno owns only its marked frontmatter region."""
+    results: list[GenerateResult] = []
+    for agent, value in config.agents.items():
+        block = render_md_frontmatter_block(config, value)
+        if not block:
+            continue
+        for md_path in _agent_md_paths(target, agent):
+            existing = md_path.read_text(encoding="utf-8")
+            merged = _merge_md(existing, block)
+            if merged == existing:
+                results.append(GenerateResult(Action.UNCHANGED, md_path, merged))
+                continue
+            diff = _diff(existing, merged, md_path)
+            if not apply:
+                results.append(GenerateResult(Action.DIFF, md_path, merged, diff))
+                continue
+            md_path.write_text(merged, encoding="utf-8")
+            results.append(GenerateResult(Action.WROTE, md_path, merged, diff))
+    return results

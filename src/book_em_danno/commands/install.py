@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..config.generate import Action, generate
+from ..config.generate import Action, GenerateResult, generate, generate_md
 from ..config.loader import DannoConfigError
 from ..config.schema import DannoConfig, OllamaBackend
 from ..core import registry
@@ -28,25 +28,34 @@ def _resolve_target(target: Path) -> Path:
     return abs_target
 
 
-def _emit_config(cfg: DannoConfig, target_abs: Path, runner: Runner) -> None:
-    """Tier-1: write/diff .opencode/opencode.jsonc (we own this file)."""
-    result = generate(cfg, target_abs, apply=runner.apply)
-    # Fail loud (Working Rule 8): a danno.toml field a markdown agent def also sets is
-    # silently overridden by OpenCode, so warn rather than emit a value that won't win.
-    for warning in result.warnings:
-        log_warn(warning)
+def _report_generate(result: GenerateResult) -> None:
+    """Tier-1 reporting for one managed file (opencode.jsonc or an agent .md region)."""
     if result.action is Action.WROTE:
         log_info(f"[green]wrote[/green] {result.path}")
     elif result.action is Action.UNCHANGED:
-        log_info(f"config unchanged: {result.path}")
+        log_info(f"unchanged: {result.path}")
     else:  # DIFF
         from ..core.exec import console
 
         console.print(result.diff or result.content)
         log_info(
-            "[yellow]config differs from the existing file[/yellow]; "
-            "re-run with --apply to write it."
+            f"[yellow]{result.path} differs from the existing file[/yellow]; "
+            "re-run with --apply to merge danno's managed region."
         )
+
+
+def _emit_config(cfg: DannoConfig, target_abs: Path, runner: Runner) -> None:
+    """Tier-1: merge danno's managed region into .opencode/opencode.jsonc and, for any
+    agent that a `.md` def controls, into that md's managed frontmatter region. danno
+    owns only its marked regions; everything else in those files is preserved."""
+    result = generate(cfg, target_abs, apply=runner.apply)
+    # Fail loud (Working Rule 8): a danno.toml field a markdown agent def also sets AND
+    # danno does not route into the md is silently overridden by OpenCode — warn.
+    for warning in result.warnings:
+        log_warn(warning)
+    _report_generate(result)
+    for md_result in generate_md(cfg, target_abs, apply=runner.apply):
+        _report_generate(md_result)
 
 
 def _ollama_tags(cfg: DannoConfig) -> list[str]:
