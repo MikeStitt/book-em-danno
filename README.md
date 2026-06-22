@@ -407,6 +407,26 @@ and fails loud up front if it's missing. See
 command surface and [`.docs/plan-danno-validator.md`](.docs/plan-danno-validator.md)
 for the harness design.
 
+### Benchmark whole configs (`danno benchmark`)
+
+Where `validate` sweeps your `danno.toml`'s *models*, `danno benchmark` sweeps
+whole **configs** for editing performance — to A/B different prompts, permissions,
+or model assignments. Each subdirectory of the configs dir is a candidate holding
+its own `.opencode/` tree (opencode.jsonc + agent `.md`); danno applies each into
+the throwaway, validator-owned workspace and runs the *same* tiered battery (plus
+the optional Claude `--baseline`), then writes a comparison report + `results.json`
+under `.danno-benchmark/<timestamp>/`.
+
+```bash
+danno benchmark ./candidate-configs --dry-run        # preview which configs run
+danno benchmark ./candidate-configs --baseline       # run + a Claude reference row
+danno benchmark ./candidate-configs --judge          # add L2 dev-quality grading
+```
+
+Each candidate carries its own model (in its opencode.jsonc), so no `-m` override
+is applied. Your project and real `danno.toml` are never touched — `danno.toml` is
+read only for sandbox/env setup.
+
 ## Network model (Docker sandbox)
 
 The agents run in a Docker **microVM** — its own kernel, filesystem, and network.

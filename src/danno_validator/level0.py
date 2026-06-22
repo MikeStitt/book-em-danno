@@ -127,7 +127,7 @@ def _run_turn(
     sandbox: str,
     scripted: ScriptedTurn,
     *,
-    model: str,
+    model: str | None,
     agent: str,
     session: str | None,
     workspace_root: Path,
@@ -165,7 +165,7 @@ def run_level0(
     runner: Runner,
     sandbox: str,
     *,
-    model: str,
+    model: str | None,
     workspace_root: Path,
     agent: str = DEFAULT_AGENT,
     script: tuple[ScriptedTurn, ...] = DEFAULT_SCRIPT,
@@ -184,7 +184,7 @@ def run_level0(
     turn_fn = run_turn or opencode_run
     _reset_probe(workspace_root)
     result = ConversationResult(
-        model=model, sandbox=sandbox, workspace_root=workspace_root, session_id=None
+        model=model or "", sandbox=sandbox, workspace_root=workspace_root, session_id=None
     )
     session: str | None = None
     action_record: TurnRecord | None = None

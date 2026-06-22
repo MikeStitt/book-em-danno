@@ -339,14 +339,14 @@ def test_judge_threads_into_sweep_and_baseline(
     # Stub the judge builder so the test doesn't need the anthropic SDK or a key; the
     # orchestration should hand the same JudgeFn to both the sweep and the baseline.
     sentinel: JudgeFn = lambda work: None  # noqa: E731 - a throwaway stand-in
-    monkeypatch.setattr(run_mod, "_build_judge", lambda opts: sentinel if opts.judge else None)
+    monkeypatch.setattr(run_mod, "_build_judge", lambda judge, judge_model=None: sentinel)
     _run(_opts(tmp_path, judge=True, baseline=True))
     assert patched["sweep_kwargs"]["judge"] is sentinel
     assert patched["baseline_judge"] is sentinel
 
 
 def test_build_judge_off_returns_none(tmp_path: Path) -> None:
-    assert run_mod._build_judge(_opts(tmp_path, judge=False)) is None  # type: ignore[arg-type]
+    assert run_mod._build_judge(False) is None
 
 
 def test_build_judge_missing_key_fails_loud(
@@ -355,7 +355,7 @@ def test_build_judge_missing_key_fails_loud(
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     with pytest.raises(CommandFailedError, match="Anthropic API key"):
-        run_mod._build_judge(_opts(tmp_path, judge=True))  # type: ignore[arg-type]
+        run_mod._build_judge(True)
 
 
 def test_build_judge_missing_sdk_fails_loud(
@@ -370,7 +370,7 @@ def test_build_judge_missing_sdk_fails_loud(
 
     monkeypatch.setattr(judge_mod, "AnthropicJudgeClient", boom)
     with pytest.raises(CommandFailedError, match="validator"):
-        run_mod._build_judge(_opts(tmp_path, judge=True))  # type: ignore[arg-type]
+        run_mod._build_judge(True)
 
 
 def test_build_judge_success_returns_callable(
@@ -378,7 +378,7 @@ def test_build_judge_success_returns_callable(
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-x")
     monkeypatch.setattr(judge_mod, "AnthropicJudgeClient", lambda: object())
-    fn = run_mod._build_judge(_opts(tmp_path, judge=True, judge_model="sonnet"))  # type: ignore[arg-type]
+    fn = run_mod._build_judge(True, "sonnet")
     assert callable(fn)
 
 

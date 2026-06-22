@@ -245,7 +245,7 @@ def run_level2(
     runner: Runner,
     sandbox: str,
     *,
-    model: str,
+    model: str | None,
     workspace_root: Path,
     task: Level2Task = DEFAULT_TASK,
     agent: str = DEFAULT_AGENT,
@@ -294,7 +294,7 @@ def run_level2(
         )
         judgement = judge(work)
     return DevTaskResult(
-        model=model,
+        model=model or "",
         sandbox=sandbox,
         workspace_root=workspace_root,
         task_label=task.label,

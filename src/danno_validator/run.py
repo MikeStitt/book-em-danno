@@ -187,7 +187,7 @@ def _build_sweep_env_file(
     return sb._build_env_file([], augmented, opts.env_file)
 
 
-def _build_judge(opts: ValidateOptions) -> JudgeFn | None:
+def _build_judge(judge: bool, judge_model: str | None = None) -> JudgeFn | None:
     """Build the L2 dev-quality `JudgeFn` from `--judge`, or `None` when off.
 
     Fails loud up front (Working Rule 8), *before* any sandbox is provisioned: a
@@ -197,7 +197,7 @@ def _build_judge(opts: ValidateOptions) -> JudgeFn | None:
     honours `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` — *not* the Claude Code
     subscription `CLAUDE_CODE_OAUTH_TOKEN` (that authenticates Claude Code, not the
     SDK; see the baseline, which is the one place that token is used)."""
-    if not opts.judge:
+    if not judge:
         return None
     from danno_validator.judge import (
         DEFAULT_JUDGE_MODEL,
@@ -217,7 +217,7 @@ def _build_judge(opts: ValidateOptions) -> JudgeFn | None:
         client = AnthropicJudgeClient()
     except JudgeError as exc:  # the `danno[validator]` extra (anthropic SDK) isn't installed
         raise CommandFailedError(str(exc)) from exc
-    return make_judge(client, model=opts.judge_model or DEFAULT_JUDGE_MODEL)
+    return make_judge(client, model=judge_model or DEFAULT_JUDGE_MODEL)
 
 
 def _teardown(runner: Runner, name: str) -> None:
@@ -253,7 +253,7 @@ def run_validate(
         sb.agent_env("claude", sb.DEFAULT_OLLAMA_URL)
     # Same discipline for the judge: validate its auth/SDK up front (also on a dry run,
     # so the preview surfaces a misconfigured --judge before an expensive real run).
-    judge = _build_judge(opts)
+    judge = _build_judge(opts.judge, opts.judge_model)
     if opts.dry_run:
         return ValidateResult(plan=plan, dry_run=True)
 
