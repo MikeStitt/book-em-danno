@@ -36,8 +36,8 @@ uv run danno --version
 
 # Install danno as a global tool.
 
-uv tool install .   # then `danno` is on PATH
-danno --help        # also works: uv tool run danno --help
+uv tool install . --reinstall  # then `danno` is on PATH
+danno --help                   # also works: uv tool run danno --help
 danno --version
 
 cd ..
