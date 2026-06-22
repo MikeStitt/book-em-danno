@@ -100,6 +100,37 @@ backend   = "danno-nvidia"
 tag       = "nvidia/nemotron-3-ultra-550b-a55b"   # the model id the endpoint expects
 tool_call = true
 
+[models.3p3-nemotron-super-49b-danno]
+backend   = "danno-nvidia"
+tag       = "nvidia/llama-3.3-nemotron-super-49b-v1.5"   # the model id the endpoint expects
+tool_call = true
+
+[models.deepseek-v4-pro-danno]
+backend   = "danno-nvidia"
+tag       = "nvidia/llama-3.3-nemotron-super-49b-v1.5"   # the model id the endpoint expects
+tool_call = true
+
+[models.deepseek-v4-flash-danno]
+backend   = "danno-nvidia"
+tag       = "deepseek-ai/deepseek-v4-flash"   # the model id the endpoint expects
+tool_call = true
+
+[models.deepseek-r1-distill-qwen-7b-danno]
+backend   = "danno-nvidia"
+tag       = "deepseek-ai/deepseek-r1-distill-qwen-7b"   # the model id the endpoint expects
+tool_call = true
+
+
+[models.mistral-large-3-675b-instruct-2512-danno]
+backend   = "danno-nvidia"
+tag       = "mistralai/mistral-large-3-675b-instruct-2512"   # the model id the endpoint expects
+tool_call = true
+
+[models.glm-5p1-danno]
+backend   = "danno-nvidia"
+tag       = "z-ai/glm-5.1"   # the model id the endpoint expects
+tool_call = true
+
 # --- Agent -> model. A value WITHOUT "/" names a [models] entry above; a value WITH
 #     "/" is a raw OpenCode ref passed through verbatim (built-in cloud model, no
 #     backend/[models] needed). Unlisted agents fall back to the profile tier default. ---
