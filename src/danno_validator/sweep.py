@@ -226,7 +226,7 @@ def run_tiers(
     result = level0.run_level0(
         runner,
         sandbox,
-        model=variant.model_ref,
+        model=variant.model_ref or None,  # empty ref ⇒ no -m (config carries the model)
         workspace_root=workspace_root,
         agent=agent,
         script=script,
@@ -248,7 +248,7 @@ def run_tiers(
             l1 = run_level1(
                 runner,
                 sandbox,
-                model=variant.model_ref,
+                model=variant.model_ref or None,  # empty ref ⇒ no -m (config carries the model)
                 workspace_root=workspace_root,
                 task=level1_task,
                 agent=agent,
@@ -272,7 +272,7 @@ def run_tiers(
             l2 = run_level2(
                 runner,
                 sandbox,
-                model=variant.model_ref,
+                model=variant.model_ref or None,  # empty ref ⇒ no -m (config carries the model)
                 workspace_root=workspace_root,
                 task=level2_task,
                 agent=agent,

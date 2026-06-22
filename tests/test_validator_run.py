@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from book_em_danno.commands import sandbox as sb
-from book_em_danno.config.schema import CloudBackend, DannoConfig, Model, OllamaBackend
+from book_em_danno.config.schema import DannoConfig, Model, OllamaBackend
 from book_em_danno.core.exec import CaptureResult, CommandFailedError, Runner
 from danno_validator import judge as judge_mod
 from danno_validator import run as run_mod
@@ -114,13 +114,13 @@ def _config() -> DannoConfig:
     return DannoConfig(
         backends={
             "ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1"),
-            "cloud": CloudBackend(kind="cloud", provider="anthropic"),
         },
         models={
             "gptoss": Model(backend="ollama", tag="gpt-oss:20b", tool_call=True),
             "gemma": Model(backend="ollama", tag="gemma3:27b"),
-            "sonnet": Model(backend="cloud", id="claude-sonnet-4-6"),
         },
+        # cloud agents are raw inline refs (not swept [models]); pm exercises that path
+        agents={"pm": "anthropic/claude-sonnet-4-6"},
     )
 
 
@@ -168,7 +168,7 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> dict:
             Path(env_file).read_text(encoding="utf-8") if env_file is not None else None
         )
         on_event(ValidateEvent(phase="config-start", config="gptoss", model_ref="ollama/x"))
-        names = list(only or ["gptoss", "gemma", "sonnet"])
+        names = list(only or ["gptoss", "gemma"])
         return [_pass(n, f"ollama/{n}") for n in names]
 
     def fake_baseline(
@@ -199,7 +199,7 @@ def _run(opts: ValidateOptions) -> object:
 def test_dry_run_resolves_plan_without_side_effects(patched: dict, tmp_path: Path) -> None:
     result = _run(_opts(tmp_path, dry_run=True))
     assert result.dry_run is True
-    assert result.plan.swept_models == ["gemma", "gptoss", "sonnet"]
+    assert result.plan.swept_models == ["gemma", "gptoss"]
     assert patched["provision"] == []  # nothing provisioned
 
 
@@ -312,41 +312,15 @@ def test_reporter_receives_plan_events_and_summary(patched: dict, tmp_path: Path
 # --- credential injection into the sweep ------------------------------------
 
 
-def test_cloud_key_auto_injected_from_host(
-    patched: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # The config's `sonnet` is a cloud/anthropic model; its ANTHROPIC_API_KEY is
-    # exported, so the sweep gets an env-file carrying it.
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-host")
-    _run(_opts(tmp_path))
-    assert "ANTHROPIC_API_KEY=sk-ant-host" in patched["env_file_contents"]
+def test_env_flag_is_injected(patched: dict, tmp_path: Path) -> None:
+    # An explicit --env pair is written into the chmod-600 env-file bound into every
+    # sweep exec (e.g. an openai-compatible backend's api_key_env).
+    _run(_opts(tmp_path, env=["NVIDIA_API_KEY=nvapi-explicit"]))
+    assert "NVIDIA_API_KEY=nvapi-explicit" in patched["env_file_contents"]
 
 
-def test_env_flag_overrides_and_is_injected(
-    patched: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-host")
-    _run(_opts(tmp_path, env=["ANTHROPIC_API_KEY=sk-ant-explicit"]))
-    contents = patched["env_file_contents"]
-    assert "ANTHROPIC_API_KEY=sk-ant-explicit" in contents
-    assert "sk-ant-host" not in contents  # explicit --env wins over the host value
-
-
-def test_missing_cloud_key_warns_but_sweep_runs(
-    patched: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
-) -> None:
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    result = _run(_opts(tmp_path))
-    assert "ANTHROPIC_API_KEY" in capsys.readouterr().out  # warned, did not abort
-    assert patched["sweep_kwargs"]["env_file"] is None  # nothing to inject
-    assert result.results  # the sweep still ran (cloud row errors loudly in its own report)
-
-
-def test_local_only_sweep_needs_no_env_file(
-    patched: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Restricting to a local Ollama model pulls in no cloud key — no env-file at all.
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+def test_no_env_needs_means_no_env_file(patched: dict, tmp_path: Path) -> None:
+    # A sweep over only no-auth local models, with no --env, needs no env-file at all.
     _run(_opts(tmp_path, only=["gptoss"]))
     assert patched["sweep_kwargs"]["env_file"] is None
 
@@ -365,14 +339,14 @@ def test_judge_threads_into_sweep_and_baseline(
     # Stub the judge builder so the test doesn't need the anthropic SDK or a key; the
     # orchestration should hand the same JudgeFn to both the sweep and the baseline.
     sentinel: JudgeFn = lambda work: None  # noqa: E731 - a throwaway stand-in
-    monkeypatch.setattr(run_mod, "_build_judge", lambda opts: sentinel if opts.judge else None)
+    monkeypatch.setattr(run_mod, "_build_judge", lambda judge, judge_model=None: sentinel)
     _run(_opts(tmp_path, judge=True, baseline=True))
     assert patched["sweep_kwargs"]["judge"] is sentinel
     assert patched["baseline_judge"] is sentinel
 
 
 def test_build_judge_off_returns_none(tmp_path: Path) -> None:
-    assert run_mod._build_judge(_opts(tmp_path, judge=False)) is None  # type: ignore[arg-type]
+    assert run_mod._build_judge(False) is None
 
 
 def test_build_judge_missing_key_fails_loud(
@@ -381,7 +355,7 @@ def test_build_judge_missing_key_fails_loud(
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     with pytest.raises(CommandFailedError, match="Anthropic API key"):
-        run_mod._build_judge(_opts(tmp_path, judge=True))  # type: ignore[arg-type]
+        run_mod._build_judge(True)
 
 
 def test_build_judge_missing_sdk_fails_loud(
@@ -396,7 +370,7 @@ def test_build_judge_missing_sdk_fails_loud(
 
     monkeypatch.setattr(judge_mod, "AnthropicJudgeClient", boom)
     with pytest.raises(CommandFailedError, match="validator"):
-        run_mod._build_judge(_opts(tmp_path, judge=True))  # type: ignore[arg-type]
+        run_mod._build_judge(True)
 
 
 def test_build_judge_success_returns_callable(
@@ -404,7 +378,7 @@ def test_build_judge_success_returns_callable(
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-x")
     monkeypatch.setattr(judge_mod, "AnthropicJudgeClient", lambda: object())
-    fn = run_mod._build_judge(_opts(tmp_path, judge=True, judge_model="sonnet"))  # type: ignore[arg-type]
+    fn = run_mod._build_judge(True, "sonnet")
     assert callable(fn)
 
 

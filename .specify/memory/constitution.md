@@ -167,10 +167,17 @@ do that).
 
 ADOS is upstream MIT-licensed code we install and configure, not code we own.
 When this tooling vendors or copies ADOS artefacts into a target project, keep
-upstream license headers intact, do not edit upstream agent/command `.md`
-definitions in place (configure via the generated `.opencode/opencode.jsonc` instead),
-and record which ADOS version a target was installed from so re-runs and updates
-are traceable. Details: [`parts/ados-ollama.md`](parts/ados-ollama.md).
+upstream license headers intact and record which ADOS version a target was
+installed from so re-runs and updates are traceable. **Do not fork ADOS agent or
+command behavior**: never edit the body (the system prompt) or the behavior fields
+(`prompt`/`tools`/`mode`) of an agent `.md`. danno MAY, however, write **model
+assignment** — its guaranteed lever — into a danno-managed, marker-delimited region
+of an agent `.md`'s YAML frontmatter when that `.md` controls the agent (OpenCode
+resolves a markdown agent def over the generated `.opencode/opencode.jsonc` on any
+conflict, so the model would otherwise be silently shadowed there). Such edits are
+**surgical** (only the marked region), **idempotent**, and **reversible**
+(git-tracked, diff-then-stop without `--apply`) — the same Tier-1 discipline danno
+applies to `.opencode/opencode.jsonc`. Details: [`parts/ados-ollama.md`](parts/ados-ollama.md).
 
 ### Scratch / Probe Scripts — Explicit Escape Hatch
 
@@ -201,4 +208,4 @@ in `scratch/`. This exception is named explicitly so future contributors don't
   [`parts/constitution-maintenance.md`](parts/constitution-maintenance.md).
   Read that part before changing this file or any other part.
 
-**Version**: 2.1.0 | **Ratified**: 2026-06-05 | **Last amended**: 2026-06-14
+**Version**: 2.2.0 | **Ratified**: 2026-06-05 | **Last amended**: 2026-06-22

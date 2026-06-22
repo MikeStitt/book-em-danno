@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from book_em_danno.config.generate import agent_model_name
 from book_em_danno.config.schema import DannoConfig
 from danno_validator.baseline import BASELINE_MODEL
 from danno_validator.oracle import FailureClass
@@ -141,11 +142,13 @@ def _agents_menu(config: DannoConfig, by_model: dict[str, SweepResult]) -> list[
 
     For each assigned role the active line carries that model's verdict badge,
     followed by every *other* declared model as a commented-out alternative with
-    its own badge — so the user swaps a role's model by uncommenting one line.
+    its own badge — so the user swaps a role's model by uncommenting one line. The
+    menu is a model-selection surface: a role's selected model is read from either
+    [agents] form (the string shorthand or the rich form's `model`).
     """
 
-    def badge_comment(model_name: str) -> str:
-        result = by_model.get(model_name)
+    def badge_comment(model_name: str | None) -> str:
+        result = by_model.get(model_name) if model_name is not None else None
         return verdict_badge(result) if result is not None else "[not validated]"
 
     lines = ["[agents]"]
@@ -155,9 +158,10 @@ def _agents_menu(config: DannoConfig, by_model: dict[str, SweepResult]) -> list[
         return lines
     all_models = sorted(config.models)
     for role, assigned in config.agents.items():
-        lines.append(f'{role} = "{assigned}"   # {badge_comment(assigned)}')
+        selected = agent_model_name(assigned) or ""
+        lines.append(f'{role} = "{selected}"   # {badge_comment(selected or None)}')
         for alt in all_models:
-            if alt != assigned:
+            if alt != selected:
                 lines.append(f'# {role} = "{alt}"   # {badge_comment(alt)} — uncomment to use')
     lines.append("")
     return lines

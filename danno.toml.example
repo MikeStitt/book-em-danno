@@ -18,7 +18,7 @@ profile       = "hybrid"           # hybrid | cloud-only | local-only
 agent_home = "per-project"
 
 # --- Backends: where models run. `kind` selects the runtime. ---
-[backends.ollama]                  # IMPLEMENTED
+[backends.danno-ollama]                  # IMPLEMENTED
 kind           = "ollama"
 base_url       = "http://host.docker.internal:11434/v1"   # use http://localhost:11434/v1 for host-only runs
 context_budget = 32000   # OpenCode's CLIENT-SIDE belief of the window (models.<tag>.limit.context);
@@ -29,16 +29,18 @@ output_limit   = 8192    # tokens OpenCode reserves for the reply (usable input 
 # Note: there is no stream/thinking knob — opencode always streams, and those keys
 # never reached Ollama. Reasoning control is per-model (see reasoning_effort below).
 
-[backends.cloud]                   # IMPLEMENTED
-kind     = "cloud"
-provider = "anthropic"             # API key stays in the env / OpenCode provider — never written here
+# Cloud models need NO backend or [models] entry: OpenCode knows them via its
+# built-in catalog and launch-time auth. Reference one inline in [agents] as a raw
+# OpenCode ref (any value containing "/", e.g. "anthropic/claude-sonnet-4-6"). The
+# API key stays in the env — inject it at launch with
+# `danno sandbox start --env ANTHROPIC_API_KEY=...`.
 
 [backends.llamacpp]                # STUBBED (generator raises "not yet implemented" if used)
 kind     = "llamacpp"
 base_url = "http://host.docker.internal:8080/v1"
 
-# --- Models: a named (backend, tag/id) pair. ---
-[backends.nvidia]                  # IMPLEMENTED — any OpenAI-compatible endpoint (NVIDIA NIM)
+# --- Models: a named (backend, tag) pair. ---
+[backends.danno-nvidia]                  # IMPLEMENTED — any OpenAI-compatible endpoint (NVIDIA NIM)
 kind        = "openai"
 base_url    = "https://integrate.api.nvidia.com/v1"
 api_key_env = "NVIDIA_API_KEY"     # emitted as {env:NVIDIA_API_KEY}; the secret is NEVER
@@ -48,7 +50,7 @@ context_budget = 1000000
 output_limit   = 8192
 
 [models.gemma3-27b]
-backend          = "ollama"
+backend          = "danno-ollama"
 tag              = "gemma3:27b"    # local models MUST support tool-calling (gemma3:1b does NOT)
 tool_call        = false
 reasoning_effort = "none"          # forwarded as model-level options.reasoningEffort into the /v1
@@ -57,9 +59,9 @@ reasoning_effort = "none"          # forwarded as model-level options.reasoningE
                                    #   Omit to forward nothing. gpt-oss-style models reject "none"
                                    #   (use low/medium/high). Values: none | low | medium | high.
 
-# --- Models: a named (backend, tag/id) pair. ---
+# --- Models: a named (backend, tag) pair. ---
 [models.qwen3-coder-next]
-backend          = "ollama"
+backend          = "danno-ollama"
 tag              = "qwen3-coder-next"    # local models MUST support tool-calling (gemma3:1b does NOT)
 tool_call        = true
 reasoning_effort = "none"          # forwarded as model-level options.reasoningEffort into the /v1
@@ -68,9 +70,9 @@ reasoning_effort = "none"          # forwarded as model-level options.reasoningE
                                    #   Omit to forward nothing. gpt-oss-style models reject "none"
                                    #   (use low/medium/high). Values: none | low | medium | high.
 
-# --- Models: a named (backend, tag/id) pair. ---
+# --- Models: a named (backend, tag) pair. ---
 [models.quen3p6-27b-q4_K_M]
-backend          = "ollama"
+backend          = "danno-ollama"
 tag              = "qwen3.6:27b-q4_K_M"    # local models MUST support tool-calling (gemma3:1b does NOT)
 tool_call        = true
 reasoning_effort = "medium"          # forwarded as model-level options.reasoningEffort into the /v1
@@ -79,9 +81,9 @@ reasoning_effort = "medium"          # forwarded as model-level options.reasonin
                                    #   Omit to forward nothing. gpt-oss-style models reject "none"
                                    #   (use low/medium/high). Values: none | low | medium | high.
 
-# --- Models: a named (backend, tag/id) pair. ---
+# --- Models: a named (backend, tag) pair. ---
 [models.gpt-oss-20b]
-backend          = "ollama"
+backend          = "danno-ollama"
 tag              = "gpt-oss:20b"    # local models MUST support tool-calling (gemma3:1b does NOT)
 tool_call        = true
 reasoning_effort = "none"          # forwarded as model-level options.reasoningEffort into the /v1
@@ -92,20 +94,35 @@ reasoning_effort = "none"          # forwarded as model-level options.reasoningE
 
 
 
-[models.sonnet]
-backend = "cloud"
-id      = "anthropic/claude-sonnet-4-6"
-
 # --- NVIDIA NIM model via the openai-compatible backend above. ---
-[models.nemotron-ultra]
-backend   = "nvidia"
+[models.nemotron-ultra-danno]
+backend   = "danno-nvidia"
 tag       = "nvidia/nemotron-3-ultra-550b-a55b"   # the model id the endpoint expects
 tool_call = true
 
-# --- Agent -> model. Unlisted agents fall back to the profile tier default (Phase 2). ---
+# --- Agent -> model. A value WITHOUT "/" names a [models] entry above; a value WITH
+#     "/" is a raw OpenCode ref passed through verbatim (built-in cloud model, no
+#     backend/[models] needed). Unlisted agents fall back to the profile tier default. ---
 [agents]
-plan                = "qwen3-coder-next"
+plan                = "qwen3-coder-next"             # bare name → resolved via [models]
 build               = "qwen3-coder-next"
+pm                  = "anthropic/claude-sonnet-4-6"  # raw ref → passed through verbatim
+
+# Rich form: a table sets `model` (same "/" rule) plus OpenCode agent fields, emitted
+# verbatim into the generated agent block. Two uses: (1) route a built-in subagent to
+# a local model, (2) fully define a danno-owned agent in JSON (no markdown needed).
+#[agents.explore]                        # route OpenCode's built-in explorer local
+#model = "qwen3-coder-next"
+#
+#[agents.architect]
+#model  = "anthropic/claude-sonnet-4-6"
+#mode   = "subagent"
+#prompt = "{file:./prompts/architect.md}"
+#[agents.architect.permission]
+#edit = "deny"
+# NOTE: danno never edits .opencode/agent[s]/*.md. Where a markdown agent def already
+# sets a field (model/temperature/…), OpenCode's markdown WINS over this generated
+# JSON — `danno install` warns loud at that collision instead of emitting a dead value.
 
 
 # --- Tool catalog: IMPERATIVE installs. Each entry runs its own installer (ADOS

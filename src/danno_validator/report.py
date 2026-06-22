@@ -291,8 +291,11 @@ def render_matrix_index(
         config_cell = f"`{s.variant.model_name}`"
         if s.variant.model_name == BASELINE_MODEL:
             config_cell += " _(baseline)_"
+        # The model sweep shows the resolved -m ref; a benchmark config has none
+        # (its model lives in its own opencode.jsonc), so fall back to the label.
+        ref_cell = s.variant.model_ref or s.variant.description
         parts.append(
-            f"| {config_cell} | `{s.variant.model_ref}` | {badge} | {l1_badge} "
+            f"| {config_cell} | `{ref_cell}` | {badge} | {l1_badge} "
             f"| {l2_badge} | {len(r.records)} | {r.total_tokens} | {r.total_latency_s:.1f}s |"
         )
     parts += ["", "## Failure taxonomy", ""]

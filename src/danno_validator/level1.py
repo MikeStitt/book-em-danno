@@ -128,7 +128,7 @@ def run_level1(
     runner: Runner,
     sandbox: str,
     *,
-    model: str,
+    model: str | None,
     workspace_root: Path,
     task: Level1Task = DEFAULT_TASK,
     agent: str = DEFAULT_AGENT,
@@ -162,7 +162,7 @@ def run_level1(
     side_effect = task.check(workspace_root)
     verdict = classify_turn(turn, side_effect=side_effect, expects_action=True)
     return TaskResult(
-        model=model,
+        model=model or "",
         sandbox=sandbox,
         workspace_root=workspace_root,
         task_label=task.label,

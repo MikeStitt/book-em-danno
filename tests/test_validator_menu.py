@@ -11,7 +11,7 @@ from pathlib import Path
 
 from book_em_danno.config.loader import load_config
 from book_em_danno.config.schema import (
-    CloudBackend,
+    AgentSpec,
     DannoConfig,
     Model,
     NpmPlugin,
@@ -148,14 +148,14 @@ def _config() -> DannoConfig:
     return DannoConfig(
         backends={
             "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1"),
-            "cloud": CloudBackend(kind="cloud", provider="anthropic"),
         },
         models={
             "gemma3-27b": Model(backend="ollama", tag="gemma3:27b", reasoning_effort="none"),
             "gptoss": Model(backend="ollama", tag="gpt-oss:20b", tool_call=True),
-            "sonnet": Model(backend="cloud", id="claude-sonnet-4-6"),
+            "qwen": Model(backend="ollama", tag="qwen3-coder-next", tool_call=True),
         },
-        agents={"plan": "gptoss", "coder": "sonnet"},
+        # coder is a raw inline cloud ref (not a [models] entry, never swept).
+        agents={"plan": "gptoss", "coder": "anthropic/claude-sonnet-4-6"},
         tools=[
             Tool(name="ados", source="https://example.com/ados", install_to="sandbox"),
         ],
@@ -170,8 +170,8 @@ def _config() -> DannoConfig:
 
 
 def _results() -> list[SweepResult]:
-    # gptoss clears everything; gemma3-27b stalls at L0; sonnet is NOT swept; a
-    # Claude baseline row that the menu must drop.
+    # gptoss clears everything; gemma3-27b stalls at L0; qwen is declared but NOT
+    # swept; a Claude baseline row that the menu must drop.
     return [
         _l0_stall("gemma3-27b", "ollama/gemma3:27b"),
         _all_pass("gptoss", "ollama/gpt-oss:20b"),
@@ -187,7 +187,7 @@ def test_menu_annotates_each_model_with_its_verdict() -> None:
 
 def test_menu_marks_unswept_model_not_validated() -> None:
     menu = render_menu(_config(), _results())
-    assert "# [not validated — outside the swept set]\n[models.sonnet]" in menu
+    assert "# [not validated — outside the swept set]\n[models.qwen]" in menu
 
 
 def test_menu_excludes_claude_baseline_row() -> None:
@@ -201,9 +201,20 @@ def test_menu_agents_block_is_a_comment_uncomment_menu() -> None:
     menu = render_menu(_config(), _results())
     # The active assignment carries its model's verdict.
     assert 'plan = "gptoss"   # [L0 ✓ · L1 ✓ · L2 ✓]' in menu
+    # A raw inline ref (not a [models] entry) is rendered verbatim, marked unvalidated.
+    assert 'coder = "anthropic/claude-sonnet-4-6"   # [not validated]' in menu
     # Every other model appears as a commented alternative under the role.
     assert '# plan = "gemma3-27b"   # [L0 ✗ stall · L1 – · L2 –] — uncomment to use' in menu
-    assert '# plan = "sonnet"   # [not validated] — uncomment to use' in menu
+    assert '# plan = "qwen"   # [not validated] — uncomment to use' in menu
+
+
+def test_menu_reads_model_from_a_rich_agent_spec() -> None:
+    # The menu is a model-selection surface: a rich [agents.<name>] agent's selected
+    # model (its `model` field) drives the active line and its verdict badge.
+    config = _config()
+    config.agents["coder"] = AgentSpec(model="gptoss", mode="subagent")
+    menu = render_menu(config, _results())
+    assert 'coder = "gptoss"   # [L0 ✓ · L1 ✓ · L2 ✓]' in menu
 
 
 def test_menu_verified_stamp_is_optional() -> None:

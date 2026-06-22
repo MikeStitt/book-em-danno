@@ -29,7 +29,7 @@ from importlib.metadata import version as pkg_version
 from pathlib import Path
 
 from book_em_danno.commands import sandbox as sb
-from book_em_danno.config.schema import CloudBackend, DannoConfig
+from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import CommandFailedError, Runner, log_warn
 from danno_validator.baseline import BASELINE_MODEL, run_baseline
 from danno_validator.events import ValidateEvent
@@ -164,40 +164,22 @@ def _resolve_plan(config: DannoConfig, opts: ValidateOptions, *, timestamp: str)
     )
 
 
-def _cloud_env_vars(config: DannoConfig, only: list[str] | None) -> frozenset[str]:
-    """API-key env vars the swept cloud configs need that aren't `{env:}` refs.
-
-    A `cloud` backend (opencode's built-in provider, e.g. anthropic) carries no
-    `{env:VAR}` in opencode.jsonc — opencode resolves the provider's key from the
-    process env itself — so `resolve_env_refs` can't see it. Map each swept cloud
-    model's provider to opencode's `<PROVIDER>_API_KEY` convention (anthropic →
-    `ANTHROPIC_API_KEY`) so the sweep injects it from the host / `--env` too."""
-    wanted: set[str] = set()
-    for variant in model_variants(config, only=only):
-        backend = config.backends[config.models[variant.model_name].backend]
-        if isinstance(backend, CloudBackend):
-            wanted.add(f"{backend.provider.upper()}_API_KEY")
-    return frozenset(wanted)
-
-
 def _build_sweep_env_file(
     config: DannoConfig, opts: ValidateOptions, workspace: Path
 ) -> Path | None:
     """Build the chmod-600 credentials file bound into every opencode sweep exec.
 
-    Combines `--env`/`--env-file` with host-exported values for every var the swept
-    config needs — `{env:}` refs in opencode.jsonc plus cloud providers' API keys
-    (see `_cloud_env_vars`). Missing keys only **warn** (the affected cloud config
-    will error loudly at L0 in its own row, which is informative) rather than
-    aborting the whole sweep, since a run may legitimately target only the local
-    models. Returns the file path, or `None` when nothing needs injecting (the
-    local-only case — the sweep then runs exactly as before)."""
-    augmented, missing = sb.resolve_env_refs(
-        workspace, opts.env, opts.env_file, extra=_cloud_env_vars(config, opts.only)
-    )
+    Combines `--env`/`--env-file` with host-exported values for every `{env:}` ref
+    the swept config declares in opencode.jsonc (e.g. an openai-compatible backend's
+    `api_key_env`). Missing keys only **warn** (the affected config errors loudly at
+    L0 in its own row, which is informative) rather than aborting the whole sweep,
+    since a run may legitimately target only the no-auth local models. Returns the
+    file path, or `None` when nothing needs injecting (the local-only case — the
+    sweep then runs exactly as before)."""
+    augmented, missing = sb.resolve_env_refs(workspace, opts.env, opts.env_file)
     if missing:
         log_warn(
-            f"no credentials for {', '.join(missing)} — those cloud configs will error at "
+            f"no credentials for {', '.join(missing)} — those configs will error at "
             f"L0. Export them or pass `--env KEY=VAL` to inject them into the sweep."
         )
     if not augmented and not opts.env_file:
@@ -205,7 +187,7 @@ def _build_sweep_env_file(
     return sb._build_env_file([], augmented, opts.env_file)
 
 
-def _build_judge(opts: ValidateOptions) -> JudgeFn | None:
+def _build_judge(judge: bool, judge_model: str | None = None) -> JudgeFn | None:
     """Build the L2 dev-quality `JudgeFn` from `--judge`, or `None` when off.
 
     Fails loud up front (Working Rule 8), *before* any sandbox is provisioned: a
@@ -215,7 +197,7 @@ def _build_judge(opts: ValidateOptions) -> JudgeFn | None:
     honours `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` — *not* the Claude Code
     subscription `CLAUDE_CODE_OAUTH_TOKEN` (that authenticates Claude Code, not the
     SDK; see the baseline, which is the one place that token is used)."""
-    if not opts.judge:
+    if not judge:
         return None
     from danno_validator.judge import (
         DEFAULT_JUDGE_MODEL,
@@ -235,7 +217,7 @@ def _build_judge(opts: ValidateOptions) -> JudgeFn | None:
         client = AnthropicJudgeClient()
     except JudgeError as exc:  # the `danno[validator]` extra (anthropic SDK) isn't installed
         raise CommandFailedError(str(exc)) from exc
-    return make_judge(client, model=opts.judge_model or DEFAULT_JUDGE_MODEL)
+    return make_judge(client, model=judge_model or DEFAULT_JUDGE_MODEL)
 
 
 def _teardown(runner: Runner, name: str) -> None:
@@ -271,7 +253,7 @@ def run_validate(
         sb.agent_env("claude", sb.DEFAULT_OLLAMA_URL)
     # Same discipline for the judge: validate its auth/SDK up front (also on a dry run,
     # so the preview surfaces a misconfigured --judge before an expensive real run).
-    judge = _build_judge(opts)
+    judge = _build_judge(opts.judge, opts.judge_model)
     if opts.dry_run:
         return ValidateResult(plan=plan, dry_run=True)
 

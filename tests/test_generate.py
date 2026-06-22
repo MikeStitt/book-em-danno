@@ -5,10 +5,17 @@ from pathlib import Path
 
 import pytest
 
-from book_em_danno.config.generate import Action, generate, render_config
+from book_em_danno.config.generate import (
+    Action,
+    agent_markdown_collisions,
+    generate,
+    generate_md,
+    render_config,
+    scan_agent_frontmatter,
+)
 from book_em_danno.config.loader import load_config
 from book_em_danno.config.schema import (
-    CloudBackend,
+    AgentSpec,
     DannoConfig,
     Defaults,
     LlamacppBackend,
@@ -29,31 +36,35 @@ def _example() -> DannoConfig:
 def test_render_maps_agents_to_backends() -> None:
     doc = json.loads(_strip_comments(render_config(_example())))
     assert doc["default_agent"] == "build"
-    # build -> qwen3-coder-next (ollama) so the top-level model is the local ref
-    assert doc["model"] == "ollama/qwen3-coder-next"
-    assert doc["agent"]["plan"]["model"] == "ollama/qwen3-coder-next"
-    assert doc["agent"]["build"]["model"] == "ollama/qwen3-coder-next"
+    # build -> qwen3-coder-next (danno-ollama) so the top-level model is the local ref
+    assert doc["model"] == "danno-ollama/qwen3-coder-next"
+    assert doc["agent"]["plan"]["model"] == "danno-ollama/qwen3-coder-next"
+    assert doc["agent"]["build"]["model"] == "danno-ollama/qwen3-coder-next"
+    # pm uses a raw OpenCode ref (contains "/") — passed through verbatim, no provider block
+    assert doc["agent"]["pm"]["model"] == "anthropic/claude-sonnet-4-6"
+    assert "anthropic" not in doc.get("provider", {})
     # an ollama provider block is emitted for the local model
-    assert doc["provider"]["ollama"]["models"]["gemma3:27b"]["tool_call"] is False
+    assert doc["provider"]["danno-ollama"]["models"]["gemma3:27b"]["tool_call"] is False
     # provider options carry ONLY baseURL/apiKey — no inert stream/thinking/num_ctx.
-    opts = doc["provider"]["ollama"]["options"]
+    opts = doc["provider"]["danno-ollama"]["options"]
     assert set(opts) == {"baseURL", "apiKey"}
-    assert doc["provider"]["ollama"]["models"]["gemma3:27b"]["limit"]["output"] == 8192
+    assert doc["provider"]["danno-ollama"]["models"]["gemma3:27b"]["limit"]["output"] == 8192
 
 
-def test_render_maximal_maps_cloud_default_and_mixed_backends() -> None:
-    # The maximal fixture's default_agent (pm) maps to a CLOUD model, so the
-    # top-level `model` renders as the cloud id — the cloud-as-default path the
-    # small example no longer drives end-to-end from a file. Agents also span
+def test_render_maximal_maps_raw_ref_default_and_mixed_backends() -> None:
+    # The maximal fixture's default_agent (pm) maps to a raw inline OpenCode ref, so
+    # the top-level `model` renders as that ref verbatim with no provider block — the
+    # cloud-as-default path after retiring the `cloud` backend. Agents also span
     # ollama and nvidia (openai-compatible) backends.
     cfg = load_config(MAXIMAL)
     doc = json.loads(_strip_comments(render_config(cfg)))
     assert doc["default_agent"] == "pm"
-    assert doc["model"] == "anthropic/claude-sonnet-4-6"  # cloud id, not a <prov>/<tag> ref
+    assert doc["model"] == "anthropic/claude-sonnet-4-6"  # raw ref, not a <prov>/<tag> ref
     assert doc["agent"]["pm"]["model"] == "anthropic/claude-sonnet-4-6"
     assert doc["agent"]["build"]["model"] == "ollama/gemma3:27b"
     assert doc["agent"]["research"]["model"] == "nvidia/nvidia/nemotron-3-ultra-550b-a55b"
-    # the nvidia (openai-compatible) provider carries an env-substituted key
+    # a raw ref gets no provider block; the nvidia (openai-compatible) one still does
+    assert "anthropic" not in doc["provider"]
     assert doc["provider"]["nvidia"]["options"]["apiKey"] == "{env:NVIDIA_API_KEY}"
 
 
@@ -180,21 +191,56 @@ def test_rerun_is_noop(tmp_path: Path) -> None:
     assert second.action is Action.UNCHANGED
 
 
-def test_change_requires_apply(tmp_path: Path) -> None:
+def test_in_region_change_requires_apply(tmp_path: Path) -> None:
+    # An edit INSIDE danno's managed region is reasserted — but only under --apply.
     generate(_example(), tmp_path)
     dest = tmp_path / ".opencode" / "opencode.jsonc"
-    dest.write_text(dest.read_text(encoding="utf-8") + "// hand edit\n", encoding="utf-8")
+    tampered = dest.read_text(encoding="utf-8").replace(
+        "danno-ollama/qwen3-coder-next", "danno-ollama/TAMPERED"
+    )
+    assert "TAMPERED" in tampered
+    dest.write_text(tampered, encoding="utf-8")
 
     # Without --apply: a diff is returned and the file is left untouched.
     diffed = generate(_example(), tmp_path)
     assert diffed.action is Action.DIFF
     assert diffed.diff
-    assert dest.read_text(encoding="utf-8").endswith("// hand edit\n")
+    assert "TAMPERED" in dest.read_text(encoding="utf-8")
 
-    # With --apply: the file is overwritten with the generated content.
+    # With --apply: danno's managed region is restored.
     applied = generate(_example(), tmp_path, apply=True)
     assert applied.action is Action.WROTE
-    assert not dest.read_text(encoding="utf-8").endswith("// hand edit\n")
+    assert "TAMPERED" not in dest.read_text(encoding="utf-8")
+
+
+def test_hand_edit_outside_region_is_preserved() -> None:
+    # The whole point of managed-region merge: a user key + comment OUTSIDE the markers
+    # survives verbatim, danno's region is refreshed, and the splice stays valid (the
+    # last danno member gains the comma a following user key needs). Idempotent.
+    from book_em_danno.config.generate import (
+        _JSONC_BEGIN,
+        _JSONC_END,
+        _merge_jsonc,
+        _region_inner,
+    )
+
+    region = _region_inner(_ollama_cfg({"pm": "local"}), frozenset())
+    existing = (
+        "{\n"
+        f"  {_JSONC_BEGIN}\n"
+        '  "stale": "danno-owned",\n'
+        f"  {_JSONC_END}\n"
+        '  "userKey": 7  // mine\n'
+        "}\n"
+    )
+    merged = _merge_jsonc(existing, region)
+    assert '"userKey": 7  // mine' in merged  # user content preserved verbatim
+    assert '"stale"' not in merged  # danno region replaced
+    assert '"$schema"' in merged  # danno region present
+    lines = merged.splitlines()
+    end_idx = next(i for i, ln in enumerate(lines) if _JSONC_END in ln)
+    assert lines[end_idx - 1].rstrip().endswith(",")  # last danno member got its comma
+    assert _merge_jsonc(merged, region) == merged  # idempotent
 
 
 def test_llamacpp_backend_is_stubbed(tmp_path: Path) -> None:
@@ -211,9 +257,7 @@ def test_llamacpp_backend_is_stubbed(tmp_path: Path) -> None:
 def _npm_config(plugins: list[NpmPlugin]) -> DannoConfig:
     return DannoConfig(
         defaults=Defaults(default_agent="pm"),
-        backends={"cloud": CloudBackend(kind="cloud", provider="anthropic")},
-        models={"sonnet": Model(backend="cloud", id="anthropic/claude-sonnet-4-6")},
-        agents={"pm": "sonnet"},
+        agents={"pm": "anthropic/claude-sonnet-4-6"},  # raw inline ref — no backend/[models]
         npm=plugins,
     )
 
@@ -236,6 +280,189 @@ def test_npm_plugins_render_plugin_array() -> None:
 def test_no_plugin_key_when_npm_empty() -> None:
     doc = json.loads(_strip_comments(render_config(_npm_config([]))))
     assert "plugin" not in doc
+
+
+# --- rich [agents] AgentSpec form ------------------------------------------
+
+
+def _ollama_cfg(agents: dict, **kw: object) -> DannoConfig:
+    return DannoConfig(
+        defaults=Defaults(default_agent="pm"),
+        backends={
+            "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1")
+        },
+        models={"local": Model(backend="ollama", tag="qwen3-coder-next", tool_call=True)},
+        agents=agents,
+        **kw,  # type: ignore[arg-type]
+    )
+
+
+def test_rich_agent_emits_passthrough_fields_with_resolved_model() -> None:
+    cfg = _ollama_cfg(
+        {
+            "pm": "local",
+            "architect": AgentSpec(
+                model="anthropic/claude-sonnet-4-6",
+                mode="subagent",
+                temperature=0.1,
+                permission={"edit": "deny"},
+            ),
+        }
+    )
+    agent = json.loads(_strip_comments(render_config(cfg)))["agent"]["architect"]
+    assert agent["model"] == "anthropic/claude-sonnet-4-6"  # raw ref passed through
+    assert agent["mode"] == "subagent"
+    assert agent["temperature"] == 0.1
+    assert agent["permission"] == {"edit": "deny"}
+
+
+def test_rich_agent_resolves_a_bare_model_name() -> None:
+    # A rich agent can route a built-in subagent to a local [models] entry.
+    cfg = _ollama_cfg({"pm": "local", "explore": AgentSpec(model="local")})
+    agent = json.loads(_strip_comments(render_config(cfg)))["agent"]["explore"]
+    assert agent["model"] == "ollama/qwen3-coder-next"  # resolved via [models]
+
+
+def test_rich_agent_without_model_omits_the_model_key() -> None:
+    # An agent that only pins behavior (no model) emits no `model` key — OpenCode /
+    # a markdown def supplies it. The top-level model falls back to a declared model.
+    cfg = _ollama_cfg({"pm": "local", "locked": AgentSpec(permission={"edit": "deny"})})
+    doc = json.loads(_strip_comments(render_config(cfg)))
+    assert "model" not in doc["agent"]["locked"]
+    assert doc["agent"]["locked"]["permission"] == {"edit": "deny"}
+    assert doc["model"] == "ollama/qwen3-coder-next"  # default_agent pm -> local
+
+
+def test_default_agent_rich_spec_drives_top_level_model() -> None:
+    cfg = _ollama_cfg({"pm": AgentSpec(model="anthropic/claude-sonnet-4-6", mode="primary")})
+    doc = json.loads(_strip_comments(render_config(cfg)))
+    assert doc["model"] == "anthropic/claude-sonnet-4-6"
+
+
+# --- markdown collision warnings -------------------------------------------
+
+
+def _write_agent_md(target: Path, name: str, frontmatter: str, *, singular: bool = True) -> None:
+    sub = "agent" if singular else "agents"
+    d = target / ".opencode" / sub
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{name}.md").write_text(f"---\n{frontmatter}---\nbody is the prompt\n", encoding="utf-8")
+
+
+def test_scan_reads_frontmatter_keys_from_both_dirs(tmp_path: Path) -> None:
+    _write_agent_md(tmp_path, "reviewer", "mode: subagent\ntemperature: 0.2\n", singular=True)
+    _write_agent_md(tmp_path, "planner", "description: plan\n", singular=False)
+    found = scan_agent_frontmatter(tmp_path)
+    assert found["reviewer"] == {"mode", "temperature"}
+    assert found["planner"] == {"description"}
+
+
+def test_scan_skips_nested_keys(tmp_path: Path) -> None:
+    # Indented keys belong to a parent map (e.g. permission:) — not top-level fields.
+    _write_agent_md(tmp_path, "r", "permission:\n  edit: deny\nmode: subagent\n")
+    assert scan_agent_frontmatter(tmp_path)["r"] == {"permission", "mode"}
+
+
+def test_collision_warns_when_markdown_sets_the_same_field(tmp_path: Path) -> None:
+    _write_agent_md(tmp_path, "reviewer", "model: gpt-oss:20b\ntemperature: 0.9\n")
+    cfg = _ollama_cfg(
+        {"pm": "local", "reviewer": AgentSpec(model="local", temperature=0.1, mode="subagent")}
+    )
+    result = generate(cfg, tmp_path)
+    assert len(result.warnings) == 1
+    msg = result.warnings[0]
+    # model is routed into the md (not shadowed); mode is danno-only; only the
+    # non-routed shadowed field (temperature) is warned.
+    assert "reviewer" in msg and "both set temperature —" in msg
+    assert "model" not in msg
+
+
+def test_no_collision_when_fields_are_disjoint(tmp_path: Path) -> None:
+    _write_agent_md(tmp_path, "reviewer", "description: reviews code\n")
+    cfg = _ollama_cfg({"pm": "local", "reviewer": AgentSpec(model="local", temperature=0.1)})
+    assert generate(cfg, tmp_path).warnings == []
+
+
+def test_markdown_body_shadows_a_danno_prompt(tmp_path: Path) -> None:
+    # `prompt` never appears in frontmatter (the body IS the prompt), but a markdown
+    # file still shadows a danno-set prompt — special-cased so it's not missed.
+    _write_agent_md(tmp_path, "writer", "mode: subagent\n")
+    cfg = _ollama_cfg({"pm": "local", "writer": AgentSpec(model="local", prompt="{file:./p.md}")})
+    warnings = generate(cfg, tmp_path).warnings
+    assert len(warnings) == 1 and "prompt" in warnings[0]
+
+
+def test_model_routed_to_md_not_warned(tmp_path: Path) -> None:
+    # When an md controls the agent, danno ROUTES model into the md (where it wins)
+    # instead of warning — and omits it from the jsonc agent block.
+    _write_agent_md(tmp_path, "pm", "model: gpt-oss:20b\n")
+    cfg = _ollama_cfg({"pm": "local"})
+    result = generate(cfg, tmp_path)
+    assert result.warnings == []  # model is routed, not shadowed
+    doc = json.loads(_strip_comments(result.content))
+    assert "pm" not in doc.get("agent", {})  # model-only agent dropped from jsonc
+
+
+def test_no_warnings_without_any_markdown(tmp_path: Path) -> None:
+    cfg = _ollama_cfg({"pm": AgentSpec(model="local", temperature=0.1, prompt="x")})
+    assert agent_markdown_collisions(cfg, scan_agent_frontmatter(tmp_path)) == []
+
+
+# --- md frontmatter routing (generate_md) ----------------------------------
+
+
+def test_jsonc_first_write_has_markers(tmp_path: Path) -> None:
+    from book_em_danno.config.generate import _JSONC_BEGIN, _JSONC_END
+
+    result = generate(_ollama_cfg({"pm": "local"}), tmp_path)
+    assert _JSONC_BEGIN in result.content and _JSONC_END in result.content
+
+
+def test_generate_md_routes_model_into_frontmatter(tmp_path: Path) -> None:
+    _write_agent_md(tmp_path, "reviewer", "description: reviews\nmode: subagent\n")
+    cfg = _ollama_cfg({"pm": "local", "reviewer": "local"})
+    results = generate_md(cfg, tmp_path, apply=True)
+    md = (tmp_path / ".opencode" / "agent" / "reviewer.md").read_text(encoding="utf-8")
+    assert "model: ollama/qwen3-coder-next" in md  # routed model written
+    assert "description: reviews" in md and "mode: subagent" in md  # other frontmatter kept
+    assert "body is the prompt" in md  # body preserved verbatim
+    assert any(r.action is Action.WROTE and r.path.name == "reviewer.md" for r in results)
+    # the jsonc side omits the routed model for that agent
+    doc = json.loads(_strip_comments(generate(cfg, tmp_path).content))
+    assert "reviewer" not in doc.get("agent", {})
+
+
+def test_generate_md_idempotent(tmp_path: Path) -> None:
+    _write_agent_md(tmp_path, "reviewer", "mode: subagent\n")
+    cfg = _ollama_cfg({"pm": "local", "reviewer": "local"})
+    generate_md(cfg, tmp_path, apply=True)
+    again = generate_md(cfg, tmp_path, apply=True)
+    assert again and all(r.action is Action.UNCHANGED for r in again)
+
+
+def test_generate_md_creates_frontmatter_when_absent(tmp_path: Path) -> None:
+    d = tmp_path / ".opencode" / "agent"
+    d.mkdir(parents=True)
+    (d / "writer.md").write_text("Just a body prompt, no frontmatter.\n", encoding="utf-8")
+    cfg = _ollama_cfg({"pm": "local", "writer": "local"})
+    generate_md(cfg, tmp_path, apply=True)
+    md = (d / "writer.md").read_text(encoding="utf-8")
+    assert md.startswith("---\n")  # a frontmatter fence was created
+    assert "model: ollama/qwen3-coder-next" in md
+    assert "Just a body prompt, no frontmatter." in md  # body preserved
+
+
+def test_merge_md_preserves_body_and_other_keys() -> None:
+    from book_em_danno.config.generate import _MD_BEGIN, _MD_END, _merge_md
+
+    existing = "---\ndescription: x\nmode: subagent\n---\nThe body.\n"
+    merged = _merge_md(existing, ["model: ollama/foo"])
+    assert "description: x" in merged and "mode: subagent" in merged and "The body." in merged
+    assert "model: ollama/foo" in merged and _MD_BEGIN in merged and _MD_END in merged
+    assert _merge_md(merged, ["model: ollama/foo"]) == merged  # idempotent
+    changed = _merge_md(merged, ["model: ollama/bar"])  # in-place value update
+    assert "model: ollama/bar" in changed and "model: ollama/foo" not in changed
+    assert "The body." in changed  # body still intact
 
 
 def _strip_comments(text: str) -> str:

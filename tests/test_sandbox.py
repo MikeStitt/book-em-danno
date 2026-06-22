@@ -192,19 +192,6 @@ def test_resolve_env_refs_reports_missing_without_raising(
     assert missing == ["NVIDIA_API_KEY"]
 
 
-def test_resolve_env_refs_extra_injects_non_ref_keys(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # `extra` carries keys that aren't {env:} refs (e.g. the built-in anthropic
-    # provider's ANTHROPIC_API_KEY) — host-injected just like referenced ones.
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-host")
-    augmented, missing = sandbox.resolve_env_refs(
-        tmp_path, [], [], extra=frozenset({"ANTHROPIC_API_KEY"})
-    )
-    assert augmented == ["ANTHROPIC_API_KEY=sk-ant-host"]
-    assert missing == []
-
-
 def test_shell_mirrors_start_with_bash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # shell is start minus the agent launch: same -w/env-file session setup, the
     # only difference being the container command (`bash`, not the agent binary).

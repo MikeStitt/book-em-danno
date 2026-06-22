@@ -242,6 +242,101 @@ def validate(
         raise typer.Exit(code=1)
 
 
+@app.command()
+def benchmark(
+    configs: Path = typer.Argument(
+        ..., help="Directory of candidate configs — each a subdir with its own .opencode/ tree."
+    ),
+    target: Path = typer.Option(
+        Path("."), "--target", "-C", help="Project whose danno.toml supplies sandbox/env setup."
+    ),
+    max_level: int = typer.Option(
+        2, "--max-level", min=0, max=2, help="Highest tier (0 liveness · 1 +tool/bash · 2 +dev)."
+    ),
+    baseline: bool = typer.Option(
+        False, "--baseline", help="Also run the Claude Code reference row (needs a host token)."
+    ),
+    baseline_model: str = typer.Option(
+        None, "--baseline-model", help="Pin the baseline's claude model (opus/sonnet/… or an id)."
+    ),
+    judge: bool = typer.Option(
+        False, "--judge", help="Grade L2 dev quality with an Anthropic judge (needs an API key)."
+    ),
+    judge_model: str = typer.Option(
+        None, "--judge-model", help="Pin the judge model (opus/sonnet/haiku or a full id)."
+    ),
+    agent: str = typer.Option(
+        sandbox_cmd.DEFAULT_AGENT, "--agent", help="Agent-under-test (default opencode)."
+    ),
+    env: list[str] = typer.Option(
+        None, "--env", help="KEY=VAL credential to inject into every config run (repeatable)."
+    ),
+    env_file: list[str] = typer.Option(
+        None, "--env-file", help="File of KEY=VAL credentials to inject (repeatable)."
+    ),
+    workspace: Path = typer.Option(
+        None, "--workspace", help="Throwaway workspace mount (default a temp dir)."
+    ),
+    out: Path = typer.Option(
+        None, "--out", help="Report output dir (default .danno-benchmark/<timestamp>/)."
+    ),
+    keep_sandboxes: bool = typer.Option(
+        False, "--keep-sandboxes", help="Leave the disposable sandboxes up for debugging."
+    ),
+    reset: bool = typer.Option(
+        True, "--reset/--no-reset", help="Guarded workspace reset between configs."
+    ),
+    strict: bool = typer.Option(
+        False, "--strict", help="Exit non-zero if any config fails its requested tiers."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print the plan and exit without provisioning or running."
+    ),
+    verbose: bool = _VERBOSE_OPT,
+) -> None:
+    """Benchmark candidate agent CONFIGS for editing performance.
+
+    Where `validate` sweeps your danno.toml's models, `benchmark` sweeps whole
+    configs: each subdir of CONFIGS is a candidate holding its own `.opencode/` tree
+    (opencode.jsonc + agent `.md`). danno applies each into a disposable,
+    validator-owned workspace and runs the same tiered battery (L0→L1→L2, `--judge`
+    for dev-quality) plus the optional Claude `--baseline`, then writes a comparison
+    report + results.json under `.danno-benchmark/<timestamp>/`. Your project is never
+    modified; `danno.toml` is read only for sandbox/env setup.
+    """
+    from danno_validator.benchmark import BenchmarkOptions, run_benchmark
+
+    cfg = _load(target / "danno.toml")
+    opts = BenchmarkOptions(
+        configs_dir=configs,
+        target=target,
+        max_level=max_level,
+        baseline=baseline,
+        baseline_model=baseline_model,
+        judge=judge,
+        judge_model=judge_model,
+        agent=agent,
+        env=env or [],
+        env_file=env_file or [],
+        workspace=workspace,
+        out_dir=out,
+        keep_sandboxes=keep_sandboxes,
+        reset=reset,
+        strict=strict,
+        dry_run=dry_run,
+    )
+    try:
+        result = run_benchmark(cfg, opts, Runner(apply=True, verbose=verbose))
+    except (FileNotFoundError, ValueError) as exc:  # bad/empty configs dir (fail loud)
+        log_err(str(exc))
+        raise typer.Exit(code=3) from exc
+    except (CommandFailedError, CommandNotFoundError) as exc:  # missing token / Docker
+        log_err(str(exc))
+        raise typer.Exit(code=4) from exc
+    if result.strict_failed:
+        raise typer.Exit(code=1)
+
+
 _AGENT_OPT = typer.Option(
     sandbox_cmd.DEFAULT_AGENT,
     "--agent",
