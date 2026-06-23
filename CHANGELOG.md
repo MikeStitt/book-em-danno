@@ -3,6 +3,21 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.7.0] - 2026-06-23
+
+### Documentation
+
+- *(capture)* Frame --capture coverage by the three model roles
+
+### Features
+
+- Improve danno.toml.example
+- *(validator)* Disable opencode title generation during sweeps
+- *(capture)* Record opencode<->backend wire traffic via --capture
+- Improve danno.toml.example
+- Remove tool_call
+- Remove tool_call
+
 ## [0.6.0] - 2026-06-22
 
 ### Documentation
