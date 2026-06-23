@@ -107,7 +107,7 @@ tool_call = true
 
 [models.deepseek-v4-pro-danno]
 backend   = "danno-nvidia"
-tag       = "nvidia/llama-3.3-nemotron-super-49b-v1.5"   # the model id the endpoint expects
+tag       = "deepseek-ai/deepseek-v4-pro"   # the model id the endpoint expects
 tool_call = true
 
 [models.deepseek-v4-flash-danno]
@@ -115,9 +115,9 @@ backend   = "danno-nvidia"
 tag       = "deepseek-ai/deepseek-v4-flash"   # the model id the endpoint expects
 tool_call = true
 
-[models.deepseek-r1-distill-qwen-7b-danno]
+[models.qwen3-next-80b-a3b-instruct-danno]
 backend   = "danno-nvidia"
-tag       = "deepseek-ai/deepseek-r1-distill-qwen-7b"   # the model id the endpoint expects
+tag       = "qwen/qwen3-next-80b-a3b-instruct"   # the model id the endpoint expects
 tool_call = true
 
 
