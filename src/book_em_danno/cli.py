@@ -174,6 +174,14 @@ def validate(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print the plan and exit without provisioning or running."
     ),
+    capture: bool = typer.Option(
+        False,
+        "--capture",
+        help="Record opencode<->backend wire traffic (Ollama + openai/NVIDIA) into the run dir.",
+    ),
+    capture_dir: Path = typer.Option(
+        None, "--capture-dir", help="Where to write capture JSONL (default <out>/captures/)."
+    ),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Sweep danno.toml's models through the tiered battery and write the report.
@@ -227,6 +235,8 @@ def validate(
         reset=reset,
         strict=strict,
         dry_run=dry_run,
+        capture=capture or capture_dir is not None,
+        capture_dir=capture_dir,
     )
     try:
         result = run_validate(
@@ -363,6 +373,27 @@ def _resolve_home(abs_target: Path, sandbox_name: str) -> Path | None:
 
 _NAME_OPT_HELP = "Sandbox name (default danno-<parent>-<dir>)."
 
+_CAPTURE_OPT = typer.Option(
+    False,
+    "--capture",
+    help="Record opencode<->backend wire traffic (Ollama + openai/NVIDIA); needs --apply.",
+)
+_CAPTURE_DIR_OPT = typer.Option(
+    None, "--capture-dir", help="Where to write capture JSONL (default ./.danno/captures/<ts>/)."
+)
+
+
+def _resolve_capture_dir(capture: bool, capture_dir: Path | None) -> Path | None:
+    """The capture dir for `sandbox start`/`shell`: an explicit `--capture-dir`, else a
+    timestamped default under `./.danno/captures/` when `--capture` is set, else None."""
+    if capture_dir is not None:
+        return capture_dir
+    if capture:
+        from datetime import datetime
+
+        return Path(".danno") / "captures" / datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    return None
+
 
 @sandbox_app.command(
     "start",
@@ -375,6 +406,8 @@ def sandbox_start(
     agent: str = _AGENT_OPT,
     env: list[str] = typer.Option(None, "--env", help="KEY=VAL to inject (repeatable)."),
     env_file: list[str] = typer.Option(None, "--env-file", help="File of KEY=VAL to inject."),
+    capture: bool = _CAPTURE_OPT,
+    capture_dir: Path = _CAPTURE_DIR_OPT,
     apply: bool = _APPLY_OPT,
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
@@ -403,6 +436,7 @@ def sandbox_start(
             home=home,
             registry_path=registry.default_path(),
             agent_args=ctx.args,
+            capture_dir=_resolve_capture_dir(capture, capture_dir),
         )
     )
 
@@ -414,6 +448,8 @@ def sandbox_shell(
     agent: str = _AGENT_OPT,
     env: list[str] = typer.Option(None, "--env", help="KEY=VAL to inject (repeatable)."),
     env_file: list[str] = typer.Option(None, "--env-file", help="File of KEY=VAL to inject."),
+    capture: bool = _CAPTURE_OPT,
+    capture_dir: Path = _CAPTURE_DIR_OPT,
     apply: bool = _APPLY_OPT,
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
@@ -436,6 +472,7 @@ def sandbox_shell(
             env_files=env_file or [],
             home=home,
             registry_path=registry.default_path(),
+            capture_dir=_resolve_capture_dir(capture, capture_dir),
         )
     )
 

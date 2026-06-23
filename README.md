@@ -151,6 +151,26 @@ uv run danno sandbox start --agent claude -- --continue   # most recent session
 danno's own options (`--target`, `--agent`, `--apply`, …) stay before the `--` and
 are not forwarded.
 
+#### Capturing model wire traffic (`--capture`)
+
+`--capture` records the request **and** response between the sandboxed opencode and
+its model backends — useful for seeing exactly what opencode sends (e.g. that a local
+model is being used for an auxiliary call). danno interposes a small recording proxy
+in front of each redirectable backend by rewriting its `base_url`, then writes one
+JSONL file per backend with secrets redacted.
+
+```bash
+uv run danno sandbox start --capture --apply   # ./.danno/captures/<ts>/<backend>.jsonl
+uv run danno validate --capture --only <model> # <out>/captures/<backend>.jsonl
+```
+
+It covers Ollama and openai-compatible backends (NVIDIA NIM) — the ones danno gives a
+`base_url`. It does **not** capture built-in cloud refs used inside opencode (e.g.
+`anthropic/claude-sonnet-4-6`) or the Claude Code baseline, which use fixed endpoints
+danno can't redirect; a captured run warns loudly about those. `sandbox start/shell`
+needs `--apply` (the per-run proxy ports must be opened in the sandbox egress) and
+restores your `opencode.jsonc` afterward.
+
 ### Where the agent's history lives (`[sandbox] agent_home`)
 
 danno launches the agent **in your mounted repo** (so it sees `CLAUDE.md` and edits
