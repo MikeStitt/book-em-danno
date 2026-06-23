@@ -19,7 +19,6 @@ base_url = "http://host.docker.internal:11434/v1"
 [models.gptoss]
 backend = "ollama"
 tag = "gpt-oss:20b"
-tool_call = true
 
 [models.gemma]
 backend = "ollama"

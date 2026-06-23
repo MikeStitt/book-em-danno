@@ -110,7 +110,7 @@ def _npm_demo_config() -> DannoConfig:
         backends={
             "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1")
         },
-        models={"gemma": Model(backend="ollama", tag=TOOL_CAPABLE_MODEL, tool_call=True)},
+        models={"gemma": Model(backend="ollama", tag=TOOL_CAPABLE_MODEL)},
         agents={"build": "gemma"},
         npm=[
             NpmPlugin(package="opencode-planner"),

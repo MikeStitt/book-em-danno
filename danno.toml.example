@@ -53,7 +53,6 @@ output_limit   = 8192
 [models.qwen3-coder-next]
 backend          = "danno-ollama"
 tag              = "qwen3-coder-next"    # local models MUST support tool-calling (gemma3:1b does NOT)
-tool_call        = true
 reasoning_effort = "none"          # forwarded as model-level options.reasoningEffort into the /v1
                                    #   body. "none" disables the thinking trace — faster for
                                    #   high-volume local agents, and sidesteps opencode hang #21903.
@@ -64,7 +63,6 @@ reasoning_effort = "none"          # forwarded as model-level options.reasoningE
 [models.quen3p6-27b-q4_K_M]
 backend          = "danno-ollama"
 tag              = "qwen3.6:27b-q4_K_M"    # local models MUST support tool-calling (gemma3:1b does NOT)
-tool_call        = true
 reasoning_effort = "medium"          # forwarded as model-level options.reasoningEffort into the /v1
                                    #   body. "none" disables the thinking trace — faster for
                                    #   high-volume local agents, and sidesteps opencode hang #21903.
@@ -75,7 +73,6 @@ reasoning_effort = "medium"          # forwarded as model-level options.reasonin
 [models.gpt-oss-20b]
 backend          = "danno-ollama"
 tag              = "gpt-oss:20b"    # local models MUST support tool-calling (gemma3:1b does NOT)
-tool_call        = true
 reasoning_effort = "none"          # forwarded as model-level options.reasoningEffort into the /v1
                                    #   body. "none" disables the thinking trace — faster for
                                    #   high-volume local agents, and sidesteps opencode hang #21903.
@@ -88,38 +85,31 @@ reasoning_effort = "none"          # forwarded as model-level options.reasoningE
 [models.nemotron-ultra-danno]
 backend   = "danno-nvidia"
 tag       = "nvidia/nemotron-3-ultra-550b-a55b"   # the model id the endpoint expects
-tool_call = true
 
 [models.3p3-nemotron-super-49b-danno]
 backend   = "danno-nvidia"
 tag       = "nvidia/llama-3.3-nemotron-super-49b-v1.5"   # the model id the endpoint expects
-tool_call = true
 
 [models.deepseek-v4-pro-danno]
 backend   = "danno-nvidia"
 tag       = "deepseek-ai/deepseek-v4-pro"   # the model id the endpoint expects
-tool_call = true
 
 [models.deepseek-v4-flash-danno]
 backend   = "danno-nvidia"
 tag       = "deepseek-ai/deepseek-v4-flash"   # the model id the endpoint expects
-tool_call = true
 
 [models.qwen3-next-80b-a3b-instruct-danno]
 backend   = "danno-nvidia"
 tag       = "qwen/qwen3-next-80b-a3b-instruct"   # the model id the endpoint expects
-tool_call = true
 
 
 [models.mistral-large-3-675b-instruct-2512-danno]
 backend   = "danno-nvidia"
 tag       = "mistralai/mistral-large-3-675b-instruct-2512"   # the model id the endpoint expects
-tool_call = true
 
 [models.glm-5p1-danno]
 backend   = "danno-nvidia"
 tag       = "z-ai/glm-5.1"   # the model id the endpoint expects
-tool_call = true
 
 # --- Agent -> model. A value WITHOUT "/" names a [models] entry above; a value WITH
 #     "/" is a raw OpenCode ref passed through verbatim (built-in cloud model, no

@@ -267,13 +267,11 @@ api_key_env = "NVIDIA_API_KEY"    # emitted as {env:NVIDIA_API_KEY}; the secret 
 [models.gemma4]
 backend          = "ollama"
 tag              = "gemma4:26b"   # local models MUST be tool-capable (gemma3:1b is NOT)
-tool_call        = true
 reasoning_effort = "none"         # disable the thinking trace; see knobs below
 
 [models.nemotron]
 backend = "nvidia"
 tag     = "nvidia/nemotron-3-ultra-550b-a55b"   # the model id the endpoint expects
-tool_call = true
 
 [agents]                          # agent -> model. A value WITH "/" is a raw OpenCode
                                   #   ref (built-in cloud model, no backend needed); a

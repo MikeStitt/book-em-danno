@@ -22,7 +22,7 @@ def _config() -> DannoConfig:
             "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1"),
         },
         models={
-            "gemma": Model(backend="ollama", tag="gemma4:26b", tool_call=True),
+            "gemma": Model(backend="ollama", tag="gemma4:26b"),
         },
         agents={"pm": "anthropic/claude-sonnet-4-6", "runner": "gemma"},  # pm = raw inline ref
         npm=[
@@ -70,7 +70,7 @@ def test_ollama_tags_deduped_and_only_ollama(monkeypatch: pytest.MonkeyPatch) ->
 def test_ollama_tags_includes_unassigned_models() -> None:
     # Every defined ollama model is pulled, even if no agent references it.
     cfg = _config()
-    cfg.models["spare"] = Model(backend="ollama", tag="qwen3-coder-next", tool_call=True)
+    cfg.models["spare"] = Model(backend="ollama", tag="qwen3-coder-next")
     assert install._ollama_tags(cfg) == ["gemma4:26b", "qwen3-coder-next"]
 
 
@@ -85,7 +85,7 @@ def test_install_skips_already_present_ollama_models(
     # normalization is exercised by adding a second model below).
     monkeypatch.setattr(ollama, "installed_tags", lambda **k: {"gemma4:26b"})
     cfg = _config()
-    cfg.models["spare"] = Model(backend="ollama", tag="spare-model", tool_call=True)
+    cfg.models["spare"] = Model(backend="ollama", tag="spare-model")
     r = RecordingRunner()
     install.run_install(cfg, tmp_path, r)
     pulls = [c for c in r.joined() if c.startswith("ollama pull")]
