@@ -218,6 +218,35 @@ def test_sweep_uses_the_opencode_run_agent_not_the_docker_agent(
     assert patched["sweep_kwargs"]["agent"] == "build"
 
 
+def test_capture_rewrites_config_and_opens_proxy_ports(
+    patched: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With --capture, prepare_workspace generates from a config whose backend base_url
+    # points at a recording proxy, and provision opens that proxy port in the egress.
+    prov_kwargs: dict = {}
+    seen: dict = {}
+
+    def fake_prov(r: object, name: str, ws: object, **kw: object) -> None:
+        patched["provision"].append(name)
+        prov_kwargs.update(kw)
+
+    def fake_prep(runner: object, ws: Path, config: object) -> Path:
+        seen["config"] = config
+        return ws
+
+    monkeypatch.setattr(sb, "provision", fake_prov)
+    monkeypatch.setattr(run_mod, "prepare_workspace", fake_prep)
+
+    _run(_opts(tmp_path, only=["gptoss"], capture=True))
+
+    base_url = seen["config"].backends["ollama"].base_url
+    assert base_url != "http://h:11434/v1"  # rewritten off the real backend
+    assert base_url.startswith("http://host.docker.internal:") and base_url.endswith("/v1")
+    allow = prov_kwargs["allow_hosts"]
+    assert "localhost:11434" in allow  # the default Ollama hole is preserved
+    assert any(h != "localhost:11434" and h.startswith("localhost:") for h in allow)
+
+
 def test_only_passes_through_and_unknown_fails_loud(patched: dict, tmp_path: Path) -> None:
     _run(_opts(tmp_path, only=["gptoss"]))
     assert patched["sweep_kwargs"]["only"] == ["gptoss"]

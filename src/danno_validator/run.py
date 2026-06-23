@@ -28,9 +28,16 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from pathlib import Path
 
+from book_em_danno.capture.wiring import (
+    CaptureTarget,
+    capture_allow_hosts,
+    captures_running,
+    plan_capture,
+    uncaptured_cloud_refs,
+)
 from book_em_danno.commands import sandbox as sb
 from book_em_danno.config.schema import DannoConfig
-from book_em_danno.core.exec import CommandFailedError, Runner, log_warn
+from book_em_danno.core.exec import CommandFailedError, Runner, log_info, log_warn
 from danno_validator.baseline import BASELINE_MODEL, run_baseline
 from danno_validator.events import ValidateEvent
 from danno_validator.judge import JudgeFn
@@ -65,6 +72,8 @@ class ValidateOptions:
     reset: bool = True
     strict: bool = False
     dry_run: bool = False
+    capture: bool = False
+    capture_dir: Path | None = None
 
 
 @dataclass
@@ -220,6 +229,31 @@ def _build_judge(judge: bool, judge_model: str | None = None) -> JudgeFn | None:
     return make_judge(client, model=judge_model or DEFAULT_JUDGE_MODEL)
 
 
+def _setup_capture(
+    config: DannoConfig, opts: ValidateOptions, plan: ValidatePlan
+) -> tuple[DannoConfig, list[CaptureTarget], tuple[str, ...]]:
+    """Resolve `--capture`: (config to generate from, proxy targets, sandbox allow-list).
+
+    Off → the original config, no targets, the default egress allow-list. On → rewrite
+    each redirectable backend's base_url at a proxy (`plan_capture`) and open its port,
+    warning loud (Working Rule 8) about traffic capture cannot reach: built-in cloud
+    refs (`anthropic/*`, no base_url lever) and the Claude Code baseline."""
+    if not opts.capture:
+        return config, [], sb.DEFAULT_ALLOW_HOSTS
+    capture_dir = opts.capture_dir or (plan.out_dir / "captures")
+    cfg_for_run, targets = plan_capture(config, capture_dir)
+    log_info(f"--capture: recording opencode<->backend wire traffic to {capture_dir}")
+    uncap = uncaptured_cloud_refs(config)
+    if uncap:
+        log_warn(
+            "--capture cannot record built-in cloud refs (no danno base_url lever): "
+            f"{', '.join(uncap)}"
+        )
+    if opts.baseline:
+        log_warn("--capture does not record the Claude Code baseline (api.anthropic.com).")
+    return cfg_for_run, targets, capture_allow_hosts(targets, sb.DEFAULT_ALLOW_HOSTS)
+
+
 def _teardown(runner: Runner, name: str) -> None:
     """Stop and remove a disposable validator sandbox (best effort under --apply)."""
     sb.stop(runner, name)
@@ -259,54 +293,73 @@ def run_validate(
 
     level1, level2 = _levels(opts.max_level)
 
-    reporter.phase(f"prepare workspace  {plan.workspace}")
-    prepare_workspace(runner, plan.workspace, config)
+    # `--capture`: rewrite redirectable backends' base_urls at recording proxies and
+    # open their ports in the sandbox egress. Off → original config + default egress.
+    cfg_for_run, capture_targets, allow_hosts = _setup_capture(config, opts, plan)
 
-    # `opts.agent` is the *Docker sandbox* agent (the prebuilt image, e.g. opencode);
-    # it selects the VM, not the opencode run-agent. The sweep drives opencode with
-    # its own read-write run-agent ("build", run_sweep's default) — passing the Docker
-    # agent name here would become `opencode run --agent opencode`, an invalid persona.
-    reporter.phase(f"provision {opts.agent} sandbox  {plan.sweep_sandbox}")
-    sb.provision(runner, plan.sweep_sandbox, plan.workspace, agent=opts.agent, registry_path=None)
-    # Credentials for swept cloud configs: bound into every opencode exec via
-    # --env-file, removed after the sweep (the secret never lingers on disk).
-    sweep_env_file = _build_sweep_env_file(config, opts, plan.workspace)
-    try:
-        results = run_sweep(
+    reporter.phase(f"prepare workspace  {plan.workspace}")
+    prepare_workspace(runner, plan.workspace, cfg_for_run)
+
+    # The proxies must be up for every agent request; start them before provisioning
+    # and tear them down after the last turn (a no-op context when capture is off).
+    with captures_running(capture_targets):
+        # `opts.agent` is the *Docker sandbox* agent (the prebuilt image, e.g. opencode);
+        # it selects the VM, not the opencode run-agent. The sweep drives opencode with
+        # its own read-write run-agent ("build", run_sweep's default) — passing the Docker
+        # agent name here would become `opencode run --agent opencode`, an invalid persona.
+        reporter.phase(f"provision {opts.agent} sandbox  {plan.sweep_sandbox}")
+        sb.provision(
             runner,
             plan.sweep_sandbox,
-            config=config,
-            workspace_root=plan.workspace,
-            only=opts.only,
-            reset=opts.reset,
-            level1=level1,
-            level2=level2,
-            env_file=sweep_env_file,
-            judge=judge,
-            on_event=reporter.event,
+            plan.workspace,
+            agent=opts.agent,
+            allow_hosts=allow_hosts,
+            registry_path=None,
         )
-    finally:
-        if sweep_env_file is not None:
-            sweep_env_file.unlink(missing_ok=True)
-
-    if opts.baseline and plan.baseline_sandbox is not None:
-        reporter.phase(f"provision claude sandbox  {plan.baseline_sandbox}")
-        sb.provision(
-            runner, plan.baseline_sandbox, plan.workspace, agent="claude", registry_path=None
-        )
-        results.append(
-            run_baseline(
+        # Credentials for swept cloud configs: bound into every opencode exec via
+        # --env-file, removed after the sweep (the secret never lingers on disk).
+        sweep_env_file = _build_sweep_env_file(config, opts, plan.workspace)
+        try:
+            results = run_sweep(
                 runner,
-                plan.baseline_sandbox,
+                plan.sweep_sandbox,
+                config=cfg_for_run,
                 workspace_root=plan.workspace,
-                model=opts.baseline_model,
+                only=opts.only,
                 reset=opts.reset,
                 level1=level1,
                 level2=level2,
+                env_file=sweep_env_file,
                 judge=judge,
                 on_event=reporter.event,
             )
-        )
+        finally:
+            if sweep_env_file is not None:
+                sweep_env_file.unlink(missing_ok=True)
+
+        if opts.baseline and plan.baseline_sandbox is not None:
+            reporter.phase(f"provision claude sandbox  {plan.baseline_sandbox}")
+            sb.provision(
+                runner,
+                plan.baseline_sandbox,
+                plan.workspace,
+                agent="claude",
+                allow_hosts=allow_hosts,
+                registry_path=None,
+            )
+            results.append(
+                run_baseline(
+                    runner,
+                    plan.baseline_sandbox,
+                    workspace_root=plan.workspace,
+                    model=opts.baseline_model,
+                    reset=opts.reset,
+                    level1=level1,
+                    level2=level2,
+                    judge=judge,
+                    on_event=reporter.event,
+                )
+            )
 
     _, index = write_sweep_report(results, plan.out_dir)
     menu_path: Path | None = None
@@ -362,6 +415,10 @@ def _run_meta(plan: ValidatePlan, opts: ValidateOptions) -> dict[str, object]:
         "sandboxes": {"sweep": plan.sweep_sandbox, "baseline": plan.baseline_sandbox},
         "baseline": {"enabled": opts.baseline, "requested_model": opts.baseline_model},
         "judge": {"enabled": opts.judge, "requested_model": opts.judge_model},
+        "capture": {
+            "enabled": opts.capture,
+            "dir": str(opts.capture_dir or (plan.out_dir / "captures")) if opts.capture else None,
+        },
     }
 
 

@@ -314,3 +314,6 @@ temp/
 
 # danno-validator work-dir + reports (seeded throwaway workspaces, per-config runs)
 .danno-validator/
+
+# danno --capture wire-traffic recordings (sandbox start/shell default dir)
+.danno/
