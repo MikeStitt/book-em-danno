@@ -49,16 +49,6 @@ api_key_env = "NVIDIA_API_KEY"     # emitted as {env:NVIDIA_API_KEY}; the secret
 context_budget = 1000000
 output_limit   = 8192
 
-[models.gemma3-27b]
-backend          = "danno-ollama"
-tag              = "gemma3:27b"    # local models MUST support tool-calling (gemma3:1b does NOT)
-tool_call        = false
-reasoning_effort = "none"          # forwarded as model-level options.reasoningEffort into the /v1
-                                   #   body. "none" disables the thinking trace — faster for
-                                   #   high-volume local agents, and sidesteps opencode hang #21903.
-                                   #   Omit to forward nothing. gpt-oss-style models reject "none"
-                                   #   (use low/medium/high). Values: none | low | medium | high.
-
 # --- Models: a named (backend, tag) pair. ---
 [models.qwen3-coder-next]
 backend          = "danno-ollama"
@@ -107,7 +97,7 @@ tool_call = true
 
 [models.deepseek-v4-pro-danno]
 backend   = "danno-nvidia"
-tag       = "nvidia/llama-3.3-nemotron-super-49b-v1.5"   # the model id the endpoint expects
+tag       = "deepseek-ai/deepseek-v4-pro"   # the model id the endpoint expects
 tool_call = true
 
 [models.deepseek-v4-flash-danno]
@@ -115,9 +105,9 @@ backend   = "danno-nvidia"
 tag       = "deepseek-ai/deepseek-v4-flash"   # the model id the endpoint expects
 tool_call = true
 
-[models.deepseek-r1-distill-qwen-7b-danno]
+[models.qwen3-next-80b-a3b-instruct-danno]
 backend   = "danno-nvidia"
-tag       = "deepseek-ai/deepseek-r1-distill-qwen-7b"   # the model id the endpoint expects
+tag       = "qwen/qwen3-next-80b-a3b-instruct"   # the model id the endpoint expects
 tool_call = true
 
 
