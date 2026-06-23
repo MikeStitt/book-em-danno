@@ -110,12 +110,18 @@ def agent_model_name(value: str | AgentSpec) -> str | None:
     return value if isinstance(value, str) else value.model
 
 
-def _danno_doc(config: DannoConfig, md_routed_agents: frozenset[str]) -> dict[str, Any]:
+def _danno_doc(
+    config: DannoConfig, md_routed_agents: frozenset[str], *, disable_title: bool = False
+) -> dict[str, Any]:
     """The danno-owned opencode.jsonc members as a dict (no markers/braces).
 
     `md_routed_agents` are agents whose `model` danno writes into their `.md`
     frontmatter (where markdown wins) instead of the jsonc `agent.<name>` block — so
-    their model is omitted here, and an agent left with no jsonc fields is dropped."""
+    their model is omitted here, and an agent left with no jsonc fields is dropped.
+
+    `disable_title` emits opencode's `agent.title.disable` to switch off its per-session
+    thread-title generator. The validator sets it for sweeps so throwaway sessions never
+    spend the local default model on naming threads (see `sweep.prepare_workspace`)."""
     # Model NAMES the agent map selects, in either [agents] form (raw refs included).
     used_models = {
         name for value in config.agents.values() if (name := agent_model_name(value)) is not None
@@ -212,6 +218,12 @@ def _danno_doc(config: DannoConfig, md_routed_agents: frozenset[str]) -> dict[st
     }
     if providers:
         doc["provider"] = providers
+    if disable_title:
+        # opencode's title generator is a reserved pseudo-agent; `disable` stops the
+        # per-session "name this thread" call (verified on the wire to otherwise hit the
+        # local default model). A real "title" agent in danno.toml would be unusual; this
+        # deliberately wins for the sweep config that requests it.
+        agent_block["title"] = {"disable": True}
     doc["agent"] = agent_block
     # OpenCode npm plugins: a bare package string, or the documented
     # [package, config] tuple when the plugin takes options. Omitted entirely for
@@ -223,10 +235,12 @@ def _danno_doc(config: DannoConfig, md_routed_agents: frozenset[str]) -> dict[st
     return doc
 
 
-def _region_inner(config: DannoConfig, md_routed_agents: frozenset[str]) -> list[str]:
+def _region_inner(
+    config: DannoConfig, md_routed_agents: frozenset[str], *, disable_title: bool = False
+) -> list[str]:
     """The lines danno owns inside the opencode.jsonc managed region: the header
     comments + the JSON member lines (2-space indented, no enclosing braces)."""
-    doc = _danno_doc(config, md_routed_agents)
+    doc = _danno_doc(config, md_routed_agents, disable_title=disable_title)
     member_lines = json.dumps(doc, indent=2).splitlines()[1:-1]  # drop the `{` / `}`
     header_lines = ["  " + ln for ln in _HEADER.rstrip("\n").splitlines()]
     return header_lines + member_lines
@@ -273,12 +287,18 @@ def _merge_jsonc(existing: str, region_inner: list[str]) -> str:
     return "\n".join(merged) + "\n"
 
 
-def render_config(config: DannoConfig, *, md_routed_agents: frozenset[str] = frozenset()) -> str:
+def render_config(
+    config: DannoConfig,
+    *,
+    md_routed_agents: frozenset[str] = frozenset(),
+    disable_title: bool = False,
+) -> str:
     """The full opencode.jsonc danno would write fresh (danno region wrapped in markers).
 
     `md_routed_agents` omit their `model` here because danno writes it into their `.md`
-    frontmatter instead (see `generate_md`)."""
-    return _fresh_jsonc(_region_inner(config, md_routed_agents))
+    frontmatter instead (see `generate_md`). `disable_title` emits `agent.title.disable`
+    (see `_danno_doc`)."""
+    return _fresh_jsonc(_region_inner(config, md_routed_agents, disable_title=disable_title))
 
 
 # Markdown agent defs live under either dir (docs use plural, ADOS uses singular);
@@ -430,14 +450,19 @@ def generate(
     target: Path,
     *,
     apply: bool = False,
+    disable_title: bool = False,
 ) -> GenerateResult:
     """Merge danno's managed region into <target>/.opencode/opencode.jsonc (Tier-1).
 
     Edits, not overwrites: only the bytes between the danno markers change; user keys
     and comments outside them survive. Model assignment for agents that have a `.md`
-    def is routed out of here into the md (see `generate_md`)."""
+    def is routed out of here into the md (see `generate_md`). `disable_title` emits
+    opencode's `agent.title.disable` — the validator passes it for sweeps so throwaway
+    sessions don't run the local default model just to title threads."""
     md_fields = scan_agent_frontmatter(target)
-    region_inner = _region_inner(config, _md_routed_agents(config, md_fields))
+    region_inner = _region_inner(
+        config, _md_routed_agents(config, md_fields), disable_title=disable_title
+    )
     dest = Path(target) / ".opencode" / "opencode.jsonc"
     warnings = agent_markdown_collisions(config, md_fields)
 

@@ -51,6 +51,19 @@ def test_render_maps_agents_to_backends() -> None:
     assert doc["provider"]["danno-ollama"]["models"]["gemma3:27b"]["limit"]["output"] == 8192
 
 
+def test_disable_title_emits_title_pseudo_agent_only_when_requested() -> None:
+    # Off by default (what `danno install` writes): no `title` entry, so opencode's
+    # per-session thread-title generator stays on for real user projects.
+    default_doc = json.loads(_strip_comments(render_config(_example())))
+    assert "title" not in default_doc["agent"]
+    # On for the validator sweep path: emits opencode's `agent.title.disable` to stop
+    # the title call (verified on the wire to otherwise hit the local default model).
+    disabled_doc = json.loads(_strip_comments(render_config(_example(), disable_title=True)))
+    assert disabled_doc["agent"]["title"] == {"disable": True}
+    # The real agents are untouched alongside the injected pseudo-agent.
+    assert disabled_doc["agent"]["build"]["model"] == "danno-ollama/qwen3-coder-next"
+
+
 def test_render_maximal_maps_raw_ref_default_and_mixed_backends() -> None:
     # The maximal fixture's default_agent (pm) maps to a raw inline OpenCode ref, so
     # the top-level `model` renders as that ref verbatim with no provider block — the

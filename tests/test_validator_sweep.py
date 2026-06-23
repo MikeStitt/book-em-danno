@@ -216,19 +216,23 @@ def test_prepare_workspace_seeds_generates_and_commits(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     seeded: list[Path] = []
-    generated: list[Path] = []
+    generated: list[tuple[Path, bool]] = []
     monkeypatch.setattr(sweep, "seed_workspace", lambda p: seeded.append(p) or p)
     monkeypatch.setattr(
         sweep,
         "generate",
-        lambda config, target, apply: generated.append(target),  # noqa: ARG005
+        lambda config, target, apply, disable_title=False: generated.append(  # noqa: ARG005
+            (target, disable_title)
+        ),
     )
 
     runner = _RecordingRunner()
     sweep.prepare_workspace(runner, tmp_path, _config())  # type: ignore[arg-type]
 
     assert seeded == [tmp_path]
-    assert generated == [tmp_path]
+    # The sweep config disables opencode's title generator (disable_title=True) so a
+    # throwaway battery never spends the local default model on naming threads.
+    assert generated == [(tmp_path, True)]
     # Three host git commands, in order, all scoped to the workspace with `-C`.
     assert len(runner.commands) == 3
     assert all(c[:3] == ["git", "-C", str(tmp_path)] for c in runner.commands)

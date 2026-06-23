@@ -72,7 +72,11 @@ def prepare_workspace(runner: Runner, workspace_root: Path, config: DannoConfig)
     preserves it across runs instead of deleting it as untracked.
     """
     seed_workspace(workspace_root)
-    generate(config, workspace_root, apply=True)
+    # disable_title: switch off opencode's per-session thread-title generator for the
+    # sweep. Verified on the wire that it otherwise fires one chat/completions per
+    # session against the local default model — wasted local compute for a throwaway
+    # battery (a cloud-only sweep would still spin up the big local model just to title).
+    generate(config, workspace_root, apply=True, disable_title=True)
     ws = str(workspace_root)
     author_flags = [arg for kv in _GIT_AUTHOR for arg in ("-c", kv)]
     # `init` is idempotent; `add` always stages the marker + config; `commit` is
