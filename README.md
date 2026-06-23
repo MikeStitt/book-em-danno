@@ -80,6 +80,11 @@ Perhaps type `!ls -Flag` to show what the agent can see.
 
 `/exit` to exit opencode.
 
+Perhaps try with API keys:
+
+```bash
+danno sandbox start --env ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY --env CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN --env NVIDIA_API_KEY=$NVIDIA_API_KEY
+```
 
 ## More detailed Getting Started
 
@@ -153,23 +158,35 @@ are not forwarded.
 
 #### Capturing model wire traffic (`--capture`)
 
-`--capture` records the request **and** response between the sandboxed opencode and
-its model backends — useful for seeing exactly what opencode sends (e.g. that a local
-model is being used for an auxiliary call). danno interposes a small recording proxy
-in front of each redirectable backend by rewriting its `base_url`, then writes one
-JSONL file per backend with secrets redacted.
+`--capture` records the request **and** response between the sandboxed agent and its
+model backends — useful for seeing exactly what is sent (e.g. that a local model is
+being used for an auxiliary call). danno interposes a small recording proxy in front
+of each *redirectable* backend by rewriting its `base_url`, then writes one JSONL file
+per backend with auth-header values redacted.
 
 ```bash
 uv run danno sandbox start --capture --apply   # ./.danno/captures/<ts>/<backend>.jsonl
 uv run danno validate --capture --only <model> # <out>/captures/<backend>.jsonl
 ```
 
-It covers Ollama and openai-compatible backends (NVIDIA NIM) — the ones danno gives a
-`base_url`. It does **not** capture built-in cloud refs used inside opencode (e.g.
-`anthropic/claude-sonnet-4-6`) or the Claude Code baseline, which use fixed endpoints
-danno can't redirect; a captured run warns loudly about those. `sandbox start/shell`
-needs `--apply` (the per-run proxy ports must be opened in the sandbox egress) and
-restores your `opencode.jsonc` afterward.
+**What gets captured depends on whether danno controls the endpoint URL.** A model
+reaches danno's proxy only when its traffic flows through a `base_url` danno wrote.
+That splits the cases into three:
+
+| Where the model lives | Example | Captured? | Why |
+| --- | --- | --- | --- |
+| A backend you define (Ollama, or any `openai`-compatible like NVIDIA NIM) | `[backends.danno-nvidia] base_url = …` | **Yes** | danno owns the `base_url`, so it can point it at the proxy (HTTPS is re-originated; the auth header is forwarded upstream and redacted in the capture). |
+| A built-in Anthropic model used *inside* opencode | `[agents] pm = "anthropic/claude-sonnet-4-6"` | **No** | a raw OpenCode ref has no danno `base_url`; opencode calls `api.anthropic.com` directly, so there is nothing to redirect. |
+| Claude Code itself as the agent | `sandbox start --agent claude`, `validate --baseline` | **No** | a different tool on a fixed Anthropic endpoint; redirecting it would mean injecting `ANTHROPIC_BASE_URL` (a documented follow-on). |
+
+In short: capture covers **anything whose endpoint danno configures** (Ollama,
+NVIDIA/openai). It does **not** capture Anthropic-served Claude in either form —
+opencode's `anthropic/*` models *or* the `claude` agent — because both use fixed
+Anthropic endpoints danno doesn't currently redirect. A captured run that touches
+either **warns loudly** naming exactly what it skipped.
+
+`sandbox start`/`shell` need `--apply` (the per-run proxy ports must be opened in the
+sandbox egress) and restore your `opencode.jsonc` afterward.
 
 ### Where the agent's history lives (`[sandbox] agent_home`)
 
@@ -250,13 +267,11 @@ api_key_env = "NVIDIA_API_KEY"    # emitted as {env:NVIDIA_API_KEY}; the secret 
 [models.gemma4]
 backend          = "ollama"
 tag              = "gemma4:26b"   # local models MUST be tool-capable (gemma3:1b is NOT)
-tool_call        = true
 reasoning_effort = "none"         # disable the thinking trace; see knobs below
 
 [models.nemotron]
 backend = "nvidia"
 tag     = "nvidia/nemotron-3-ultra-550b-a55b"   # the model id the endpoint expects
-tool_call = true
 
 [agents]                          # agent -> model. A value WITH "/" is a raw OpenCode
                                   #   ref (built-in cloud model, no backend needed); a

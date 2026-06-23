@@ -159,7 +159,10 @@ def _danno_doc(
             )
             entry: dict[str, Any] = {
                 "name": model_label,
-                "tool_call": model.tool_call,
+                # Fixed: the openai-compatible provider requires this capability key,
+                # and every danno-configured model must be tool-capable anyway (opencode
+                # advertises the agent's tools on every request regardless of its value).
+                "tool_call": True,
                 "limit": {"context": backend.context_budget, "output": backend.output_limit},
             }
             if model.reasoning_effort is not None:

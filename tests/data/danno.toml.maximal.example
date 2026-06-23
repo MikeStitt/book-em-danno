@@ -42,13 +42,11 @@ base_url = "http://host.docker.internal:8080/v1"
 [models.gemma3-27b]
 backend          = "ollama"
 tag              = "gemma3:27b"
-tool_call        = true
 reasoning_effort = "none"
 
 [models.nemotron-ultra]
 backend   = "nvidia"
 tag       = "nvidia/nemotron-3-ultra-550b-a55b"
-tool_call = true
 
 # --- Agents: a raw inline cloud ref plus ollama and nvidia [models] entries. pm is
 #     the default_agent. ---

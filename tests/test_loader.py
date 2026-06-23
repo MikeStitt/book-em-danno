@@ -15,7 +15,7 @@ def test_load_example_ok() -> None:
     assert cfg.defaults.default_agent == "build"
     assert cfg.defaults.profile == "hybrid"
     assert set(cfg.backends) == {"danno-ollama", "llamacpp", "danno-nvidia"}
-    assert cfg.models["gemma3-27b"].tag == "gemma3:27b"
+    assert cfg.models["qwen3-coder-next"].tag == "qwen3-coder-next"
     # cloud model referenced inline as a raw OpenCode ref, no backend/[models] entry
     assert cfg.agents["pm"] == "anthropic/claude-sonnet-4-6"
     assert cfg.agents["build"] == "qwen3-coder-next"

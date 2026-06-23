@@ -44,11 +44,11 @@ def test_render_maps_agents_to_backends() -> None:
     assert doc["agent"]["pm"]["model"] == "anthropic/claude-sonnet-4-6"
     assert "anthropic" not in doc.get("provider", {})
     # an ollama provider block is emitted for the local model
-    assert doc["provider"]["danno-ollama"]["models"]["gemma3:27b"]["tool_call"] is False
+    assert doc["provider"]["danno-ollama"]["models"]["qwen3-coder-next"]["tool_call"] is True
     # provider options carry ONLY baseURL/apiKey — no inert stream/thinking/num_ctx.
     opts = doc["provider"]["danno-ollama"]["options"]
     assert set(opts) == {"baseURL", "apiKey"}
-    assert doc["provider"]["danno-ollama"]["models"]["gemma3:27b"]["limit"]["output"] == 8192
+    assert doc["provider"]["danno-ollama"]["models"]["qwen3-coder-next"]["limit"]["output"] == 8192
 
 
 def test_disable_title_emits_title_pseudo_agent_only_when_requested() -> None:
@@ -97,8 +97,8 @@ def test_all_defined_ollama_models_emitted_even_when_unassigned() -> None:
             "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1")
         },
         models={
-            "assigned": Model(backend="ollama", tag="gemma3:27b", tool_call=True),
-            "spare": Model(backend="ollama", tag="qwen3-coder-next", tool_call=True),
+            "assigned": Model(backend="ollama", tag="gemma3:27b"),
+            "spare": Model(backend="ollama", tag="qwen3-coder-next"),
         },
         agents={"pm": "assigned"},  # 'spare' is defined but unassigned
     )
@@ -126,7 +126,7 @@ def test_ollama_context_and_output_budget() -> None:
                 output_limit=4096,
             )
         },
-        models={"gemma": Model(backend="ollama", tag="gemma4:26b", tool_call=True)},
+        models={"gemma": Model(backend="ollama", tag="gemma4:26b")},
         agents={"pm": "gemma"},
     )
     doc = json.loads(_strip_comments(render_config(cfg)))
@@ -143,11 +143,7 @@ def test_reasoning_effort_emitted_as_camelcase_when_set() -> None:
         backends={
             "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1")
         },
-        models={
-            "gemma": Model(
-                backend="ollama", tag="gemma4:26b", tool_call=True, reasoning_effort="none"
-            )
-        },
+        models={"gemma": Model(backend="ollama", tag="gemma4:26b", reasoning_effort="none")},
         agents={"pm": "gemma"},
     )
     rendered = render_config(cfg)
@@ -174,11 +170,7 @@ def test_openai_backend_emits_env_substituted_api_key() -> None:
                 context_budget=128000,
             )
         },
-        models={
-            "nemotron": Model(
-                backend="nvidia", tag="nvidia/nemotron-3-ultra-550b-a55b", tool_call=True
-            )
-        },
+        models={"nemotron": Model(backend="nvidia", tag="nvidia/nemotron-3-ultra-550b-a55b")},
         agents={"plan": "nemotron"},
     )
     doc = json.loads(_strip_comments(render_config(cfg)))
@@ -304,7 +296,7 @@ def _ollama_cfg(agents: dict, **kw: object) -> DannoConfig:
         backends={
             "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1")
         },
-        models={"local": Model(backend="ollama", tag="qwen3-coder-next", tool_call=True)},
+        models={"local": Model(backend="ollama", tag="qwen3-coder-next")},
         agents=agents,
         **kw,  # type: ignore[arg-type]
     )

@@ -72,7 +72,6 @@ def _config(*, reasoning: bool) -> DannoConfig:
             "gemma": Model(
                 backend="ollama",
                 tag=MODEL,
-                tool_call=True,
                 reasoning_effort="none" if reasoning else None,
             )
         },

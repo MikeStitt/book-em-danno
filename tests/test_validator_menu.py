@@ -151,8 +151,8 @@ def _config() -> DannoConfig:
         },
         models={
             "gemma3-27b": Model(backend="ollama", tag="gemma3:27b", reasoning_effort="none"),
-            "gptoss": Model(backend="ollama", tag="gpt-oss:20b", tool_call=True),
-            "qwen": Model(backend="ollama", tag="qwen3-coder-next", tool_call=True),
+            "gptoss": Model(backend="ollama", tag="gpt-oss:20b"),
+            "qwen": Model(backend="ollama", tag="qwen3-coder-next"),
         },
         # coder is a raw inline cloud ref (not a [models] entry, never swept).
         agents={"plan": "gptoss", "coder": "anthropic/claude-sonnet-4-6"},

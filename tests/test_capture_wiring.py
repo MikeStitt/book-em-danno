@@ -41,8 +41,8 @@ def _cfg() -> DannoConfig:
             ),
         },
         models={
-            "g": Model(backend="ollama", tag="gemma3:27b", tool_call=True),
-            "n": Model(backend="nv", tag="nvidia/x", tool_call=True),
+            "g": Model(backend="ollama", tag="gemma3:27b"),
+            "n": Model(backend="nv", tag="nvidia/x"),
         },
         agents={"build": "g", "pm": "anthropic/claude-sonnet-4-6"},
     )

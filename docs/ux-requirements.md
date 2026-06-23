@@ -125,8 +125,7 @@ at the boundary (unknown keys and dangling references fail).
   - `cloud` (IMPLEMENTED): `provider`.
   - `llamacpp` (STUBBED): `base_url` — the generator raises a clear
     "not yet implemented" if a used model references it.
-- `[models.<name>]` — `backend`, `tag` (ollama/openai/llamacpp) or `id` (cloud),
-  `tool_call`.
+- `[models.<name>]` — `backend`, `tag` (ollama/openai/llamacpp) or `id` (cloud).
 - `[agents]` — `agent = model-name`.
 - `[[tools]]` — `name`, `source`, `install_to` (`sandbox` | `project`).
 - `[sandbox]` — `agent_home` (identity key: `per-project` (default) | `per-repo` |

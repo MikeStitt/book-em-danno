@@ -63,7 +63,6 @@ def test_install_default_writes_config_without_executing(tmp_path: Path) -> None
         "[models.gemma]\n"
         'backend = "ollama"\n'
         'tag = "gemma3:27b"\n'
-        "tool_call = true\n"
         "[agents]\n"
         'pm = "gemma"\n',
         encoding="utf-8",

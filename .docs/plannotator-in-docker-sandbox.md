@@ -122,12 +122,12 @@ instead.)
 
 (Cross-ref [`agents-and-cloud-backend-refactor.md`](agents-and-cloud-backend-refactor.md).)
 
-| Interaction | Verdict |
-|---|---|
-| Plugin injects `submit_plan` + prompt/permission tweaks at **plugin-runtime** | **Orthogonal** to danno's JSON `model` overlay (different layer; no precedence conflict). It IS a *third writer* to an agent's effective config: effective = (markdown ∪ JSON) then plugin-runtime tweaks on top. |
-| `planningAgents` references agent **names** | danno's `[agents]` reframe must keep planning-agent names valid; a renamed/removed `plan` silently stops interception. |
-| **`submit_plan` is a tool call** | ⚠️ **Actionable:** routing a `planningAgent` to a **local model** (the hybrid pitch) requires that model be **tool-capable** (`tool_call = true`), else plan review never fires. danno already tracks `tool_call` per model → **warn on a non-tool-capable planning model.** |
-| `workflow: "user-managed"` | Clean seam once danno owns the agent layer: register the tool, let danno's generated agent config decide who may call it. Consider as danno default. |
+| Interaction | Verdict                                                                                                                                                                                                                                                                                                                        |
+|---|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Plugin injects `submit_plan` + prompt/permission tweaks at **plugin-runtime** | **Orthogonal** to danno's JSON `model` overlay (different layer; no precedence conflict). It IS a *third writer* to an agent's effective config: effective = (markdown ∪ JSON) then plugin-runtime tweaks on top.                                                                                                              |
+| `planningAgents` references agent **names** | danno's `[agents]` reframe must keep planning-agent names valid; a renamed/removed `plan` silently stops interception.                                                                                                                                                                                                         |
+| **`submit_plan` is a tool call** | We removed `tool_call` from `danna.toml`. Previously: ⚠️ **Actionable:** routing a `planningAgent` to a **local model** (the hybrid pitch) requires that model be **tool-capable** (`tool_call = true`), else plan review never fires. danno already tracks `tool_call` per model → **warn on a non-tool-capable planning model.** |
+| `workflow: "user-managed"` | Clean seam once danno owns the agent layer: register the tool, let danno's generated agent config decide who may call it. Consider as danno default.                                                                                                                                                                           |
 
 These are documentation + one validation rule — they do **not** change the
 refactor's shape.

@@ -97,7 +97,6 @@ class Model(BaseModel):
     model_config = ConfigDict(extra="forbid")
     backend: str
     tag: str | None = None
-    tool_call: bool = False
     reasoning_effort: Literal["none", "low", "medium", "high"] | None = None
 
 
