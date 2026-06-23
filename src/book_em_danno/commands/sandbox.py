@@ -19,11 +19,20 @@ import re
 import subprocess
 import tempfile
 import tomllib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from pydantic import ValidationError
 
-from ..config.loader import DannoConfigError
+from ..capture.wiring import (
+    capture_allow_hosts,
+    captures_running,
+    plan_capture,
+    uncaptured_cloud_refs,
+)
+from ..config.generate import generate
+from ..config.loader import DannoConfigError, load_config
 from ..config.schema import NpmPlugin, Sandbox
 from ..core import registry
 from ..core.exec import CommandFailedError, Runner, log_info, log_warn
@@ -599,6 +608,57 @@ def _ensure_provisioned(
         )
 
 
+@contextmanager
+def _capture_session(
+    runner: Runner,
+    target_abs: Path,
+    *,
+    agent: str,
+    capture_dir: Path | None,
+    base_allow_hosts: tuple[str, ...],
+) -> Iterator[tuple[str, ...]]:
+    """`--capture` for `start`/`shell`: transiently rewrite the project's opencode.jsonc
+    so opencode dials recording proxies, run those proxies, and restore the file on exit.
+
+    Yields the egress allow-list to provision with (the base plus a hole per proxy). A
+    no-op yielding `base_allow_hosts` when capture is off; warns + no-ops for a
+    non-opencode agent (the base_url lever is opencode's). Requires `--apply`: the
+    per-run proxy ports must be opened in the sandbox egress, i.e. a re-provision. The
+    user's opencode.jsonc is snapshotted and restored byte-for-byte in `finally`."""
+    if capture_dir is None:
+        yield base_allow_hosts
+        return
+    if agent != DEFAULT_AGENT:
+        log_warn(f"--capture only supports the '{DEFAULT_AGENT}' agent; not capturing '{agent}'.")
+        yield base_allow_hosts
+        return
+    if not runner.apply:
+        raise CommandFailedError(
+            "--capture needs --apply: the recording proxies use per-run ports that must be "
+            "opened in the sandbox egress (a re-provision)."
+        )
+    config = load_config(target_abs / "danno.toml")
+    cfg_for_run, targets = plan_capture(config, capture_dir)
+    log_info(f"--capture: recording opencode<->backend wire traffic to {capture_dir}")
+    uncap = uncaptured_cloud_refs(config)
+    if uncap:
+        log_warn(
+            "--capture cannot record built-in cloud refs (no danno base_url lever): "
+            f"{', '.join(uncap)}"
+        )
+    jsonc = target_abs / ".opencode" / "opencode.jsonc"
+    snapshot = jsonc.read_text(encoding="utf-8") if jsonc.is_file() else None
+    generate(cfg_for_run, target_abs, apply=True)  # rewrite baseURLs to the proxies
+    try:
+        with captures_running(targets):
+            yield capture_allow_hosts(targets, base_allow_hosts)
+    finally:
+        if snapshot is not None:
+            jsonc.write_text(snapshot, encoding="utf-8")  # restore the user's config exactly
+        elif jsonc.is_file():
+            jsonc.unlink()
+
+
 def start(
     runner: Runner,
     name: str,
@@ -612,36 +672,40 @@ def start(
     home: Path | None = None,
     registry_path: Path | None = None,
     agent_args: list[str] | None = None,
+    capture_dir: Path | None = None,
 ) -> None:
     """Provision (under `--apply`, idempotent) then launch the in-container AGENT.
 
     SYNC REQUIREMENT: `start` and `shell` are deliberately the same command with a
     different last step — `start` runs the agent, `shell` runs `bash`. Both gate via
-    `_ensure_provisioned` and set up the session via `_exec_session`; put any new
-    provisioning/env/mount behaviour in those shared helpers, not in one command
-    only, so the two cannot drift.
+    `_ensure_provisioned`, set up the session via `_exec_session`, and wrap the span in
+    `_capture_session` (`--capture`); put any new provisioning/env/mount/capture
+    behaviour in those shared helpers, not in one command only, so the two cannot drift.
 
     `agent_args` are forwarded verbatim to the agent binary (e.g. `--resume <id>`)."""
-    _ensure_provisioned(
-        runner,
-        name,
-        target_abs,
-        agent=agent,
-        allow_hosts=allow_hosts,
-        home=home,
-        registry_path=registry_path,
-    )
-    launch(
-        runner,
-        name,
-        target_abs,
-        agent=agent,
-        ollama_url=ollama_url,
-        env_pairs=env_pairs,
-        env_files=env_files,
-        home=home,
-        agent_args=agent_args,
-    )
+    with _capture_session(
+        runner, target_abs, agent=agent, capture_dir=capture_dir, base_allow_hosts=allow_hosts
+    ) as eff_allow_hosts:
+        _ensure_provisioned(
+            runner,
+            name,
+            target_abs,
+            agent=agent,
+            allow_hosts=eff_allow_hosts,
+            home=home,
+            registry_path=registry_path,
+        )
+        launch(
+            runner,
+            name,
+            target_abs,
+            agent=agent,
+            ollama_url=ollama_url,
+            env_pairs=env_pairs,
+            env_files=env_files,
+            home=home,
+            agent_args=agent_args,
+        )
 
 
 def exec_in_container(runner: Runner, name: str, command: str, *, why: str) -> list[str]:
@@ -683,37 +747,42 @@ def shell(
     env_files: list[str] | None = None,
     home: Path | None = None,
     registry_path: Path | None = None,
+    capture_dir: Path | None = None,
 ) -> list[str]:
     """Open an interactive bash shell inside the sandbox VM — `start` minus the agent
     launch.
 
     SYNC REQUIREMENT: see `start`. `shell` MUST stay identical to `start` except for
-    the final in-container command: same provisioning gate (`_ensure_provisioned`)
-    and same session setup (`_exec_session`: `-w <target>`, the env-file with agent
-    auth / Ollama URL / relocated config home / resolved `{env:}` refs), so a tool you
-    run by hand from this shell is wired exactly as `start` would wire the agent. The
-    ONLY difference is the container command — `bash` instead of the agent binary."""
-    _ensure_provisioned(
-        runner,
-        name,
-        target_abs,
-        agent=agent,
-        allow_hosts=allow_hosts,
-        home=home,
-        registry_path=registry_path,
-    )
-    return _exec_session(
-        runner,
-        name,
-        target_abs,
-        agent=agent,
-        ollama_url=ollama_url,
-        env_pairs=env_pairs or [],
-        env_files=env_files or [],
-        home=home,
-        container_argv=["bash"],
-        why=f"open a shell in sandbox '{name}'",
-    )
+    the final in-container command: same provisioning gate (`_ensure_provisioned`),
+    same `--capture` wrap (`_capture_session`), and same session setup (`_exec_session`:
+    `-w <target>`, the env-file with agent auth / Ollama URL / relocated config home /
+    resolved `{env:}` refs), so a tool you run by hand from this shell is wired exactly
+    as `start` would wire the agent. The ONLY difference is the container command —
+    `bash` instead of the agent binary."""
+    with _capture_session(
+        runner, target_abs, agent=agent, capture_dir=capture_dir, base_allow_hosts=allow_hosts
+    ) as eff_allow_hosts:
+        _ensure_provisioned(
+            runner,
+            name,
+            target_abs,
+            agent=agent,
+            allow_hosts=eff_allow_hosts,
+            home=home,
+            registry_path=registry_path,
+        )
+        return _exec_session(
+            runner,
+            name,
+            target_abs,
+            agent=agent,
+            ollama_url=ollama_url,
+            env_pairs=env_pairs or [],
+            env_files=env_files or [],
+            home=home,
+            container_argv=["bash"],
+            why=f"open a shell in sandbox '{name}'",
+        )
 
 
 def ls(registry_path: Path | None = None) -> None:
