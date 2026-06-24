@@ -679,8 +679,9 @@ toml, drop a workspace file at the midpoint and let children inherit it; a *rela
 ```
 
 danno walks up from `--target` to the nearest `danno.workspace.toml` and inherits its
-`[sandbox]`. (Inheritance covers *nested* layouts; sibling checkouts use `per-repo` or
-`group:` instead.)
+`[sandbox]`. See [`docs/danno.workspace.toml-explanation.md`](docs/danno.workspace.toml-explanation.md)
+for technical details (implementation, path resolution, limitations). Inheritance covers *nested* layouts; sibling checkouts use `per-repo` or
+`group:` instead.
 
 | You have… | Use | Result |
 |---|---|---|
@@ -736,6 +737,12 @@ edit `danno.toml`, not the generated file (see
 - **Gate:** `ninja check` = `ruff check` + `ruff format --check` + `mypy` +
   `pytest` (fast suite). Run the live tests with `uv run pytest -m slow` (they skip
   cleanly when Docker/Ollama are down).
+- **Setup:**
+  ```bash
+  uv sync --locked --dev        # install deps into .venv
+  sudo apt-get install ninja-build  # Linux (macOS: brew install ninja)
+  ```
+  All tools are then available via `ninja check` or `uv run ninja check`.
 - **Layout:** `src/book_em_danno/` — `config/` (schema, loader, generator),
   `core/exec.py` (the advise-by-default `Runner`), `commands/` (doctor, ollama,
   sandbox, tools, install), `cli.py`.
@@ -757,6 +764,8 @@ edit `danno.toml`, not the generated file (see
   `danno validate` command surface, status reporting, and `results.json` schema;
   [`.docs/plan-danno-validator.md`](.docs/plan-danno-validator.md) — the validator
   harness design.
+- [`docs/danno.workspace.toml-explanation.md`](docs/danno.workspace.toml-explanation.md) —
+  detailed technical explanation of workspace configuration inheritance (for developers).
 - [`.specify/memory/constitution.md`](.specify/memory/constitution.md) — the
   authoritative development practices, with per-work-type detail in
   [`.specify/memory/parts/`](.specify/memory/parts/).

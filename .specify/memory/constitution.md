@@ -153,6 +153,8 @@ related documentation in the same commit. A documentation gap is a bug. The
 agent-doc files (`CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`) are
 thin pointers — change a rule **here**, not in those pointers.
 
+See [`documentation.md`](parts/documentation.md) for where to put different kinds of docs.
+
 ### Plan-File Etiquette
 
 Plan files (`~/.claude/plans/*.md` and equivalent session-scoped planning
