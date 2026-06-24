@@ -40,7 +40,7 @@ constitution.md:192–201).
 
 - **Constitution Documentation Hygiene**: constitution.md:149–154
   - Behavior-affecting changes MUST update docs in same commit
-- **Shared .docsExemption**: shared.md:20–26
+- **Shared .docs Exemption**: shared.md:20–26
   - `.docs/` exempt from markdownlint/Prettier; hooks configured
 
 ## Rules of Thumb

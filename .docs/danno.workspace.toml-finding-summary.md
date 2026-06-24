@@ -13,9 +13,9 @@
 
 The `danno.workspace.toml` feature is **fully implemented** in `src/book_em_danno/commands/sandbox.py`:
 
-- `_find_workspace()` at line 155: walks up directory tree to find workspace file
-- `_read_sandbox()` at line 134: parses and validates `[sandbox]` section only
-- `resolve_home()` at line 171: resolves agent_home with inheritance logic
+- `_find_workspace()` (sandbox.py:173): walks up directory tree to find workspace file
+- `_read_sandbox()` (sandbox.py:152): parses and validates `[sandbox]` section only
+- `resolve_home()` (sandbox.py:189): resolves agent_home with inheritance logic
 
 **Key behaviors verified:**
 - Searches parent directories for nearest danno.workspace.toml
@@ -46,9 +46,16 @@ This is a documentation gap (not a bug) - the sandbox agents doc should referenc
 | Artifact | Status | Impact |
 |----------|--------|--------|
 | Example danno.workspace.toml file | Not present | Users may not discover feature |
-| Test fixtures for workspace inheritance | Not in tests/ | No automated verification |
 
-**Impact assessment:** Low - feature is self-contained, implementation is solid. Missing examples only affect discoverability.
+**Workspace inheritance is tested** in `tests/test_sandbox.py`
+(`test_resolve_home_inherits_workspace_with_relative_path`,
+`test_resolve_agent_home_relative_against_workspace_dir`,
+`test_resolve_home_reads_own_sandbox_section`,
+`test_resolve_home_defaults_to_per_project`, plus the misplaced-cwd-hint,
+in-repo-footgun, and malformed-config-fails-loud cases).
+
+**Impact assessment:** Low - feature is self-contained, implementation is solid and
+covered by tests. Missing examples only affect discoverability.
 
 ### 4. Code Documentation
 
@@ -74,8 +81,8 @@ The `danno.workspace.toml` feature is:
 
 ## Documents Created
 
-1. **scratch/book-em-danno/danno.workspace.toml-explanation.md**
-   - Comprehensive technical explanation of how workspace inheritance works
-   - Implementation details with code references
+1. **docs/danno.workspace.toml-explanation.md**
+   - Publication-ready explanation of how workspace inheritance works
+   - Resolution order, path resolution, and limitations (described behaviorally,
+     no code/line citations so it does not rot on refactors)
    - Use cases and examples
-   - Documentation gaps identified

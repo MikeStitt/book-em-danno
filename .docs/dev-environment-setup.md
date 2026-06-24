@@ -14,8 +14,8 @@ Linux Docker sandbox bash shell, matching the GitHub Actions workflow.
 # Clone and navigate to the project
 cd /path/to/book-em-danno
 
-# Install Python dependencies into a virtual environment
-uv sync --locked --dev
+# Install Python dependencies into a virtual environment (matches CI)
+uv sync --locked --all-extras --dev
 
 # Verify tools are available via uv run (these come from pyproject.toml dev deps)
 uv run ruff --version
