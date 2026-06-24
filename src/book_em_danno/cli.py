@@ -142,7 +142,7 @@ def validate(
     agent: str = typer.Option(
         sandbox_cmd.DEFAULT_AGENT,
         "--agent",
-        help="Agent-under-test for the sweep (default opencode).",
+        help="Agent-under-test for the sweep: opencode (default) or claurst.",
     ),
     env: list[str] = typer.Option(
         None, "--env", help="KEY=VAL credential to inject into cloud-config sweeps (repeatable)."
