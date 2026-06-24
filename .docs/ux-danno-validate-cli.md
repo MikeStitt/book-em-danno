@@ -66,7 +66,33 @@ operation with progress reporting and stable outputs.
 
 ```
 danno validate [--target DIR] [options]      # provision, sweep, write the report — one command
+danno bench    [--target DIR] [options]      # run benchmark-task suites across the model matrix
 ```
+
+### `danno bench` (sibling command — benchmark task suites)
+
+Where `validate` answers *"does this model work"* (the L0→L2 liveness/tool/dev
+battery), `danno bench` answers *"how does it do on real SWE benchmark tasks"*. It
+runs the **suites** declared in `benchmarks.toml` — **Aider Polyglot** (Exercism
+exercises) and a **SWE-bench Verified subset** (real GitHub issues, fetched from
+HuggingFace) — for **every model variant** of `danno.toml` (the *permutations*),
+against the chosen agent-under-test (`--agent claurst` for the Rust clone on local
+models). It reuses the benchmark-task abstraction (`suites/`): each task seeds an
+instance, the agent takes one headless turn, and the instance's own tests grade it
+(the shared oracle classifies the turn). Aider shares one disposable sandbox
+(per-exercise reset); SWE-bench uses a fresh sandbox per instance. Output is
+`bench.json` + a console summary.
+
+Key flags: `-C DIR` (project), `--agent {opencode,claurst}`, `--only MODEL` (subset
+the matrix), `--benchmarks FILE` (default `benchmarks.toml` next to `danno.toml`),
+`--workspace`, `--out`, `--keep-sandboxes`, `--dry-run`. See `benchmarks.toml.example`.
+
+**Honesty note:** these run real benchmark task *content* via danno's own execution
+model (a headless turn in a disposable sandbox), **not** the official Docker-per-task
+harness — so the pass counts are *not* official benchmark scores. Local models rarely
+*resolve* real SWE-bench instances; that tier exercises the harness, not a leaderboard.
+
+---
 
 A **single command with flags** — no subcommands. Running the tiered sweep and
 writing the report is the whole job; the variations (which models, how many tiers,

@@ -23,7 +23,7 @@ orchestration is unit-testable without a Docker daemon.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -138,6 +138,7 @@ def run_sweep(
     level2: bool = True,
     level2_task: Level2Task = DEFAULT_L2_TASK,
     env_file: Path | None = None,
+    make_run_turn: Callable[[Path | None], TurnFn] | None = None,
     judge: JudgeFn | None = None,
     on_event: ProgressFn | None = None,
 ) -> list[SweepResult]:
@@ -158,8 +159,18 @@ def run_sweep(
     anthropic/NVIDIA/… model errors at L0 for missing auth (local Ollama models
     need none). When `None`, the runners resolve `opencode_run` at call time as
     before. Returns one `SweepResult` per variant, in matrix order.
+
+    `make_run_turn` selects the agent-under-test: given the env-file it returns the
+    `TurnFn` that drives every turn (e.g. `claurst.authed_claurst_run`). When None,
+    the default opencode AUT is used — `_authed_opencode_run(env_file)` if there are
+    credentials, else None so the runners resolve `opencode_run` at call time (which
+    keeps a monkeypatched `level0.opencode_run` effective in tests).
     """
-    run_turn = _authed_opencode_run(env_file) if env_file is not None else None
+    run_turn: TurnFn | None
+    if make_run_turn is not None:
+        run_turn = make_run_turn(env_file)
+    else:
+        run_turn = _authed_opencode_run(env_file) if env_file is not None else None
     results: list[SweepResult] = []
     for variant in model_variants(config, only=only):
         if reset:

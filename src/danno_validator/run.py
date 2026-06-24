@@ -38,6 +38,7 @@ from book_em_danno.capture.wiring import (
 from book_em_danno.commands import sandbox as sb
 from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import CommandFailedError, Runner, log_info, log_warn
+from danno_validator import claurst
 from danno_validator.baseline import BASELINE_MODEL, run_baseline
 from danno_validator.events import ValidateEvent
 from danno_validator.judge import JudgeFn
@@ -303,20 +304,27 @@ def run_validate(
     # The proxies must be up for every agent request; start them before provisioning
     # and tear them down after the last turn (a no-op context when capture is off).
     with captures_running(capture_targets):
-        # `opts.agent` is the *Docker sandbox* agent (the prebuilt image, e.g. opencode);
-        # it selects the VM, not the opencode run-agent. The sweep drives opencode with
-        # its own read-write run-agent ("build", run_sweep's default) — passing the Docker
-        # agent name here would become `opencode run --agent opencode`, an invalid persona.
+        # `opts.agent` selects the agent-under-test for the sweep. For the default
+        # "opencode" it is also the prebuilt Docker image; the sweep drives opencode
+        # with its own read-write run-agent ("build", run_sweep's default). "claurst"
+        # is NOT a prebuilt image: it is hosted in a `shell` VM and installed post-
+        # provision, then driven by `claurst.authed_claurst_run` (which relays Ollama
+        # per turn). Other values pass through as a Docker image name unchanged.
+        is_claurst = opts.agent == "claurst"
+        image = claurst.CLAURST_SANDBOX_IMAGE if is_claurst else opts.agent
         reporter.phase(f"provision {opts.agent} sandbox  {plan.sweep_sandbox}")
         sb.provision(
             runner,
             plan.sweep_sandbox,
             plan.workspace,
-            agent=opts.agent,
+            agent=image,
             allow_hosts=allow_hosts,
             registry_path=None,
         )
-        # Credentials for swept cloud configs: bound into every opencode exec via
+        if is_claurst:
+            reporter.phase(f"install claurst  {plan.sweep_sandbox}")
+            claurst.install_claurst(runner, plan.sweep_sandbox)
+        # Credentials for swept cloud configs: bound into every agent exec via
         # --env-file, removed after the sweep (the secret never lingers on disk).
         sweep_env_file = _build_sweep_env_file(config, opts, plan.workspace)
         try:
@@ -330,6 +338,7 @@ def run_validate(
                 level1=level1,
                 level2=level2,
                 env_file=sweep_env_file,
+                make_run_turn=claurst.authed_claurst_run if is_claurst else None,
                 judge=judge,
                 on_event=reporter.event,
             )

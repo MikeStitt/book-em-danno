@@ -151,6 +151,7 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> dict:
         level2,
         on_event,
         env_file=None,
+        make_run_turn=None,
         judge=None,
         agent="build",
     ):
@@ -161,6 +162,7 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> dict:
             "reset": reset,
             "agent": agent,
             "env_file": env_file,
+            "make_run_turn": make_run_turn,
             "judge": judge,
         }
         # The file is unlinked once the sweep returns, so capture its contents now.
