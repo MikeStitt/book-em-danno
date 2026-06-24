@@ -91,7 +91,7 @@ danno sandbox start --env ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY --env CLAUDE_CODE
 ### 1. Preflight
 
 ```bash
-uv run danno doctor
+danno doctor
 ```
 
 A read-only PASS/FAIL/WARN checklist with copy-paste fixes: Python, git, the
@@ -103,10 +103,10 @@ the sandbox VM).
 
 ```bash
 # default: write the config we own, PRINT the host/Docker commands to run yourself
-uv run danno install --target ./my-project
+danno install --target ./my-project
 
 # actually do it: write config, pull models, create + wire the sandbox
-uv run danno install --apply --target ./my-project
+danno install --apply --target ./my-project
 ```
 
 `install` runs the full happy path in order — validate `danno.toml` → write
@@ -130,11 +130,11 @@ advise/`--apply` split.
 ```bash
 cd ./my-project
 # launch the in-container OpenCode TUI, wired to host Ollama
-uv run danno sandbox start
-uv run danno sandbox shell               # bash in the VM
-uv run danno sandbox stop --apply
-uv run danno sandbox rebuild --apply     # recycle from scratch (agent home survives)
-uv run danno sandbox ls                  # which sandbox maps to which project?
+danno sandbox start
+danno sandbox shell               # bash in the VM
+danno sandbox stop --apply
+danno sandbox rebuild --apply     # recycle from scratch (agent home survives)
+danno sandbox ls                  # which sandbox maps to which project?
 ```
 
 `--target ./my-project` works too. The sandbox name is `danno-<parent>-<dir>` (the
@@ -149,8 +149,8 @@ so you can use the agent's own flags — for example resuming a prior Claude ses
 (its history lives in the persistent agent home, so the session is still on disk):
 
 ```bash
-uv run danno sandbox start --agent claude -- --resume <session-id>
-uv run danno sandbox start --agent claude -- --continue   # most recent session
+danno sandbox start --agent claude -- --resume <session-id>
+danno sandbox start --agent claude -- --continue   # most recent session
 ```
 
 danno's own options (`--target`, `--agent`, `--apply`, …) stay before the `--` and
@@ -165,8 +165,8 @@ of each *redirectable* backend by rewriting its `base_url`, then writes one JSON
 per backend with auth-header values redacted.
 
 ```bash
-uv run danno sandbox start --capture --apply   # ./.danno/captures/<ts>/<backend>.jsonl
-uv run danno validate --capture --only <model> # <out>/captures/<backend>.jsonl
+danno sandbox start --capture --apply   # ./.danno/captures/<ts>/<backend>.jsonl
+danno validate --capture --only <model> # <out>/captures/<backend>.jsonl
 ```
 
 **What gets captured depends on whether danno controls the endpoint URL.** A model
@@ -217,7 +217,7 @@ to run a different one; non-default agents get their **own** sandbox
 (`danno-<parent>-<dir>-<agent>`) so they coexist with the opencode sandbox.
 
 ```bash
-uv run danno sandbox start --apply --target ./my-project --agent claude
+danno sandbox start --apply --target ./my-project --agent claude
 ```
 
 **Claude Code auth** is read from danno's host environment and injected into the
@@ -412,7 +412,14 @@ danno validate --dry-run                 # preview the plan (models, tiers, sand
 danno validate                           # run it — provisions, sweeps, writes the report
 danno validate --only gemma4 --max-level 1   # just one model, liveness + tool/bash
 danno validate --baseline --baseline-model opus   # add a Claude Code reference row
+danno validate --agent claurst               # sweep the models via claurst, not opencode
 ```
+
+`--agent` picks the **agent-under-test** that drives the sweep: `opencode` (the
+default) or `claurst` (the Rust Claude-Code clone, benchmarked on local Ollama
+models). claurst is **only** an agent-under-test here — it is not a `sandbox start`
+agent (see [`.docs/user-experience-elephant.md`](.docs/user-experience-elephant.md)
+for why, and the proposed interactive path).
 
 It **runs immediately** (like `sandbox start`, no `--apply`) and is
 **non-destructive**: the battery runs in a throwaway, validator-owned sandbox
@@ -442,20 +449,44 @@ and fails loud up front if it's missing. See
 command surface and [`.docs/plan-danno-validator.md`](.docs/plan-danno-validator.md)
 for the harness design.
 
+### Benchmark suites across models (`danno bench`)
+
+Where `validate` runs danno's own tiered battery, `danno bench` runs **established
+coding-benchmark suites** — an Aider Polyglot subset and a SWE-bench Verified subset
+— across every model your `danno.toml` declares, against your chosen
+agent-under-test. Suites and the exact instances come from a `benchmarks.toml` (next
+to `danno.toml` by default, or `--benchmarks <path>`): enable `[aider_polyglot]`
+and/or `[swebench]` and list the exercise/instance ids under each `select`.
+
+```bash
+danno bench --dry-run                 # preview the suites × models plan
+danno bench                           # run the enabled suites across danno.toml's models
+danno bench --only gemma4             # restrict the matrix to one model
+danno bench --agent claurst           # benchmark claurst (local Ollama) instead of opencode
+```
+
+It provisions disposable, validator-owned sandboxes over a throwaway workspace, runs
+each enabled suite for every model variant, writes `bench.json` + a summary under
+`.danno-bench/<timestamp>/`, then tears the sandboxes down — your project is never
+modified. These run real benchmark *content* through danno's own execution model, not
+the official Docker-per-task harness, so the pass counts are **not** official
+benchmark scores.
+
 ### Benchmark whole configs (`danno benchmark`)
 
-Where `validate` sweeps your `danno.toml`'s *models*, `danno benchmark` sweeps
-whole **configs** for editing performance — to A/B different prompts, permissions,
-or model assignments. Each subdirectory of the configs dir is a candidate holding
-its own `.opencode/` tree (opencode.jsonc + agent `.md`); danno applies each into
-the throwaway, validator-owned workspace and runs the *same* tiered battery (plus
-the optional Claude `--baseline`), then writes a comparison report + `results.json`
-under `.danno-benchmark/<timestamp>/`.
+`danno benchmark` (distinct from `danno bench` above) sweeps whole **configs** for
+editing performance — to A/B different prompts, permissions, or model assignments.
+Each subdirectory of the configs dir is a candidate holding its own `.opencode/` tree
+(opencode.jsonc + agent `.md`); danno applies each into the throwaway,
+validator-owned workspace and runs the *same* tiered battery as `validate` (plus the
+optional Claude `--baseline`), then writes a comparison report + `results.json` under
+`.danno-benchmark/<timestamp>/`.
 
 ```bash
 danno benchmark ./candidate-configs --dry-run        # preview which configs run
 danno benchmark ./candidate-configs --baseline       # run + a Claude reference row
 danno benchmark ./candidate-configs --judge          # add L2 dev-quality grading
+danno benchmark ./candidate-configs --agent claurst  # drive the candidates with claurst
 ```
 
 Each candidate carries its own model (in its opencode.jsonc), so no `-m` override
@@ -707,6 +738,9 @@ edit `danno.toml`, not the generated file (see
 
 - [`docs/ux-requirements.md`](docs/ux-requirements.md) — the reconciled command
   surface, network model, and `danno.toml` schema (the design-of-record).
+- [`.docs/user-experience-elephant.md`](.docs/user-experience-elephant.md) — the
+  end-to-end user story for the three coding-tool use cases (opencode + ADOS, Claude
+  Code, and the proposed claurst-on-local-Ollama path).
 - [`.docs/ux-danno-validate-cli.md`](.docs/ux-danno-validate-cli.md) — the
   `danno validate` command surface, status reporting, and `results.json` schema;
   [`.docs/plan-danno-validator.md`](.docs/plan-danno-validator.md) — the validator
