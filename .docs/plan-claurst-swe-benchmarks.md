@@ -7,6 +7,22 @@
 > [`.docs/ux-danno-validate-cli.md`](ux-danno-validate-cli.md) (CLI surface).
 > **Memory:** [[sandbox-egress-and-process-lifetime]] (the relay + child-reaping constraints).
 
+## Status (2026-06-24) — shipped on branch `claurst-swe-benchmarks`
+
+All milestones implemented, gate-green (`ninja check`), and the key paths verified
+live in the sandbox:
+- **M0** de-risk spikes — install (curl, not npm), claurst stream-json schema, the
+  Ollama relay, in-sandbox pip.
+- **M1** `driver.claurst_run`/`ClaurstTurn` (relay-wrapped). **M2/M3** `danno validate
+  --agent claurst` (provision `shell` VM + curl-install claurst + libasound; drive L0→L2)
+  — *L0 cleared live on ollama/qwen3-coder-next*.
+- **M4** `suites/` (`BenchTask`/`BenchVerdict` + `benchmarks.toml` config).
+- **M5** Aider Polyglot suite — *claurst+qwen solved python/grade-school, pytest passed*.
+- **M6** SWE-bench Verified suite (HuggingFace fetch, host-side; per-instance sandbox) —
+  *HF fetch + task construction verified live*.
+- **M7** `danno bench` command (runs enabled suites across the model matrix vs the AUT,
+  writes `bench.json` + summary) + docs (`benchmarks.toml.example`, this doc, `--help`).
+
 ## Context — why
 
 danno's research (`claude-code-clones-research.md` §3–4) names **Claurst** (`Kuberwastaken/claurst`,

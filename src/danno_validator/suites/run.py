@@ -69,13 +69,13 @@ def run_aider_suite(
                 suite="aider",
                 workspace=workspace,
                 model=model,
-                run_turn=_cwd_bound(run_turn, task.workspace_dir(workspace)),
+                run_turn=cwd_bound(run_turn, task.workspace_dir(workspace)),
             )
         )
     return verdicts
 
 
-def _cwd_bound(run_turn: TurnFn, cwd: Path) -> TurnFn:
+def cwd_bound(run_turn: TurnFn, cwd: Path) -> TurnFn:
     """Wrap a `TurnFn` so every turn runs with its workspace set to `cwd`.
 
     A benchmark turn must act in the exercise's seeded subdir, not the workspace

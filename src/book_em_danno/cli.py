@@ -253,6 +253,84 @@ def validate(
 
 
 @app.command()
+def bench(
+    target: Path = typer.Option(
+        Path("."), "--target", "-C", help="Project whose danno.toml models are the matrix."
+    ),
+    agent: str = typer.Option(
+        sandbox_cmd.DEFAULT_AGENT,
+        "--agent",
+        help="Agent-under-test: opencode (default) or claurst.",
+    ),
+    only: list[str] = typer.Option(
+        None,
+        "--only",
+        help="Restrict the model matrix to these danno.toml model keys (repeatable).",
+    ),
+    benchmarks: Path = typer.Option(
+        None, "--benchmarks", help="benchmarks.toml path (default: next to danno.toml)."
+    ),
+    workspace: Path = typer.Option(
+        None, "--workspace", help="Throwaway workspace mount (default a temp dir)."
+    ),
+    out: Path = typer.Option(None, "--out", help="Output dir (default .danno-bench/<timestamp>/)."),
+    keep_sandboxes: bool = typer.Option(
+        False, "--keep-sandboxes", help="Leave the disposable sandboxes up for debugging."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print the plan and exit without provisioning or running."
+    ),
+    verbose: bool = _VERBOSE_OPT,
+) -> None:
+    """Run the enabled benchmark suites across danno.toml's models against an agent.
+
+    Suites + selection come from `benchmarks.toml` (Aider Polyglot + a SWE-bench Verified
+    subset; each independently enabled with a `select` list). Provisions disposable,
+    validator-owned sandboxes over a throwaway workspace, runs each enabled suite for
+    every model variant (the permutations), writes `bench.json` + a summary, and tears
+    the sandboxes down. Your project is never modified.
+
+    These run real benchmark task *content* via danno's own execution model — NOT the
+    official Docker-per-task harness, so the pass counts are not official benchmark
+    scores. `--agent claurst` benchmarks the Rust Claude-Code clone on local models.
+    """
+    from danno_validator.suites.bench import BenchOptions, run_bench
+    from danno_validator.suites.config import DEFAULT_BENCHMARKS_FILE, load_benchmarks
+
+    cfg = _load(target / "danno.toml")
+    bench_path = benchmarks or (target / DEFAULT_BENCHMARKS_FILE)
+    try:
+        bench_cfg = load_benchmarks(bench_path)
+    except ValueError as exc:
+        log_err(str(exc))
+        raise typer.Exit(code=2) from exc
+    if not bench_cfg.any_enabled():
+        log_err(
+            f"no benchmark suites enabled in {bench_path} — set enabled = true under "
+            "[aider_polyglot] or [swebench] and list `select` ids."
+        )
+        raise typer.Exit(code=2)
+    opts = BenchOptions(
+        target=target,
+        agent=agent,
+        only=only or None,
+        benchmarks_path=bench_path,
+        workspace=workspace,
+        out_dir=out,
+        keep_sandboxes=keep_sandboxes,
+        dry_run=dry_run,
+    )
+    try:
+        run_bench(cfg, bench_cfg, opts, Runner(apply=True, verbose=verbose))
+    except ValueError as exc:  # bad --only / unknown swebench id (fail loud)
+        log_err(str(exc))
+        raise typer.Exit(code=3) from exc
+    except (CommandFailedError, CommandNotFoundError) as exc:  # Docker / provision failure
+        log_err(str(exc))
+        raise typer.Exit(code=4) from exc
+
+
+@app.command()
 def benchmark(
     configs: Path = typer.Argument(
         ..., help="Directory of candidate configs — each a subdir with its own .opencode/ tree."
