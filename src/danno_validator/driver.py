@@ -68,6 +68,82 @@ CLAUDE_SKIP_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
 # install default. CONFIRMED against claude 2.1.179 `claude --help`.
 CLAUDE_MODEL_FLAG = "--model"
 
+# Claurst headless flags (M0 spike, claurst 0.1.5, 2026-06-23). Claurst's CLI is
+# Claude-Code-faithful: `-p` headless, `-m ollama/<tag>` model, `--output-format
+# stream-json` JSONL, `--resume <id>` session, `--dangerously-skip-permissions`
+# (alias --yolo) auto-approves, `--cwd <dir>` exec cwd, `--max-turns N`. UNLIKE
+# claude, claurst USES `-m` (it has no opencode `--agent`). DO NOT pass `--verbose`
+# — it dumps ANSI DEBUG logs onto stdout and breaks JSONL parsing.
+CLAURST_PRINT_FLAG = "-p"
+CLAURST_FORMAT_FLAG = "--output-format"
+CLAURST_FORMAT_VALUE = "stream-json"
+CLAURST_MODEL_FLAG = "-m"
+CLAURST_RESUME_FLAG = "--resume"
+CLAURST_SKIP_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
+CLAURST_CWD_FLAG = "--cwd"
+
+# Claurst's Rust HTTP client ignores HTTP(S)_PROXY, and the sandbox blocks direct
+# egress + rejects CONNECT tunnels, so claurst cannot reach host Ollama itself. It
+# CAN reach 127.0.0.1 (in NO_PROXY). This relay listens there and re-issues each
+# request to host Ollama THROUGH the squid proxy (a regular proxied HTTP forward,
+# which it allows). Claurst points at it via `OLLAMA_HOST`. Because execs reap
+# their children, the relay is launched INSIDE every claurst exec and dies with it
+# (see `claurst_run`). Verified 2026-06-23; mirrors `scratch/.../ollama_relay.py`.
+CLAURST_OLLAMA_HOST = "http://127.0.0.1:11434"
+_OLLAMA_RELAY_SOURCE = r"""
+import os, sys, urllib.error, urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+UPSTREAM = "http://host.docker.internal:11434"
+PROXY = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+_opener = urllib.request.build_opener(
+    urllib.request.ProxyHandler({"http": PROXY} if PROXY else {})
+)
+
+
+class H(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def _f(self):
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        body = self.rfile.read(n) if n else None
+        req = urllib.request.Request(UPSTREAM + self.path, data=body, method=self.command)
+        for k, v in self.headers.items():
+            if k.lower() not in ("host", "proxy-connection", "connection"):
+                req.add_header(k, v)
+        try:
+            r = _opener.open(req, timeout=600)
+        except urllib.error.HTTPError as e:
+            r = e
+        except Exception as e:
+            self.send_response(502)
+            self.end_headers()
+            self.wfile.write(str(e).encode())
+            return
+        self.send_response(r.status)
+        for k, v in r.getheaders():
+            if k.lower() not in ("transfer-encoding", "content-length", "connection"):
+                self.send_header(k, v)
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        while True:
+            c = r.read(4096)
+            if not c:
+                break
+            self.wfile.write(b"%X\r\n" % len(c) + c + b"\r\n")
+        self.wfile.write(b"0\r\n\r\n")
+
+    do_GET = do_POST = do_PUT = do_DELETE = _f
+
+    def log_message(self, *a):
+        pass
+
+
+if __name__ == "__main__":
+    p = int(sys.argv[1]) if len(sys.argv) > 1 else 11434
+    ThreadingHTTPServer(("127.0.0.1", p), H).serve_forever()
+"""
+
 
 @runtime_checkable
 class Turn(Protocol):
@@ -560,6 +636,184 @@ def claude_run(
     cmd.append(prompt)
     result = runner.capture(cmd)
     return ClaudeTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)
+
+
+@dataclass
+class ClaurstTurn:
+    """One captured `claurst -p --output-format stream-json` turn, parsed.
+
+    Claurst's stream-json is JSONL like the others but its OWN schema (M0 spike,
+    claurst 0.1.5), so this normalises it onto the shared `Turn` read surface:
+
+    - a **text_delta** event (`type == "text_delta"`) carries a fragment of the
+      assistant text at `text` (sub-word deltas — concatenated WITHOUT separators);
+    - a **tool_start** event (`type == "tool_start"`) carries `tool` (the tool
+      name) — claurst emits no callID and no per-call status in this mode;
+    - a final **result** event (`type == "result"`) carries `cost_usd` and `usage`
+      (token counts; 0 for Ollama), and on a tool/agent error a `result` string;
+    - an **error** event (`type == "error"`) carries the failure string at `error`
+      (e.g. `"API error: [ollama] Model not found: unknown"`), with exit code 1.
+
+    Claurst exposes **no session id** in headless Ollama mode (`session_id` is
+    always None → each scripted turn is independent), and tokens/cost are 0 for
+    local models. Tool calls are re-shaped to ``{"tool": name, "callID": None,
+    "state": {"status": "completed"}}`` so the shared oracle/reporter branches work;
+    claurst reports no per-call status, so claurst turns are graded by side effect.
+    """
+
+    result: CaptureResult
+    events: list[dict] = field(default_factory=list)
+    raw: str = ""
+
+    @property
+    def ok(self) -> bool:
+        """True iff the turn ran cleanly: zero exit, ≥1 parsed event, no error
+        event (a stalled-but-clean turn is still `ok` — the oracle's call)."""
+        return self.result.ok and bool(self.events) and not self.errors
+
+    @property
+    def session_id(self) -> str | None:
+        """None — claurst exposes no session id in headless Ollama mode (M0)."""
+        return None
+
+    @property
+    def assistant_text(self) -> str:
+        """Concatenated `text_delta` fragments (no separator — they are sub-word
+        deltas), stripped. Falls back to the `result` event's `result` text."""
+        text = "".join(
+            str(event.get("text", "")) for event in self.events if event.get("type") == "text_delta"
+        ).strip()
+        if text:
+            return text
+        for event in reversed(self.events):
+            if event.get("type") == "result" and not self.errors:
+                return str(event.get("result", "")).strip()
+        return ""
+
+    @property
+    def tool_calls(self) -> list[dict]:
+        """Each `tool_start` event, re-shaped to the shared tool-call dict shape.
+
+        Claurst emits no callID/status per call, so each gets a synthetic
+        `completed` status; the real signal for claurst is the workspace side
+        effect, which the oracle composes with this count."""
+        return [
+            {"tool": event.get("tool"), "callID": None, "state": {"status": "completed"}}
+            for event in self.events
+            if event.get("type") == "tool_start"
+        ]
+
+    @property
+    def tool_call_count(self) -> int:
+        return len(self.tool_calls)
+
+    @property
+    def _result_event(self) -> dict | None:
+        for event in reversed(self.events):
+            if event.get("type") == "result":
+                return event
+        return None
+
+    @property
+    def tokens(self) -> int:
+        """Total tokens (input + output) from the `result` event's usage (0 for
+        Ollama — claurst reports no token counts for local models)."""
+        res = self._result_event
+        usage = res.get("usage", {}) if res else {}
+        if not isinstance(usage, dict):
+            return 0
+        return int(usage.get("input_tokens", 0) or 0) + int(usage.get("output_tokens", 0) or 0)
+
+    @property
+    def cost(self) -> float:
+        """The turn's `cost_usd` from the `result` event (0 for local models)."""
+        res = self._result_event
+        return float(res.get("cost_usd", 0) or 0) if res else 0.0
+
+    @property
+    def errors(self) -> list[dict]:
+        """Every `error` event (provider/transport failures, exit code 1)."""
+        return [event for event in self.events if event.get("type") == "error"]
+
+    @property
+    def error_summary(self) -> str | None:
+        """A human-readable summary of the first error event, or None."""
+        if not self.errors:
+            return None
+        return str(self.errors[0].get("error", "error event"))
+
+
+def _claurst_script(claurst_cmd: str) -> str:
+    """Wrap a claurst invocation with the in-VM Ollama relay (see relay constants).
+
+    Returns a `bash -lc` script that writes the relay to a temp file, starts it on
+    127.0.0.1:11434, waits for readiness, runs `claurst_cmd` (with `OLLAMA_HOST`
+    pointed at the relay), and kills the relay on exit. The relay is co-located in
+    this one exec because execs reap their children — it cannot outlive the turn.
+    Only claurst's stdout reaches the capture (relay log + readiness probe are
+    redirected away), so the JSONL parser sees a clean stream.
+    """
+    heredoc = f"cat > \"$RELAY_PY\" <<'DANNO_RELAY_EOF'\n{_OLLAMA_RELAY_SOURCE}\nDANNO_RELAY_EOF"
+    return (
+        "RELAY_PY=$(mktemp /tmp/danno-relay-XXXXXX.py)\n"
+        f"{heredoc}\n"
+        'python3 "$RELAY_PY" 11434 >/tmp/danno-ollama-relay.log 2>&1 &\n'
+        "DANNO_RELAY_PID=$!\n"
+        "trap 'kill $DANNO_RELAY_PID 2>/dev/null' EXIT\n"
+        "for _ in $(seq 1 40); do "
+        "curl -fsS --noproxy 127.0.0.1 http://127.0.0.1:11434/api/tags >/dev/null 2>&1 "
+        "&& break; sleep 0.25; done\n"
+        f"{claurst_cmd}\n"
+    )
+
+
+def claurst_run(
+    runner: Runner,
+    name: str,
+    prompt: str,
+    *,
+    session: str | None = None,
+    agent: str | None = None,
+    model: str | None = None,
+    skip_permissions: bool = False,
+    workspace: str | Path | None = None,
+    env_file: str | Path | None = None,
+) -> ClaurstTurn:
+    """Drive one headless `claurst -p --output-format stream-json` turn in `name`.
+
+    The in-sandbox Claurst counterpart of `opencode_run`, with a `TurnFn`-compatible
+    signature so the level runners can drive it unchanged. `model` pins the model
+    (`-m ollama/<tag>`, the same ref the sweep passes opencode); `skip_permissions`
+    adds `--dangerously-skip-permissions`; `workspace` becomes claurst's `--cwd` so
+    writes land in the mounted workspace the oracle probes; `session` maps to
+    `--resume` (a no-op in practice — claurst exposes no session id, M0). `agent` is
+    accepted for interface parity but ignored (claurst has no opencode `--agent`).
+
+    Unlike opencode/claude, the turn is wrapped in a `bash -lc` script that stands
+    up the Ollama relay for the duration of the exec (see `_claurst_script`), since
+    claurst's proxy-ignoring client cannot otherwise reach host Ollama. `env_file`
+    is forwarded to `docker sandbox exec` for parity; local Ollama models need none.
+
+    Returns the parsed events alongside the raw capture — never raises on a non-zero
+    exit, since a stalled/errored turn is the signal the battery measures.
+    """
+    argv = ["claurst", CLAURST_PRINT_FLAG, CLAURST_FORMAT_FLAG, CLAURST_FORMAT_VALUE]
+    if model is not None:
+        argv += [CLAURST_MODEL_FLAG, model]
+    if skip_permissions:
+        argv.append(CLAURST_SKIP_PERMISSIONS_FLAG)
+    if workspace is not None:
+        argv += [CLAURST_CWD_FLAG, str(workspace)]
+    if session is not None:
+        argv += [CLAURST_RESUME_FLAG, session]
+    argv.append(prompt)
+    claurst_cmd = f"OLLAMA_HOST={CLAURST_OLLAMA_HOST} {shlex.join(argv)}"
+    cmd = ["docker", "sandbox", "exec"]
+    if env_file is not None:
+        cmd += ["--env-file", str(env_file)]
+    cmd += [name, "bash", "-lc", _claurst_script(claurst_cmd)]
+    result = runner.capture(cmd)
+    return ClaurstTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)
 
 
 def parse_events(text: str) -> list[dict]:

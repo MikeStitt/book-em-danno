@@ -1,0 +1,42 @@
+# benchmarks.toml — which benchmark-task suites `danno bench` runs.
+#
+# Place next to your danno.toml (or pass --benchmarks <path>). danno.toml supplies
+# the MODEL matrix (the permutations); this file supplies the TASKS. Each suite is
+# independently enabled, with a `select` list naming exactly which tests run.
+#
+# `danno bench -C <project> --agent claurst` runs every enabled suite against the
+# agent-under-test for each declared model. These run real benchmark task *content*
+# via danno's own execution model (a headless turn in a disposable sandbox, graded
+# by the task's own tests) — NOT the official Docker-per-task harness, so the pass
+# counts are not official benchmark scores. Unknown keys fail loud at load.
+
+# --- Aider Polyglot -------------------------------------------------------------
+# Self-contained Exercism exercises (stub + test files + instructions). Multi-
+# language; the Python lane (pytest) is verified. Shared sandbox + per-exercise
+# reset by default. `select` ids are "<language>/<slug>".
+[aider_polyglot]
+enabled = true
+isolation = "shared"          # shared (default) | per-test
+source = "git:https://github.com/Aider-AI/polyglot-benchmark"
+select = [
+  "python/grade-school",
+  "python/acronym",
+  # "go/grep",                # other languages need their toolchain in the sandbox
+]
+
+# --- SWE-bench Verified subset --------------------------------------------------
+# Real GitHub-issue instances, fetched from HuggingFace (host-side) and graded by
+# each instance's FAIL_TO_PASS + PASS_TO_PASS tests. One disposable sandbox per
+# instance (its own repo + dep tree). A `select`ed instance whose dependencies do
+# not install in the proxy-only sandbox errors loudly in its own row (not skipped).
+# Local models are unlikely to *resolve* real instances — expect mostly failures;
+# this exercises the harness, it is not a leaderboard.
+[swebench]
+enabled = false
+isolation = "per-test"        # per-test (default) | shared
+dataset = "princeton-nlp/SWE-bench_Verified"
+deps = "offline-wheel-cache"  # offline-wheel-cache (default) | no-cache-dir
+select = [
+  # "astropy__astropy-12907",
+  # "django__django-11099",
+]
