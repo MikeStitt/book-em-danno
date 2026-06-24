@@ -428,7 +428,15 @@ def benchmark(
 _AGENT_OPT = typer.Option(
     sandbox_cmd.DEFAULT_AGENT,
     "--agent",
-    help="Docker prebuilt agent (opencode, claude, …); non-default agents get a separate sandbox.",
+    help="Agent: opencode, claude, or claurst (local-only); non-default agents get a "
+    "separate sandbox.",
+)
+_MODEL_OPT = typer.Option(
+    None,
+    "--model",
+    "-m",
+    help="Local model for --agent claurst (a danno.toml models entry, e.g. gemma4). "
+    "claurst-only; cloud/non-Ollama models are rejected.",
 )
 
 
@@ -447,6 +455,22 @@ def _resolve_home(abs_target: Path, sandbox_name: str) -> Path | None:
     except DannoConfigError as exc:
         log_err(str(exc))
         raise typer.Exit(code=2) from exc
+
+
+def _resolve_model(abs_target: Path, agent: str, model: str | None) -> str | None:
+    """Resolve `--model` for `sandbox start` (None passes through). Maps a danno
+    [models] name to claurst's `-m ollama/<tag>`, failing loud on a malformed config
+    (exit 2) or an unreachable/cloud model or a non-claurst agent (exit 4)."""
+    if model is None:
+        return None
+    try:
+        return sandbox_cmd.resolve_model_for_agent(abs_target, agent, model)
+    except DannoConfigError as exc:
+        log_err(str(exc))
+        raise typer.Exit(code=2) from exc
+    except CommandFailedError as exc:
+        log_err(str(exc))
+        raise typer.Exit(code=4) from exc
 
 
 _NAME_OPT_HELP = "Sandbox name (default danno-<parent>-<dir>)."
@@ -482,6 +506,7 @@ def sandbox_start(
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
     name: str = typer.Option(None, "--name", help=_NAME_OPT_HELP),
     agent: str = _AGENT_OPT,
+    model: str = _MODEL_OPT,
     env: list[str] = typer.Option(None, "--env", help="KEY=VAL to inject (repeatable)."),
     env_file: list[str] = typer.Option(None, "--env-file", help="File of KEY=VAL to inject."),
     capture: bool = _CAPTURE_OPT,
@@ -498,11 +523,13 @@ def sandbox_start(
     Tip: `cd <project> && danno sandbox start` (no --target/--name) recomputes the
     same name every time — stand in the sandbox's directory rather than naming it.
 
-    Anything after `--` is forwarded verbatim to the agent, e.g.
-    `danno sandbox start --agent claude -- --resume <session-id>`.
+    `--agent claurst` runs a pure-Rust Claude-Code clone on local Ollama only; pick the
+    model with `-m <name>` (a danno.toml models entry). Anything after `--` is forwarded
+    verbatim to the agent, e.g. `danno sandbox start --agent claude -- --resume <id>`.
     """
     abs_target, sandbox_name = _sandbox_target(target, name, agent)
     home = _resolve_home(abs_target, sandbox_name)
+    resolved_model = _resolve_model(abs_target, agent, model)
     _guard(
         lambda: sandbox_cmd.start(
             Runner(apply=apply, verbose=verbose),
@@ -515,6 +542,7 @@ def sandbox_start(
             registry_path=registry.default_path(),
             agent_args=ctx.args,
             capture_dir=_resolve_capture_dir(capture, capture_dir),
+            model=resolved_model,
         )
     )
 

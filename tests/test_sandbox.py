@@ -7,6 +7,12 @@ import pytest
 
 from book_em_danno.commands import ollama, sandbox
 from book_em_danno.config.loader import DannoConfigError
+from book_em_danno.config.schema import (
+    DannoConfig,
+    Model,
+    OllamaBackend,
+    OpenAIBackend,
+)
 from book_em_danno.core import registry
 from book_em_danno.core.exec import CommandFailedError
 from conftest import RecordingRunner
@@ -131,6 +137,134 @@ def test_launch_forwards_agent_args() -> None:
     r = RecordingRunner()
     sandbox.launch(r, "probe", Path("/repo"), agent="opencode", agent_args=["--resume", "abc123"])
     assert r.commands[0][8:] == ["probe", "opencode", "--resume", "abc123"]
+
+
+# --- claurst (interactive, local-Ollama clone hosted in the `shell` image) ---
+
+
+def test_default_name_claurst_suffix() -> None:
+    assert sandbox.default_name(Path("/tmp/my-proj"), "claurst") == "danno-tmp-my-proj-claurst"
+
+
+def test_create_claurst_uses_shell_image(tmp_path: Path) -> None:
+    # claurst has no prebuilt image: the create command rides `shell`, but the sandbox
+    # name keeps the claurst label.
+    r = RecordingRunner()
+    sandbox.create(r, "danno-x-claurst", tmp_path, "claurst")
+    assert r.joined() == [f"docker sandbox create --name danno-x-claurst shell {tmp_path}"]
+
+
+def test_provision_claurst_installs_after_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Same create(shell)/proxy/stop order as opencode, plus a trailing install exec —
+    # placed after `stop` so it auto-starts the VM with the egress allow-policy armed.
+    monkeypatch.setattr(ollama, "loopback_warning", lambda **kw: None)
+    r = RecordingRunner()
+    sandbox.provision(r, "probe", tmp_path, agent="claurst")
+    joined = r.joined()
+    assert joined[:3] == [
+        f"docker sandbox create --name probe shell {tmp_path}",
+        "docker sandbox network proxy probe --policy allow --allow-host localhost:11434",
+        "docker sandbox stop probe",
+    ]
+    assert joined[3].startswith("docker sandbox exec probe bash -lc ")
+    assert "install -m 0755" in joined[3] and "claurst --version" in joined[3]
+
+
+def test_provision_opencode_does_not_install_claurst(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ollama, "loopback_warning", lambda **kw: None)
+    r = RecordingRunner()
+    sandbox.provision(r, "probe", tmp_path)  # default opencode
+    assert not any("claurst" in c for c in r.joined())
+
+
+def test_launch_claurst_wraps_relay_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    r = RecordingRunner()
+    sandbox.launch(r, "probe", Path("/repo"), agent="claurst", model="ollama/gemma4:26b")
+    cmd = r.commands[0]
+    assert cmd[8:11] == ["probe", "bash", "-lc"]
+    script = cmd[11]
+    # the interactive claurst command: model passed as -m, NO -p (it must open the TUI)
+    assert "OLLAMA_HOST=http://127.0.0.1:11434 claurst -m ollama/gemma4:26b" in script
+    assert "claurst -p" not in script
+    # the relay bracket is reused from the headless path (backgrounded + reaped on exit)
+    assert "RELAY_PY" in script and "trap 'kill $DANNO_RELAY_PID" in script
+
+
+def test_launch_claurst_forwards_passthru(monkeypatch: pytest.MonkeyPatch) -> None:
+    r = RecordingRunner()
+    sandbox.launch(
+        r,
+        "probe",
+        Path("/repo"),
+        agent="claurst",
+        model="ollama/g:1b",
+        agent_args=["--resume", "x"],
+    )
+    script = r.commands[0][11]
+    assert "claurst -m ollama/g:1b --resume x" in script
+
+
+def test_agent_env_claurst_relocates_home() -> None:
+    assert sandbox.agent_env("claurst", "u") == []
+    assert sandbox.agent_env("claurst", "u", home=Path("/h")) == ["HOME=/h"]
+
+
+def _claurst_cfg() -> DannoConfig:
+    return DannoConfig(
+        backends={
+            "ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1"),
+            "nvidia": OpenAIBackend(
+                kind="openai", base_url="http://x/v1", api_key_env="NVIDIA_API_KEY"
+            ),
+        },
+        models={
+            "gemma4": Model(backend="ollama", tag="gemma4:26b"),
+            "nemotron": Model(backend="nvidia", tag="nvidia/nemotron"),
+        },
+    )
+
+
+def test_resolve_claurst_model_local_name() -> None:
+    assert sandbox.resolve_claurst_model(_claurst_cfg(), "gemma4") == "ollama/gemma4:26b"
+
+
+def test_resolve_claurst_model_raw_ollama_ref_passthrough() -> None:
+    assert sandbox.resolve_claurst_model(_claurst_cfg(), "ollama/foo:1b") == "ollama/foo:1b"
+
+
+def test_resolve_claurst_model_cloud_backend_fails_loud() -> None:
+    with pytest.raises(CommandFailedError, match="local-only.*openai|openai.*claurst"):
+        sandbox.resolve_claurst_model(_claurst_cfg(), "nemotron")
+
+
+def test_resolve_claurst_model_raw_cloud_ref_fails_loud() -> None:
+    with pytest.raises(CommandFailedError, match="anthropic"):
+        sandbox.resolve_claurst_model(_claurst_cfg(), "anthropic/claude-sonnet-4-6")
+
+
+def test_resolve_claurst_model_unknown_name_fails_loud() -> None:
+    with pytest.raises(CommandFailedError, match="not defined"):
+        sandbox.resolve_claurst_model(_claurst_cfg(), "nope")
+
+
+def test_resolve_model_for_agent_rejects_non_claurst(tmp_path: Path) -> None:
+    # -m on claude/opencode must fail loud rather than be silently ignored. The agent
+    # check precedes any config load, so no danno.toml is needed here.
+    with pytest.raises(CommandFailedError, match="only supported with"):
+        sandbox.resolve_model_for_agent(tmp_path, "opencode", "gemma4")
+
+
+def test_resolve_model_for_agent_claurst_loads_and_resolves(tmp_path: Path) -> None:
+    (tmp_path / "danno.toml").write_text(
+        '[backends.ollama]\nkind = "ollama"\nbase_url = "http://h:11434/v1"\n'
+        '[models.gemma4]\nbackend = "ollama"\ntag = "gemma4:26b"\n',
+        encoding="utf-8",
+    )
+    assert sandbox.resolve_model_for_agent(tmp_path, "claurst", "gemma4") == "ollama/gemma4:26b"
 
 
 def _write_opencode_cfg(target: Path, body: str) -> None:

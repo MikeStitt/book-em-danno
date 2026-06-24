@@ -237,6 +237,18 @@ If neither is set, `sandbox start --agent claude` **fails loud** with the
 `claude setup-token` hint rather than launching unauthenticated. The token is
 re-injected on every `start`, so it survives `sandbox rebuild`.
 
+**claurst (local-only)** — `--agent claurst` runs [claurst](https://github.com/Kuberwastaken/claurst),
+a pure-Rust Claude-Code clone, on **local Ollama only** (no cloud, no auth). claurst
+isn't a prebuilt image, so danno hosts it in the `shell` sandbox and curl-installs the
+binary on first provision. Pick the model with `-m <name>` (a danno.toml `[models]`
+entry); cloud/non-Ollama models are **rejected loudly** (claurst's client can't reach
+them through the sandbox proxy).
+
+```bash
+danno sandbox start --apply --agent claurst              # claurst's default model
+danno sandbox start --apply --agent claurst -m gemma4    # a local [models] entry
+```
+
 ## `danno.toml` quickstart
 
 `danno.toml` is the single source of truth. See [`danno.toml.example`](danno.toml.example)
@@ -417,9 +429,9 @@ danno validate --agent claurst               # sweep the models via claurst, not
 
 `--agent` picks the **agent-under-test** that drives the sweep: `opencode` (the
 default) or `claurst` (the Rust Claude-Code clone, benchmarked on local Ollama
-models). claurst is **only** an agent-under-test here — it is not a `sandbox start`
-agent (see [`.docs/user-experience-elephant.md`](.docs/user-experience-elephant.md)
-for why, and the proposed interactive path).
+models). claurst also runs as an **interactive** coding tool via `danno sandbox start
+--agent claurst` (see the [`--agent`](#other-agents---agent) section above and
+[`.docs/user-experience-elephant.md`](.docs/user-experience-elephant.md) §5).
 
 It **runs immediately** (like `sandbox start`, no `--apply`) and is
 **non-destructive**: the battery runs in a throwaway, validator-owned sandbox

@@ -17,11 +17,19 @@ skipped.
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 from book_em_danno.commands.sandbox import exec_in_container
 from book_em_danno.core.exec import Runner
-from danno_validator.driver import Turn, TurnFn, claurst_run
+from danno_validator.driver import (
+    CLAURST_MODEL_FLAG,
+    CLAURST_OLLAMA_HOST,
+    Turn,
+    TurnFn,
+    _claurst_script,
+    claurst_run,
+)
 
 # The prebuilt sandbox image that hosts claurst. `shell` carries the toolchain the
 # driver needs (python3 for the relay, curl, git, tar) — verified in the M0 spike.
@@ -66,6 +74,27 @@ def install_claurst(runner: Runner, sandbox: str) -> list[str]:
     return exec_in_container(
         runner, sandbox, script, why=f"install claurst v{CLAURST_VERSION} in sandbox '{sandbox}'"
     )
+
+
+def interactive_launch_script(model_ref: str | None, passthru: list[str]) -> list[str]:
+    """`container_argv` for an INTERACTIVE claurst session — the `danno sandbox start
+    --agent claurst` counterpart of headless `claurst_run`.
+
+    Returns `["bash", "-lc", <script>]` where the script is the SAME Ollama-relay
+    bracket the headless path uses (`driver._claurst_script`: relay backgrounded on
+    127.0.0.1:11434, reaped via `trap … EXIT`) wrapped around a TTY claurst run — no
+    `-p`, so claurst opens its interactive UI. The relay lives exactly as long as this
+    single long-running `docker sandbox exec` (the whole session), which is why no
+    persistent daemon is needed; the headless per-turn path is reused unchanged.
+
+    `model_ref` is claurst's `-m ollama/<tag>` (already resolved + locality-checked by
+    the caller); `passthru` is the agent's `--`-forwarded args, verbatim."""
+    argv = ["claurst"]
+    if model_ref is not None:
+        argv += [CLAURST_MODEL_FLAG, model_ref]
+    argv += passthru
+    claurst_cmd = f"OLLAMA_HOST={CLAURST_OLLAMA_HOST} {shlex.join(argv)}"
+    return ["bash", "-lc", _claurst_script(claurst_cmd)]
 
 
 def authed_claurst_run(env_file: Path | None) -> TurnFn:

@@ -13,7 +13,7 @@ three use cases side by side:
 | --- | --- | --- | --- |
 | **A** | **opencode + [ADOS](https://github.com/juliusz-cwiakalski/agentic-delivery-os)** | hybrid: local Gemma (Ollama) for high-volume agents, cloud for heavy-reasoning agents | ships today |
 | **B** | **[Claude Code](https://github.com/anthropics/claude-code)** | Claude's own cloud models (Opus/Sonnet/…) | ships today |
-| **C** | **[claurst](https://github.com/Kuberwastaken/claurst)** (a pure-Rust Claude-Code clone) | **local Ollama only** | **proposed** — see [§5](#5-use-case-c--claurst-on-local-ollama-proposed) |
+| **C** | **[claurst](https://github.com/Kuberwastaken/claurst)** (a pure-Rust Claude-Code clone) | **local Ollama only** | ships today — see [§5](#5-use-case-c--claurst-on-local-ollama) |
 
 All three share the same skeleton: `doctor` → `install` → `sandbox start`. They
 differ only in the agent that comes up at the end and which models it can reach.
@@ -173,13 +173,13 @@ Claude-Code-shaped UX on **local** models is exactly what use case C is for.
 
 ---
 
-## 5. Use case C — claurst on local Ollama (proposed)
+## 5. Use case C — claurst on local Ollama
 
-> **Status: proposed, not yet implemented.** Today claurst is wired into `danno`
-> only as a **headless benchmark agent-under-test** (`danno validate --agent
-> claurst`, `danno benchmark`), not as an interactive coding tool. This section
-> specifies the UX we'd add and the one real gap behind it
-> ([§7](#7-what-claurst-as-a-coding-tool-needs-to-ship)).
+> **Status: ships today.** `danno sandbox start --agent claurst` launches claurst as
+> an interactive coding tool; claurst is also wired as a **headless benchmark
+> agent-under-test** (`danno validate --agent claurst`, `danno benchmark`). How the
+> launch path is built (and the one model-config feature still deferred) is in
+> [§7](#7-how-claurst-as-a-coding-tool-is-wired).
 
 **The pitch:** [claurst](https://github.com/Kuberwastaken/claurst) is a pure-Rust
 Claude-Code clone whose CLI is deliberately Claude-Code-faithful. Run it as a danno
@@ -249,7 +249,9 @@ Whichever agent you launch, the isolation and wiring are identical:
 - **Agent home.** Chat history/settings live in a host folder keyed by the
   `[sandbox] agent_home` knob (`per-project` default), so they **survive `rebuild`**.
   danno translates that one knob per agent: `CLAUDE_CONFIG_DIR` for Claude,
-  `XDG_CONFIG_HOME` for opencode (claurst's config dir is a §7 detail to confirm).
+  `XDG_CONFIG_HOME` for opencode, and `HOME` for claurst (it reads `~/.claurst` and
+  honors no config-dir override; the claurst binary stays VM-local on `PATH`, so only
+  `~/.claurst` follows the relocated `HOME`).
 - **Lifecycle.** `danno sandbox shell` (bash in the VM), `… stop --apply`,
   `… rebuild --apply` (recycle the VM; agent home survives), `… ls` (which sandbox
   maps to which project).
@@ -257,39 +259,42 @@ Whichever agent you launch, the isolation and wiring are identical:
 The microVM is **disposable**; nothing important lives only inside it — your repo is
 on the host, auth is re-injected each launch, and the agent home is a host folder.
 
-## 7. What claurst-as-a-coding-tool needs to ship
+## 7. How claurst-as-a-coding-tool is wired
 
-Use case C is a small lift because the hard parts already exist in the validator
-(`src/danno_validator/claurst.py`, `src/danno_validator/driver.py`). Promoting it to
-an interactive `--agent` involves three pieces:
+Use case C was a small lift because the hard parts already existed in the validator
+(`src/danno_validator/claurst.py`, `src/danno_validator/driver.py`). The interactive
+`--agent claurst` path reuses them in three pieces:
 
 1. **Host claurst in a `shell` sandbox, then curl-install it.** claurst is **not** a
    prebuilt `docker sandbox` agent image, so `--agent claurst` can't pass straight to
-   `docker sandbox create` the way `claude` does. The validator already handles this:
-   it provisions the `shell` image and drops the release binary into `~/.local/bin`
-   via `install_claurst()` (curl-fetched because `npm i -g claurst`'s postinstall
-   connects direct to GitHub and the proxy-only sandbox rejects it; it also
-   apt-installs the ALSA runtime claurst links). That install step is idempotent and
-   ready to reuse — the launch path just needs to special-case `claurst` onto the
-   `shell` image and run it post-provision.
+   `docker sandbox create` the way `claude` does. `provision()` creates the `shell`
+   image (the label stays `claurst` for the sandbox name + registry) and, after the
+   egress policy is armed, runs the validator's idempotent `install_claurst()` — it
+   drops the release binary into `~/.local/bin` (curl-fetched because `npm i -g
+   claurst`'s postinstall connects direct to GitHub and the proxy-only sandbox rejects
+   it) and apt-installs the ALSA runtime claurst links.
 
-2. **Run the Ollama relay as a persistent background process (the real gap).**
-   Because claurst's client ignores the proxy, it can only reach `127.0.0.1`. The
-   validator stands up a tiny in-VM relay that listens on `127.0.0.1:11434` and
-   re-issues each request to host Ollama **through** the squid proxy, then points
-   claurst at it with `OLLAMA_HOST=http://127.0.0.1:11434`. The catch: the validator
-   launches that relay **inside each headless exec, so it dies with the turn**. An
-   interactive TUI session needs the relay **backgrounded for the life of the
-   session** (started on launch, reaped on exit) — this is the only genuinely new
-   plumbing.
+2. **Reuse the Ollama relay bracket — no daemon needed.** Because claurst's client
+   ignores the proxy, it can only reach `127.0.0.1`. The validator stands up a tiny
+   in-VM relay that listens on `127.0.0.1:11434` and re-issues each request to host
+   Ollama **through** the squid proxy, pointing claurst at it via
+   `OLLAMA_HOST=http://127.0.0.1:11434`. The relay is co-located in the agent's `exec`
+   and reaped via `trap … EXIT`. The validator runs **many short execs** so its relay
+   dies with each turn — but an interactive session is **one long-lived `exec`**, so
+   that same bracket already keeps the relay alive for the whole session and reaps it
+   on exit. `claurst.interactive_launch_script` wraps the headless bracket around a TTY
+   claurst run (no `-p`); the headless path is untouched.
 
-3. **Surface it in the CLI + docs.** Accept `claurst` as an `--agent` value, map
-   danno's `-m <name>` to claurst's `-m ollama/<tag>`, reject cloud models loudly,
-   and document the local-only scope. Update `--help` and the README in the same
-   commit (Documentation Hygiene).
+3. **CLI surface.** `--agent claurst` is accepted; `-m <name>` resolves a danno.toml
+   `[models]` entry to claurst's `-m ollama/<tag>` and **rejects cloud/non-Ollama
+   models loudly** (claurst can't reach them). `-m` is claurst-only on `sandbox start`
+   (claude uses its own `--model`; opencode's model comes from danno.toml).
 
-The three pieces above deliberately give claurst **one** model via a launch flag —
-the minimum for the local-Ollama use case.
+These three give claurst **one** model via a launch flag — the minimum for the
+local-Ollama use case. Agent-home persistence is wired via `HOME` (claurst honors no
+config-dir override); a live probe confirmed the launch path runs end-to-end and that
+SQLite-on-the-mounted-home works here (the opencode WAL crash does not reproduce), so
+`~/.claurst` persists across `stop`/`start`.
 
 **A separate, larger decision sits on top of them — generating claurst's config from
 danno.toml.** Truly *configuring claurst's AI* — a **per-agent** model map (claurst's
