@@ -18,7 +18,7 @@ from typing import Protocol, runtime_checkable
 
 from book_em_danno.core.exec import Runner
 from danno_validator.driver import Turn, TurnFn, opencode_run
-from danno_validator.oracle import TurnVerdict, classify_turn
+from danno_validator.oracle import FailureClass, TurnVerdict, classify_turn
 
 
 @runtime_checkable
@@ -60,6 +60,30 @@ class BenchVerdict:
     cost: float
     latency_s: float
     error_summary: str | None = None
+
+
+def error_verdict(task_id: str, suite: str, detail: str) -> BenchVerdict:
+    """A failed `BenchVerdict` for a task that could not even run (e.g. its deps
+    would not install, or its repo would not clone) — so one bad instance shows as
+    an errored row instead of aborting the whole run (the suite's fail-loud-per-row
+    behavior)."""
+    return BenchVerdict(
+        task_id=task_id,
+        suite=suite,
+        passed=False,
+        verdict=TurnVerdict(
+            failure_class=FailureClass.ERROR,
+            promised_action=False,
+            tool_call_count=0,
+            side_effect=False,
+            rationale=detail,
+        ),
+        tool_calls=0,
+        tokens=0,
+        cost=0.0,
+        latency_s=0.0,
+        error_summary=detail,
+    )
 
 
 def run_bench_task(

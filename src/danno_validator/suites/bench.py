@@ -10,6 +10,7 @@ SWE-bench uses a fresh sandbox per instance (its own repo + dep tree).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import tempfile
@@ -19,11 +20,11 @@ from pathlib import Path
 
 from book_em_danno.commands import sandbox as sb
 from book_em_danno.config.schema import DannoConfig
-from book_em_danno.core.exec import Runner, log_info, log_warn
+from book_em_danno.core.exec import CommandFailedError, Runner, log_info, log_warn
 from danno_validator.driver import seed_workspace
 from danno_validator.matrix import ConfigVariant, model_variants
 from danno_validator.suites.aut import install_aut, resolve_image, run_turn_for
-from danno_validator.suites.base import BenchVerdict, run_bench_task
+from danno_validator.suites.base import BenchVerdict, error_verdict, run_bench_task
 from danno_validator.suites.config import BenchmarksConfig
 from danno_validator.suites.run import (
     clone_polyglot,
@@ -56,10 +57,17 @@ class BenchReport:
 
 
 def _sandbox_name(target: Path, suffix: str) -> str:
-    """A disposable bench sandbox name, derived from the project + a unique suffix."""
+    """A disposable bench sandbox name — short by necessity.
+
+    Docker Desktop's sandbox VM socket path (`~/.docker/sandboxes/vm/<name>/eth`)
+    has a hard ~94-char limit, and SWE-bench instance ids are long, so the name is
+    kept compact: a readable truncated suffix plus an 8-char hash of the full
+    (project, suffix) for uniqueness. Capped well under the limit for any username.
+    """
     base = sb.default_name(target.resolve(), sb.DEFAULT_AGENT)
-    raw = f"{base}-bench-{suffix}"
-    return re.sub(r"[^A-Za-z0-9-]", "-", raw)[:120]
+    digest = hashlib.sha1(f"{base}-{suffix}".encode()).hexdigest()[:8]
+    short = re.sub(r"[^A-Za-z0-9]+", "-", suffix).strip("-")[:16].strip("-")
+    return f"danno-bench-{short}-{digest}"
 
 
 def _teardown(runner: Runner, name: str, *, keep: bool) -> None:
@@ -124,7 +132,17 @@ def _run_swebench(
         sb.provision(runner, name, workspace, agent=resolve_image(opts.agent))
         install_aut(runner, name, opts.agent)
         try:
-            task.provision(runner, name, workspace)
+            try:
+                task.provision(runner, name, workspace)
+            except CommandFailedError as exc:
+                # One instance's repo/deps failing must not abort the whole run —
+                # record an errored row per model variant and move on (fail loud,
+                # but per-row, as the suite promises).
+                log_warn(f"[bench] swebench {task.id} provision failed: {exc}")
+                verdicts += [
+                    error_verdict(task.id, "swebench", f"provision failed: {exc}") for _ in variants
+                ]
+                continue
             for variant in variants:
                 log_info(f"[bench] swebench {task.id} × {variant.model_ref}")
                 verdicts.append(

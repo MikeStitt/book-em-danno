@@ -92,10 +92,12 @@ def test_provision_clones_checks_out_applies_patch_installs(
     script = seen[0]
     assert "github.com/demo/demo.git" in script
     assert "git checkout -f abc123" in script
-    assert "git apply .danno_test.patch" in script
+    assert "git apply" in script
     assert "pip install" in script and "-e ." in script
-    # The test patch was written into the instance subdir on the host.
-    assert (tmp_path / "demo__demo-1" / ".danno_test.patch").read_text().startswith("diff --git")
+    # VM-local checkout under /tmp (NOT the mounted workspace), patch via heredoc.
+    assert "/tmp/danno-swe/demo__demo-1" in script
+    assert "diff --git" in script  # the test patch is heredoc'd into the script
+    assert not (tmp_path / "demo__demo-1").exists()  # nothing written to the host mount
 
 
 def test_grade_runs_fail_and_pass_node_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -120,7 +122,7 @@ def test_reset_restores_base_and_reapplies_patch(
     script = seen[0]
     assert "git checkout -f abc123" in script
     assert "git clean -fd" in script
-    assert "git apply .danno_test.patch" in script
+    assert "git apply" in script and "/tmp/danno-swe/demo__demo-1.patch" in script
 
 
 def test_offline_wheel_cache_uses_no_build_isolation() -> None:

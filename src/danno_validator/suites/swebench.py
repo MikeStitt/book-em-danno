@@ -30,8 +30,12 @@ from danno_validator.driver import capture_exec
 _ROWS_API = "https://datasets-server.huggingface.co/rows"
 _PAGE = 100  # max rows per request
 _TOTAL = 500  # SWE-bench_Verified size; paged to find the select ids
-# The patch file the test_patch is written to inside each instance checkout.
-_TEST_PATCH_FILE = ".danno_test.patch"
+# SWE-bench checkouts live VM-LOCAL, not on the mounted workspace: `git clone` of a
+# real repo onto the gvisor/virtiofs macOS mount corrupts ("inflate inconsistency").
+# Nothing here needs the host mount — the agent edits via --cwd and grading runs
+# pytest, both in the VM. Verified 2026-06-24.
+_VM_ROOT = "/tmp/danno-swe"  # noqa: S108 (deliberate in-VM scratch root)
+_PATCH_HEREDOC = "DANNO_SWE_PATCH_EOF"
 
 
 def _as_list(value: object) -> list[str]:
@@ -115,7 +119,12 @@ class SwebenchTask:
         return self.instance_id
 
     def workspace_dir(self, workspace: Path) -> Path:
-        return workspace / self._subdir
+        # VM-LOCAL (ignores the mounted `workspace`) — see _VM_ROOT. The agent's
+        # --cwd and the grader's pytest both run here, in the VM.
+        return Path(_VM_ROOT) / self._subdir
+
+    def _patch_path(self) -> str:
+        return f"{_VM_ROOT}/{self.instance_id}.patch"
 
     def _pip(self) -> str:
         # --no-build-isolation avoids the PEP 517 isolated-subprocess proxy timeout
@@ -127,30 +136,31 @@ class SwebenchTask:
         return f"{base} setuptools wheel pytest && {base}{isolation} -e . || true"
 
     def provision(self, runner: Runner, sandbox: str, workspace: Path) -> None:
-        """Clone repo@base_commit, apply the test patch, install deps (one-time)."""
-        d = self.workspace_dir(workspace)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / _TEST_PATCH_FILE).write_text(self.test_patch, encoding="utf-8")
-        q = shlex.quote(str(d))
-        url = f"https://github.com/{self.repo}.git"
+        """Clone repo@base_commit (VM-local), apply the test patch, install deps.
+
+        Everything runs in the VM: the patch is written via a heredoc, a full clone
+        (not shallow, so the historical `base_commit` is present) lands in `/tmp`, then
+        a hard checkout + `git apply` + dep install. `workspace` (the mount) is unused.
+        """
+        qd = shlex.quote(str(self.workspace_dir(workspace)))
+        qp = shlex.quote(self._patch_path())
+        url = shlex.quote(f"https://github.com/{self.repo}.git")
+        commit = shlex.quote(self.base_commit)
+        heredoc = f"cat > {qp} <<'{_PATCH_HEREDOC}'\n{self.test_patch}\n{_PATCH_HEREDOC}"
         script = (
-            f"set -e; cd {q}; "
-            "if [ ! -d .git ]; then "
-            f"git clone {shlex.quote(url)} .; fi; "
-            f"git fetch --depth 1 origin {shlex.quote(self.base_commit)} || git fetch origin; "
-            f"git checkout -f {shlex.quote(self.base_commit)}; "
-            f"git apply {_TEST_PATCH_FILE}; "
-            f"{self._pip()}"
+            f"set -e; mkdir -p {shlex.quote(_VM_ROOT)}\n"
+            f"{heredoc}\n"
+            f"if [ ! -d {qd}/.git ]; then rm -rf {qd}; git clone {url} {qd}; fi\n"
+            f"cd {qd}; git checkout -f {commit}; git apply {qp}; {self._pip()}"
         )
         capture_exec(runner, sandbox, script, check=True)
 
     def reset(self, runner: Runner, sandbox: str, workspace: Path) -> None:
         """Restore the worktree to base_commit + test_patch (drop the agent's edits)."""
-        q = shlex.quote(str(self.workspace_dir(workspace)))
-        script = (
-            f"set -e; cd {q}; git checkout -f {shlex.quote(self.base_commit)}; "
-            f"git clean -fd -e {_TEST_PATCH_FILE}; git apply {_TEST_PATCH_FILE}"
-        )
+        qd = shlex.quote(str(self.workspace_dir(workspace)))
+        qp = shlex.quote(self._patch_path())
+        commit = shlex.quote(self.base_commit)
+        script = f"set -e; cd {qd}; git checkout -f {commit}; git clean -fd; git apply {qp}"
         capture_exec(runner, sandbox, script, check=True)
 
     def grade(self, runner: Runner, sandbox: str, workspace: Path) -> bool:
