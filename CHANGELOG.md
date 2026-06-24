@@ -5,9 +5,14 @@ commits by [git-cliff](https://git-cliff.org).
 
 ## [0.7.0] - 2026-06-23
 
+### Bug Fixes
+
+- *(validator)* Make the SWE-bench suite actually run end-to-end
+
 ### Documentation
 
 - *(capture)* Frame --capture coverage by the three model roles
+- *(validator)* Plan Claurst as an agent-under-test + SWE benchmark tiers
 
 ### Features
 
@@ -17,6 +22,12 @@ commits by [git-cliff](https://git-cliff.org).
 - Improve danno.toml.example
 - Remove tool_call
 - Remove tool_call
+- *(validator)* Drive Claurst as an agent-under-test (M1)
+- *(validator)* Select Claurst as a sweep agent-under-test (M2/M3)
+- *(validator)* Add benchmark-task abstraction + suite config (M4)
+- *(validator)* Aider Polyglot benchmark suite (M5)
+- *(validator)* SWE-bench Verified suite via HuggingFace (M6)
+- *(validator)* Danno bench — run suites across the model matrix (M7)
 
 ## [0.6.0] - 2026-06-22
 
