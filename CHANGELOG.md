@@ -3,6 +3,17 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.8.0] - 2026-06-24
+
+### Documentation
+
+- Add claude/claurst use cases and correct the command surface
+
+### Features
+
+- *(sandbox)* Run claurst as an interactive --agent on local Ollama
+- Document sandboxed AI process
+
 ## [0.7.0] - 2026-06-23
 
 ### Bug Fixes
