@@ -31,9 +31,9 @@ from ..capture.wiring import (
     plan_capture,
     uncaptured_cloud_refs,
 )
-from ..config.generate import generate
+from ..config.generate import generate, model_ref
 from ..config.loader import DannoConfigError, load_config
-from ..config.schema import NpmPlugin, Sandbox
+from ..config.schema import DannoConfig, NpmPlugin, OllamaBackend, Sandbox
 from ..core import registry
 from ..core.exec import CommandFailedError, Runner, log_info, log_warn
 from . import ollama
@@ -43,6 +43,24 @@ DEFAULT_ALLOW_HOSTS = ("localhost:11434",)
 DEFAULT_AGENT = "opencode"
 # Auth env vars Claude Code accepts, in preference order (subscription token first).
 CLAUDE_AUTH_VARS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
+# claurst (a pure-Rust Claude-Code clone) is NOT a prebuilt `docker sandbox` image: it
+# is hosted in the `shell` image and the release binary is installed post-create (see
+# `danno_validator.claurst.install_claurst`). The logical agent label stays "claurst"
+# everywhere (naming/registry/env/launch); only the create-time Docker image differs.
+CLAURST_AGENT = "claurst"
+
+
+def _docker_image(agent: str) -> str:
+    """The prebuilt `docker sandbox` image backing a logical agent label.
+
+    Almost always the label itself (opencode/claude/… ARE images). claurst is the
+    exception — it has no prebuilt image, so it rides the `shell` image and is
+    installed afterwards; the label is preserved for the sandbox name and registry."""
+    if agent == CLAURST_AGENT:
+        from danno_validator.claurst import CLAURST_SANDBOX_IMAGE  # local: avoids import cycle
+
+        return CLAURST_SANDBOX_IMAGE
+    return agent
 
 
 def default_name(target_abs: Path, agent: str = DEFAULT_AGENT) -> str:
@@ -268,7 +286,7 @@ def create(
                 f"for {target_abs} would collide — pass --name to disambiguate."
             )
 
-    cmd = ["docker", "sandbox", "create", "--name", name, agent, str(target_abs)]
+    cmd = ["docker", "sandbox", "create", "--name", name, _docker_image(agent), str(target_abs)]
     if home is not None:
         cmd.append(str(home))
 
@@ -345,6 +363,16 @@ def provision(
     # The network policy only takes on a fresh VM start; stop so the next `start`
     # applies the allow-rule.
     cmds.append(stop(runner, name))
+    if agent == CLAURST_AGENT:
+        # claurst has no prebuilt image: drop its binary into the `shell` VM. Done AFTER
+        # the stop so the install exec auto-starts the VM with the allow-policy armed
+        # (apt + the GitHub release fetch need egress). Idempotent (self-skips when
+        # already installed). The binary stays VM-local; only ~/.claurst is persisted
+        # via the relocated HOME at launch (see agent_env). Local import: claurst.py
+        # imports back into this module.
+        from danno_validator.claurst import install_claurst
+
+        cmds.append(install_claurst(runner, name))
     return cmds
 
 
@@ -357,15 +385,22 @@ def agent_env(agent: str, ollama_url: str, home: Path | None = None) -> list[str
     secret only ever lands in the chmod-600 env-file, never on the command line.
 
     When `home` is set, the agent's global config is relocated onto the mounted
-    host dir: claude via CLAUDE_CONFIG_DIR; opencode via XDG_CONFIG_HOME.
-
-    opencode's data dir (XDG_DATA_HOME — its sqlite session store) is deliberately
-    NOT relocated onto the mounted home: that mount is virtiofs, which can't honor
-    `PRAGMA journal_mode = WAL`, so opencode crashes with a Drizzle error on start.
-    Left unset, it defaults to the container's VM-local ext4 (~/.local/share),
-    where WAL works. Tradeoff: sessions persist across stop/start but reset on a
-    sandbox rebuild/reset (`docker sandbox` has no volume mount to do better).
+    host dir: claude via CLAUDE_CONFIG_DIR; opencode via XDG_CONFIG_HOME; claurst via
+    HOME (it reads `~/.claurst` and honors no config-dir override — verified
+    `scratch/claurst_home_probe.sh`, claurst 0.1.5). The claurst binary lives VM-local
+    (`/home/agent/.local/bin`, still first on PATH after the HOME swap), so only its
+    config/state (`~/.claurst`) follows the relocated HOME. claurst's `~/.claurst`
+    holds a SQLite `sessions.db` with no config/data split (unlike opencode, whose data
+    dir stays VM-local to dodge a virtiofs WAL crash) — but a live probe confirmed a
+    relocated HOME runs claurst fine AND `PRAGMA journal_mode=WAL` works on the mounted
+    home here, so that crash does not reproduce and `~/.claurst` persists host-side
+    (full interactive resume across stop/start is best confirmed in a real TUI session).
+    opencode reaches host Ollama via OLLAMA_BASE_URL; claurst's Ollama URL is set inline
+    by the relay bracket (`OLLAMA_HOST`, see `claurst.interactive_launch_script`), so no
+    Ollama line here.
     """
+    if agent == CLAURST_AGENT:
+        return [f"HOME={home}"] if home is not None else []
     if agent == "claude":
         lines: list[str] = []
         for var in CLAUDE_AUTH_VARS:
@@ -387,6 +422,54 @@ def agent_env(agent: str, ollama_url: str, home: Path | None = None) -> list[str
     if home is not None:
         lines.append(f"XDG_CONFIG_HOME={home}/config")
     return lines
+
+
+def resolve_claurst_model(config: DannoConfig, value: str) -> str:
+    """Resolve a `-m` value to claurst's `-m ollama/<tag>`, rejecting cloud loudly.
+
+    `value` is a `[models]` name (the documented form, e.g. `gemma4`) or a raw
+    `provider/model` ref. claurst is local-only — its Rust client ignores the egress
+    proxy, and the in-VM relay reaches only host Ollama — so any non-Ollama target is
+    unreachable and MUST fail loud (Working Rule 8), naming the provider, rather than
+    launch and silently fail mid-session."""
+    if "/" in value:
+        provider = value.split("/", 1)[0]
+        if provider != "ollama":
+            raise CommandFailedError(
+                f"--agent claurst is local-only and cannot reach the '{provider}' provider "
+                f"in '{value}' (claurst's client ignores the sandbox egress proxy). Pass an "
+                f"Ollama model (a [models] entry on an ollama backend, or `ollama/<tag>`)."
+            )
+        return value
+    model = config.models.get(value)
+    if model is None:
+        raise CommandFailedError(
+            f"model '{value}' is not defined in danno.toml [models]. "
+            f"Pass a local Ollama model for --agent claurst."
+        )
+    backend = config.backends[model.backend]
+    if not isinstance(backend, OllamaBackend):
+        raise CommandFailedError(
+            f"--agent claurst is local-only, but model '{value}' is on the '{backend.kind}' "
+            f"backend '{model.backend}' (not Ollama), which claurst cannot reach from the "
+            f"sandbox (its client ignores the egress proxy). Pick an Ollama model."
+        )
+    return model_ref(config, value)
+
+
+def resolve_model_for_agent(target_abs: Path, agent: str, value: str) -> str:
+    """The `-m/--model` flow for `sandbox start`: load danno.toml and resolve `value`
+    for `agent`. claurst-only — claude has its own `--model` and opencode's model comes
+    from the generated opencode.jsonc, so `-m` with either fails loud rather than being
+    silently ignored. Raises `DannoConfigError` (bad toml) or `CommandFailedError`."""
+    if agent != CLAURST_AGENT:
+        raise CommandFailedError(
+            "`-m/--model` on `danno sandbox start` is only supported with `--agent claurst`. "
+            "Claude Code uses its own `--model` (pass it after `--`); opencode's model comes "
+            "from danno.toml. Re-run without `-m`."
+        )
+    config = load_config(target_abs / "danno.toml")
+    return resolve_claurst_model(config, value)
 
 
 def _build_env_file(agent_lines: list[str], env_pairs: list[str], env_files: list[str]) -> Path:
@@ -556,13 +639,25 @@ def launch(
     env_files: list[str] | None = None,
     home: Path | None = None,
     agent_args: list[str] | None = None,
+    model: str | None = None,
 ) -> list[str]:
     """Launch the in-container agent in the mounted repo, wired to host Ollama /
     agent auth. Launching is the command's purpose, so it always executes (not gated
     by `--apply`). The session setup is shared with `shell` via `_exec_session` (see
     its SYNC REQUIREMENT); this path's only specialisation is the container command —
     the agent binary plus `agent_args` forwarded verbatim (e.g. `["--resume", "<id>"]`
-    for `claude`)."""
+    for `claude`).
+
+    claurst is the exception: it can't reach host Ollama directly (its Rust client
+    ignores the egress proxy), so its command is the relay-bracketed
+    `bash -lc` script from `claurst.interactive_launch_script` (mirrors the headless
+    path), with `model` resolved to its `-m ollama/<tag>`. `model` is claurst-only."""
+    if agent == CLAURST_AGENT:
+        from danno_validator.claurst import interactive_launch_script  # local: import cycle
+
+        container_argv = interactive_launch_script(model, agent_args or [])
+    else:
+        container_argv = [agent, *(agent_args or [])]
     return _exec_session(
         runner,
         name,
@@ -572,7 +667,7 @@ def launch(
         env_pairs=env_pairs or [],
         env_files=env_files or [],
         home=home,
-        container_argv=[agent, *(agent_args or [])],
+        container_argv=container_argv,
         why=f"launch {agent} in sandbox '{name}'",
     )
 
@@ -673,6 +768,7 @@ def start(
     registry_path: Path | None = None,
     agent_args: list[str] | None = None,
     capture_dir: Path | None = None,
+    model: str | None = None,
 ) -> None:
     """Provision (under `--apply`, idempotent) then launch the in-container AGENT.
 
@@ -682,7 +778,9 @@ def start(
     `_capture_session` (`--capture`); put any new provisioning/env/mount/capture
     behaviour in those shared helpers, not in one command only, so the two cannot drift.
 
-    `agent_args` are forwarded verbatim to the agent binary (e.g. `--resume <id>`)."""
+    `agent_args` are forwarded verbatim to the agent binary (e.g. `--resume <id>`).
+    `model` is the resolved, locality-checked claurst `-m ollama/<tag>` (claurst-only;
+    see `resolve_model_for_agent`); it reaches the agent command via `launch`."""
     with _capture_session(
         runner, target_abs, agent=agent, capture_dir=capture_dir, base_allow_hosts=allow_hosts
     ) as eff_allow_hosts:
@@ -705,6 +803,7 @@ def start(
             env_files=env_files,
             home=home,
             agent_args=agent_args,
+            model=model,
         )
 
 
