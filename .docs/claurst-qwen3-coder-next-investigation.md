@@ -54,12 +54,33 @@ only **3B active parameters** is prone to. The leverage is therefore **higher-fi
 weights** (a better quant) plus a build that bundles the latest tool-call parsing
 fixes — not a config change.
 
-> Last unknown — now capturable: claurst's exact wire request (system prompt; whether
-> it sends the `tools` array on the failing turns). `danno sandbox start --agent claurst
-> --capture --apply` now records claurst↔Ollama traffic through the existing capture
-> proxy (the relay is pointed at it via `DANNO_RELAY_UPSTREAM_PORT`; see
-> `.docs/` capture notes and `capture/proxy.py`). Run a reproduction under `--capture`
-> and read `./.danno/captures/<ts>/<backend>.jsonl` to confirm what the failing turns send.
+> Last unknown — now CAPTURED + CLOSED (2026-06-26). `--capture --agent claurst` now
+> records claurst↔Ollama traffic through the existing capture proxy (relay pointed at it
+> via `DANNO_RELAY_UPSTREAM_PORT`). A headless capture of the failing README-review
+> prompt (`scratch/capture_claurst_turn_only.py`) settled it:
+>
+> - **claurst's request is correct.** Every `/v1/chat/completions` carries the **full 45
+>   tools** (Bash, Read, Edit, Write, Glob, Grep, … Agent) AND a **4783-char system
+>   prompt** ("You are Claurst, Anthropic's official CLI for Claude. ## Capabilities …").
+>   `stream: true`. So narrate-then-stop is **NOT** claurst dropping tools or sending a
+>   degraded request — that hypothesis is dead.
+> - **The failure is stochastic, model-side.** This headless run did NOT reproduce the
+>   stall: the model narrated *and acted*, 12 tool calls across 11 round-trips, `ok=True`.
+>   It emitted the very same phrases the user saw ("Now let me review the source files:")
+>   but here followed them with real tool calls. The interactive stalls are the model
+>   (qwen3-coder-next Q4, 3B-active, temp 1.0) sometimes emitting a **pure-narration
+>   response with no tool call**, which claurst correctly treats as turn-end → returns to
+>   the user. A long session reinforces it (accumulated narration-only assistant turns).
+> - **Therefore the lever is the weights**, not config or claurst: the Unsloth UD-Q4_K_M
+>   pull (better dynamic quant + tool-call fixes) is the right fix to reduce the stall
+>   rate. claurst could also be hardened to re-prompt on narration-without-action, but
+>   that is claurst's design, not danno's.
+>
+> Aside — a real danno install bug surfaced: `install_claurst`'s plain
+> `curl -fsSL --max-time 180` cannot survive the squid egress proxy **truncating** the
+> GitHub release download (`curl: (18) transfer closed`), which is intermittent here. A
+> resumable retry (`curl --retry 5 --retry-all-errors -C -`) recovers cleanly. Worth a
+> follow-up fix to `src/danno_validator/claurst.py`.
 
 ## 3. What qwen3-coder-next is
 
