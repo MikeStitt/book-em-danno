@@ -26,6 +26,8 @@ def test_install_claurst_curl_fetches_release() -> None:
     assert "npm" not in script  # npm's installer bypasses the proxy and fails
     assert "~/.local/bin/claurst" in script
     assert "command -v claurst" in script  # idempotent skip-if-present-and-working
+    # Skip is version-gated: an existing sandbox on an older claurst is upgraded, not kept.
+    assert f"grep -qF {claurst.CLAURST_VERSION}" in script
     assert "libasound2" in script  # claurst links ALSA; a clean shell VM lacks it
 
 
