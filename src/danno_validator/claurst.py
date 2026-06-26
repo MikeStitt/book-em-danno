@@ -38,7 +38,9 @@ CLAURST_SANDBOX_IMAGE = "shell"
 
 # Pinned release. Bump deliberately (and re-pin the stream-json schema in driver.py
 # against the new version — M1 discipline). aarch64 = the Docker Desktop microVM.
-CLAURST_VERSION = "0.1.5"
+# v0.1.6 (2026-06-26) carries the bash-tool detached-child hang fix (claurst PR #189 /
+# issue #184); the stream-pause-between-tool-chunks hang (#185) is still open upstream.
+CLAURST_VERSION = "0.1.6"
 CLAURST_RELEASE_URL = (
     f"https://github.com/kuberwastaken/claurst/releases/download/"
     f"v{CLAURST_VERSION}/claurst-linux-aarch64.tar.gz"
@@ -62,15 +64,21 @@ def install_claurst(runner: Runner, sandbox: str) -> list[str]:
     picks up the partial file and completes (observed 2026-06-26).
     """
     script = (
-        # Skip only if claurst is present and actually runs (libs + binary OK).
-        "command -v claurst >/dev/null 2>&1 && claurst --version >/dev/null 2>&1 "
+        # Skip only if claurst is present AND already the pinned version (so a version
+        # bump actually upgrades an existing sandbox instead of keeping the old binary).
+        "command -v claurst >/dev/null 2>&1 "
+        f"&& claurst --version 2>/dev/null | grep -qF {CLAURST_VERSION} "
         "&& { claurst --version; exit 0; }; "
         "set -e; "
-        # claurst links libasound; install the ALSA runtime (t64 on Ubuntu 24.04+,
-        # plain libasound2 on older). apt reaches the index through the proxy.
+        # claurst links libasound.so.2; install the ALSA runtime (t64 on Ubuntu 24.04+,
+        # plain libasound2 on older) ONLY if it's missing. Skipping apt when the lib is
+        # already present keeps an upgrade from re-running `apt-get update`, whose index
+        # refresh can fail (e.g. a third-party repo's clock skew) and would otherwise
+        # abort the whole install under `set -e` before the claurst download.
+        "ldconfig -p 2>/dev/null | grep -q libasound.so.2 || { "
         "sudo -E apt-get update -qq; "
         "sudo -E apt-get install -y -qq libasound2t64 "
-        "|| sudo -E apt-get install -y -qq libasound2; "
+        "|| sudo -E apt-get install -y -qq libasound2; }; "
         'd=$(mktemp -d); cd "$d"; '
         # Resume + retry: the egress proxy truncates the CDN transfer intermittently.
         "curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 -C - "
