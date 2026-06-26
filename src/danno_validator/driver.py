@@ -98,7 +98,7 @@ CLAURST_OLLAMA_HOST = "http://127.0.0.1:11434"
 CLAURST_RELAY_UPSTREAM_ENV = "DANNO_RELAY_UPSTREAM_PORT"
 CLAURST_RELAY_DEFAULT_UPSTREAM_PORT = 11434
 _OLLAMA_RELAY_SOURCE = r"""
-import os, sys, urllib.error, urllib.request
+import os, sys, threading, time, urllib.error, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 UPSTREAM = "http://host.docker.internal:" + os.environ.get("DANNO_RELAY_UPSTREAM_PORT", "11434")
@@ -107,38 +107,71 @@ _opener = urllib.request.build_opener(
     urllib.request.ProxyHandler({"http": PROXY} if PROXY else {})
 )
 
+# Opt-in flushed trace of BOTH ends (claurst<->relay<->upstream), off unless
+# DANNO_RELAY_LOG names a writable path. Each line is timestamped + per-connection
+# thread-tagged and FLUSHED immediately, so a hang shows up as the last line written
+# (a buffered log would swallow it): no "<- upstream" after "-> upstream" => stuck on
+# the upstream read; "RESP done"/"CONN close" with no following "REQ" => claurst never
+# sent the next request (claurst-side). Diagnostic only; default behaviour unchanged.
+_LOG_PATH = os.environ.get("DANNO_RELAY_LOG")
+_LOG_LOCK = threading.Lock()
+
+
+def _log(msg):
+    if not _LOG_PATH:
+        return
+    with _LOG_LOCK, open(_LOG_PATH, "a") as fh:
+        fh.write("%.3f c%d %s\n" % (time.time(), threading.get_ident() % 100000, msg))
+        fh.flush()
+
 
 class H(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    def setup(self):
+        super().setup()
+        _log("CONN open %s:%s" % self.client_address)
+
+    def finish(self):
+        _log("CONN close")
+        super().finish()
+
     def _f(self):
         n = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(n) if n else None
+        _log("REQ %s %s clen=%d keepalive=%s"
+             % (self.command, self.path, n, not self.close_connection))
         req = urllib.request.Request(UPSTREAM + self.path, data=body, method=self.command)
         for k, v in self.headers.items():
             if k.lower() not in ("host", "proxy-connection", "connection"):
                 req.add_header(k, v)
+        _log("-> upstream %s%s" % (UPSTREAM, self.path))
         try:
             r = _opener.open(req, timeout=600)
         except urllib.error.HTTPError as e:
             r = e
         except Exception as e:
+            _log("ERR upstream %r" % e)
             self.send_response(502)
             self.end_headers()
             self.wfile.write(str(e).encode())
             return
+        _log("<- upstream status=%s ct=%s" % (r.status, r.getheader("Content-Type")))
         self.send_response(r.status)
         for k, v in r.getheaders():
             if k.lower() not in ("transfer-encoding", "content-length", "connection"):
                 self.send_header(k, v)
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
+        total = 0
         while True:
             c = r.read(4096)
             if not c:
                 break
+            total += len(c)
             self.wfile.write(b"%X\r\n" % len(c) + c + b"\r\n")
         self.wfile.write(b"0\r\n\r\n")
+        _log("RESP done %dB" % total)
 
     do_GET = do_POST = do_PUT = do_DELETE = _f
 
