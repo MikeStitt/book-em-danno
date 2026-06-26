@@ -166,8 +166,16 @@ per backend with auth-header values redacted.
 
 ```bash
 danno sandbox start --capture --apply   # ./.danno/captures/<ts>/<backend>.jsonl
+danno sandbox start --capture --apply --agent claurst   # claurst<->Ollama too
 danno validate --capture --only <model> # <out>/captures/<backend>.jsonl
 ```
+
+For `--agent claurst` the lever is different: claurst ignores both `opencode.jsonc`
+and the egress proxy, so danno points its in-VM Ollama relay at the same recording
+proxy instead. Capture therefore covers claurst's local-Ollama traffic too (the JSONL
+shows its system prompt, tool definitions, and the model's reply). Because the proxy
+buffers each response before replay, a *captured* interactive claurst session loses
+live token-streaming — fine for a diagnostic run, and only while `--capture` is set.
 
 **What gets captured depends on whether danno controls the endpoint URL.** A model
 reaches danno's proxy only when its traffic flows through a `base_url` danno wrote.

@@ -19,13 +19,15 @@ import re
 import subprocess
 import tempfile
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import ValidationError
 
 from ..capture.wiring import (
+    CaptureTarget,
     capture_allow_hosts,
     captures_running,
     plan_capture,
@@ -640,6 +642,7 @@ def launch(
     home: Path | None = None,
     agent_args: list[str] | None = None,
     model: str | None = None,
+    capture_relay_port: int | None = None,
 ) -> list[str]:
     """Launch the in-container agent in the mounted repo, wired to host Ollama /
     agent auth. Launching is the command's purpose, so it always executes (not gated
@@ -651,11 +654,14 @@ def launch(
     claurst is the exception: it can't reach host Ollama directly (its Rust client
     ignores the egress proxy), so its command is the relay-bracketed
     `bash -lc` script from `claurst.interactive_launch_script` (mirrors the headless
-    path), with `model` resolved to its `-m ollama/<tag>`. `model` is claurst-only."""
+    path), with `model` resolved to its `-m ollama/<tag>`. `model` and
+    `capture_relay_port` (the `--capture` recording-proxy port) are claurst-only."""
     if agent == CLAURST_AGENT:
         from danno_validator.claurst import interactive_launch_script  # local: import cycle
 
-        container_argv = interactive_launch_script(model, agent_args or [])
+        container_argv = interactive_launch_script(
+            model, agent_args or [], capture_port=capture_relay_port
+        )
     else:
         container_argv = [agent, *(agent_args or [])]
     return _exec_session(
@@ -703,6 +709,40 @@ def _ensure_provisioned(
         )
 
 
+@dataclass(frozen=True)
+class _CaptureWiring:
+    """What `_capture_session` yields: the egress allow-list to provision with, plus —
+    for claurst only — the host port its in-VM relay must forward to so its Ollama wire
+    traffic is recorded. `relay_upstream_port` is None for opencode (it dials the proxy
+    via its rewritten `base_url`) and when capture is off."""
+
+    allow_hosts: tuple[str, ...]
+    relay_upstream_port: int | None = None
+
+
+def _claurst_relay_capture_port(targets: Sequence[CaptureTarget]) -> int:
+    """The capture-proxy port the claurst relay must forward to so its Ollama wire
+    traffic is recorded: the target re-originating to the host Ollama the relay normally
+    dials (`host.docker.internal:11434` → `127.0.0.1:11434`, host-side). Fails loud
+    (Working Rule 8) when no such backend exists or more than one is ambiguous."""
+    from danno_validator.driver import CLAURST_RELAY_DEFAULT_UPSTREAM_PORT
+
+    host_ollama = f"http://127.0.0.1:{CLAURST_RELAY_DEFAULT_UPSTREAM_PORT}"
+    matches = [t for t in targets if t.upstream == host_ollama]
+    if not matches:
+        raise CommandFailedError(
+            "--capture --agent claurst: no Ollama backend fronting host Ollama "
+            "(host.docker.internal:11434) to record through; claurst's relay only reaches "
+            "local Ollama. Point a danno.toml [backends.*] ollama backend at it."
+        )
+    if len(matches) > 1:
+        raise CommandFailedError(
+            f"--capture --agent claurst: {len(matches)} Ollama backends front host Ollama; "
+            "the relay can record through only one — disambiguate danno.toml [backends]."
+        )
+    return matches[0].proxy_port
+
+
 @contextmanager
 def _capture_session(
     runner: Runner,
@@ -711,21 +751,26 @@ def _capture_session(
     agent: str,
     capture_dir: Path | None,
     base_allow_hosts: tuple[str, ...],
-) -> Iterator[tuple[str, ...]]:
-    """`--capture` for `start`/`shell`: transiently rewrite the project's opencode.jsonc
-    so opencode dials recording proxies, run those proxies, and restore the file on exit.
+) -> Iterator[_CaptureWiring]:
+    """`--capture` for `start`/`shell`: run per-backend recording proxies and yield the
+    `_CaptureWiring` to provision/launch with (egress allow-list + claurst relay port).
 
-    Yields the egress allow-list to provision with (the base plus a hole per proxy). A
-    no-op yielding `base_allow_hosts` when capture is off; warns + no-ops for a
-    non-opencode agent (the base_url lever is opencode's). Requires `--apply`: the
-    per-run proxy ports must be opened in the sandbox egress, i.e. a re-provision. The
-    user's opencode.jsonc is snapshotted and restored byte-for-byte in `finally`."""
+    Two levers, by agent: opencode dials the proxies via its generated opencode.jsonc
+    `base_url`s (transiently rewritten here, restored byte-for-byte on exit); claurst
+    ignores that config and the egress proxy, so instead its in-VM relay is pointed at
+    the Ollama proxy (`relay_upstream_port`, wired into the launch). A no-op yielding
+    `base_allow_hosts` when capture is off; warns + no-ops for any other agent. Requires
+    `--apply`: the per-run proxy ports must be opened in the sandbox egress (a
+    re-provision)."""
     if capture_dir is None:
-        yield base_allow_hosts
+        yield _CaptureWiring(base_allow_hosts)
         return
-    if agent != DEFAULT_AGENT:
-        log_warn(f"--capture only supports the '{DEFAULT_AGENT}' agent; not capturing '{agent}'.")
-        yield base_allow_hosts
+    if agent not in (DEFAULT_AGENT, CLAURST_AGENT):
+        log_warn(
+            f"--capture supports the '{DEFAULT_AGENT}' and '{CLAURST_AGENT}' agents; "
+            f"not capturing '{agent}'."
+        )
+        yield _CaptureWiring(base_allow_hosts)
         return
     if not runner.apply:
         raise CommandFailedError(
@@ -734,19 +779,28 @@ def _capture_session(
         )
     config = load_config(target_abs / "danno.toml")
     cfg_for_run, targets = plan_capture(config, capture_dir)
-    log_info(f"--capture: recording opencode<->backend wire traffic to {capture_dir}")
     uncap = uncaptured_cloud_refs(config)
     if uncap:
         log_warn(
             "--capture cannot record built-in cloud refs (no danno base_url lever): "
             f"{', '.join(uncap)}"
         )
+    allow = capture_allow_hosts(targets, base_allow_hosts)
+    if agent == CLAURST_AGENT:
+        # claurst reads neither opencode.jsonc nor the egress proxy; it dials an in-VM
+        # relay. Point that relay at the Ollama recording proxy (no opencode.jsonc rewrite).
+        relay_port = _claurst_relay_capture_port(targets)
+        log_info(f"--capture: recording claurst<->Ollama wire traffic to {capture_dir}")
+        with captures_running(targets):
+            yield _CaptureWiring(allow, relay_port)
+        return
+    log_info(f"--capture: recording opencode<->backend wire traffic to {capture_dir}")
     jsonc = target_abs / ".opencode" / "opencode.jsonc"
     snapshot = jsonc.read_text(encoding="utf-8") if jsonc.is_file() else None
     generate(cfg_for_run, target_abs, apply=True)  # rewrite baseURLs to the proxies
     try:
         with captures_running(targets):
-            yield capture_allow_hosts(targets, base_allow_hosts)
+            yield _CaptureWiring(allow)
     finally:
         if snapshot is not None:
             jsonc.write_text(snapshot, encoding="utf-8")  # restore the user's config exactly
@@ -783,13 +837,13 @@ def start(
     see `resolve_model_for_agent`); it reaches the agent command via `launch`."""
     with _capture_session(
         runner, target_abs, agent=agent, capture_dir=capture_dir, base_allow_hosts=allow_hosts
-    ) as eff_allow_hosts:
+    ) as cap:
         _ensure_provisioned(
             runner,
             name,
             target_abs,
             agent=agent,
-            allow_hosts=eff_allow_hosts,
+            allow_hosts=cap.allow_hosts,
             home=home,
             registry_path=registry_path,
         )
@@ -804,6 +858,7 @@ def start(
             home=home,
             agent_args=agent_args,
             model=model,
+            capture_relay_port=cap.relay_upstream_port,
         )
 
 
@@ -860,13 +915,13 @@ def shell(
     `bash` instead of the agent binary."""
     with _capture_session(
         runner, target_abs, agent=agent, capture_dir=capture_dir, base_allow_hosts=allow_hosts
-    ) as eff_allow_hosts:
+    ) as cap:
         _ensure_provisioned(
             runner,
             name,
             target_abs,
             agent=agent,
-            allow_hosts=eff_allow_hosts,
+            allow_hosts=cap.allow_hosts,
             home=home,
             registry_path=registry_path,
         )

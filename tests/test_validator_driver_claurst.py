@@ -104,6 +104,32 @@ def test_claurst_run_ignores_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "--agent" not in _script(calls)
 
 
+def test_claurst_run_default_relay_upstream_is_real_ollama(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Without --capture the relay forwards to real host Ollama (port 11434).
+    calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
+    driver.claurst_run(Runner(), "box", "go")
+    assert "DANNO_RELAY_UPSTREAM_PORT=11434 python3" in _script(calls)
+
+
+def test_claurst_run_capture_port_redirects_relay_upstream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # --capture points the relay at a host-side recording proxy port instead.
+    calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
+    driver.claurst_run(Runner(), "box", "go", capture_port=54321)
+    script = _script(calls)
+    assert "DANNO_RELAY_UPSTREAM_PORT=54321 python3" in script
+    assert 'python3 "$RELAY_PY" 11434' in script  # relay still LISTENS on 11434
+
+
+def test_relay_source_reads_upstream_port_from_env() -> None:
+    # The relay builds its upstream from DANNO_RELAY_UPSTREAM_PORT (defaulting to 11434),
+    # so --capture redirects it without re-templating the heredoc'd relay source.
+    assert 'os.environ.get("DANNO_RELAY_UPSTREAM_PORT", "11434")' in driver._OLLAMA_RELAY_SOURCE
+
+
 def test_claurst_turn_parses_full_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_capture(monkeypatch, stdout=_FULL_TURN)
     turn = driver.claurst_run(Runner(), "box", "make a file")

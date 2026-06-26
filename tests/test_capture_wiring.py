@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from book_em_danno.capture.wiring import (
     capture_allow_hosts,
     plan_capture,
     uncaptured_cloud_refs,
 )
+from book_em_danno.commands.sandbox import _claurst_relay_capture_port
 from book_em_danno.config.generate import render_config
 from book_em_danno.config.schema import (
     DannoConfig,
@@ -19,6 +22,7 @@ from book_em_danno.config.schema import (
     OllamaBackend,
     OpenAIBackend,
 )
+from book_em_danno.core.exec import CommandFailedError
 
 
 def _strip_comments(text: str) -> str:
@@ -91,3 +95,41 @@ def test_capture_allow_hosts_appends_a_hole_per_proxy(tmp_path: Path) -> None:
 
 def test_uncaptured_cloud_refs_flags_raw_refs() -> None:
     assert uncaptured_cloud_refs(_cfg()) == ["anthropic/claude-sonnet-4-6"]
+
+
+def test_claurst_relay_capture_port_picks_host_ollama(tmp_path: Path) -> None:
+    # claurst's relay always dials host Ollama; capture inserts the proxy fronting it.
+    _, targets = plan_capture(_cfg(), tmp_path / "caps")
+    ollama = next(t for t in targets if t.backend_name == "ollama")
+    assert _claurst_relay_capture_port(targets) == ollama.proxy_port
+
+
+def test_claurst_relay_capture_port_none_fails_loud(tmp_path: Path) -> None:
+    cfg = DannoConfig(
+        defaults=Defaults(default_agent="build"),
+        backends={
+            "nv": OpenAIBackend(
+                kind="openai", base_url="https://integrate.api.nvidia.com/v1", api_key_env="K"
+            )
+        },
+        models={"n": Model(backend="nv", tag="nvidia/x")},
+        agents={"build": "n"},
+    )
+    _, targets = plan_capture(cfg, tmp_path / "caps")
+    with pytest.raises(CommandFailedError, match="no Ollama backend"):
+        _claurst_relay_capture_port(targets)
+
+
+def test_claurst_relay_capture_port_ambiguous_fails_loud(tmp_path: Path) -> None:
+    cfg = DannoConfig(
+        defaults=Defaults(default_agent="build"),
+        backends={
+            "o1": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1"),
+            "o2": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434"),
+        },
+        models={"a": Model(backend="o1", tag="x"), "b": Model(backend="o2", tag="y")},
+        agents={"build": "a"},
+    )
+    _, targets = plan_capture(cfg, tmp_path / "caps")
+    with pytest.raises(CommandFailedError, match="front host Ollama"):
+        _claurst_relay_capture_port(targets)

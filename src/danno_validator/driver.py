@@ -90,11 +90,18 @@ CLAURST_CWD_FLAG = "--cwd"
 # their children, the relay is launched INSIDE every claurst exec and dies with it
 # (see `claurst_run`). Verified 2026-06-23; mirrors `scratch/.../ollama_relay.py`.
 CLAURST_OLLAMA_HOST = "http://127.0.0.1:11434"
+
+# Under `--capture` the relay forwards to a host-side recording proxy (capture/proxy.py)
+# instead of host Ollama directly, so claurst's wire traffic is recorded with the same
+# machinery as opencode's. The launcher sets this env var to the proxy's host port; the
+# relay reads it and defaults to the real Ollama port when absent (the non-capture case).
+CLAURST_RELAY_UPSTREAM_ENV = "DANNO_RELAY_UPSTREAM_PORT"
+CLAURST_RELAY_DEFAULT_UPSTREAM_PORT = 11434
 _OLLAMA_RELAY_SOURCE = r"""
 import os, sys, urllib.error, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-UPSTREAM = "http://host.docker.internal:11434"
+UPSTREAM = "http://host.docker.internal:" + os.environ.get("DANNO_RELAY_UPSTREAM_PORT", "11434")
 PROXY = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
 _opener = urllib.request.build_opener(
     urllib.request.ProxyHandler({"http": PROXY} if PROXY else {})
@@ -743,7 +750,9 @@ class ClaurstTurn:
         return str(self.errors[0].get("error", "error event"))
 
 
-def _claurst_script(claurst_cmd: str) -> str:
+def _claurst_script(
+    claurst_cmd: str, *, upstream_port: int = CLAURST_RELAY_DEFAULT_UPSTREAM_PORT
+) -> str:
     """Wrap a claurst invocation with the in-VM Ollama relay (see relay constants).
 
     Returns a `bash -lc` script that writes the relay to a temp file, starts it on
@@ -752,11 +761,17 @@ def _claurst_script(claurst_cmd: str) -> str:
     this one exec because execs reap their children — it cannot outlive the turn.
     Only claurst's stdout reaches the capture (relay log + readiness probe are
     redirected away), so the JSONL parser sees a clean stream.
+
+    `upstream_port` is the host port the relay re-issues to (via the egress proxy):
+    the real Ollama port by default, or a `--capture` recording proxy's port — the
+    relay reads it from `DANNO_RELAY_UPSTREAM_PORT`. The relay's own LISTEN port stays
+    11434 (claurst's `OLLAMA_HOST`); only the upstream changes.
     """
     heredoc = f"cat > \"$RELAY_PY\" <<'DANNO_RELAY_EOF'\n{_OLLAMA_RELAY_SOURCE}\nDANNO_RELAY_EOF"
     return (
         "RELAY_PY=$(mktemp /tmp/danno-relay-XXXXXX.py)\n"
         f"{heredoc}\n"
+        f"{CLAURST_RELAY_UPSTREAM_ENV}={upstream_port} "
         'python3 "$RELAY_PY" 11434 >/tmp/danno-ollama-relay.log 2>&1 &\n'
         "DANNO_RELAY_PID=$!\n"
         "trap 'kill $DANNO_RELAY_PID 2>/dev/null' EXIT\n"
@@ -778,6 +793,7 @@ def claurst_run(
     skip_permissions: bool = False,
     workspace: str | Path | None = None,
     env_file: str | Path | None = None,
+    capture_port: int | None = None,
 ) -> ClaurstTurn:
     """Drive one headless `claurst -p --output-format stream-json` turn in `name`.
 
@@ -793,6 +809,8 @@ def claurst_run(
     up the Ollama relay for the duration of the exec (see `_claurst_script`), since
     claurst's proxy-ignoring client cannot otherwise reach host Ollama. `env_file`
     is forwarded to `docker sandbox exec` for parity; local Ollama models need none.
+    `capture_port`, when set, points the relay at a `--capture` recording proxy (see
+    `_claurst_script`) so the turn's Ollama wire traffic is recorded.
 
     Returns the parsed events alongside the raw capture — never raises on a non-zero
     exit, since a stalled/errored turn is the signal the battery measures.
@@ -808,10 +826,11 @@ def claurst_run(
         argv += [CLAURST_RESUME_FLAG, session]
     argv.append(prompt)
     claurst_cmd = f"OLLAMA_HOST={CLAURST_OLLAMA_HOST} {shlex.join(argv)}"
+    upstream_port = CLAURST_RELAY_DEFAULT_UPSTREAM_PORT if capture_port is None else capture_port
     cmd = ["docker", "sandbox", "exec"]
     if env_file is not None:
         cmd += ["--env-file", str(env_file)]
-    cmd += [name, "bash", "-lc", _claurst_script(claurst_cmd)]
+    cmd += [name, "bash", "-lc", _claurst_script(claurst_cmd, upstream_port=upstream_port)]
     result = runner.capture(cmd)
     return ClaurstTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)
 

@@ -25,6 +25,7 @@ from book_em_danno.core.exec import Runner
 from danno_validator.driver import (
     CLAURST_MODEL_FLAG,
     CLAURST_OLLAMA_HOST,
+    CLAURST_RELAY_DEFAULT_UPSTREAM_PORT,
     Turn,
     TurnFn,
     _claurst_script,
@@ -76,7 +77,9 @@ def install_claurst(runner: Runner, sandbox: str) -> list[str]:
     )
 
 
-def interactive_launch_script(model_ref: str | None, passthru: list[str]) -> list[str]:
+def interactive_launch_script(
+    model_ref: str | None, passthru: list[str], *, capture_port: int | None = None
+) -> list[str]:
     """`container_argv` for an INTERACTIVE claurst session — the `danno sandbox start
     --agent claurst` counterpart of headless `claurst_run`.
 
@@ -88,13 +91,17 @@ def interactive_launch_script(model_ref: str | None, passthru: list[str]) -> lis
     persistent daemon is needed; the headless per-turn path is reused unchanged.
 
     `model_ref` is claurst's `-m ollama/<tag>` (already resolved + locality-checked by
-    the caller); `passthru` is the agent's `--`-forwarded args, verbatim."""
+    the caller); `passthru` is the agent's `--`-forwarded args, verbatim. `capture_port`,
+    when set (`--capture`), points the relay at a host-side recording proxy so claurst's
+    Ollama wire traffic is recorded (buffered, so live token-streaming is lost for the
+    captured session)."""
     argv = ["claurst"]
     if model_ref is not None:
         argv += [CLAURST_MODEL_FLAG, model_ref]
     argv += passthru
     claurst_cmd = f"OLLAMA_HOST={CLAURST_OLLAMA_HOST} {shlex.join(argv)}"
-    return ["bash", "-lc", _claurst_script(claurst_cmd)]
+    upstream_port = CLAURST_RELAY_DEFAULT_UPSTREAM_PORT if capture_port is None else capture_port
+    return ["bash", "-lc", _claurst_script(claurst_cmd, upstream_port=upstream_port)]
 
 
 def authed_claurst_run(env_file: Path | None) -> TurnFn:

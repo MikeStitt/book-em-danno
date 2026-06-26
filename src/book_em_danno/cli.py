@@ -478,7 +478,8 @@ _NAME_OPT_HELP = "Sandbox name (default danno-<parent>-<dir>)."
 _CAPTURE_OPT = typer.Option(
     False,
     "--capture",
-    help="Record opencode<->backend wire traffic (Ollama + openai/NVIDIA); needs --apply.",
+    help="Record agent<->backend wire traffic (opencode<->Ollama/openai-NVIDIA, or "
+    "claurst<->Ollama); needs --apply.",
 )
 _CAPTURE_DIR_OPT = typer.Option(
     None, "--capture-dir", help="Where to write capture JSONL (default ./.danno/captures/<ts>/)."
