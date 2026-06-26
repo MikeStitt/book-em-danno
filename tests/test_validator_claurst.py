@@ -19,6 +19,9 @@ def test_install_claurst_curl_fetches_release() -> None:
     assert cmd[:6] == ["docker", "sandbox", "exec", "box", "bash", "-lc"]
     script = cmd[6]
     assert "curl -fsSL" in script
+    # Resume + retry survives the egress proxy truncating the CDN transfer (curl 18).
+    assert "--retry-all-errors" in script
+    assert "-C -" in script
     assert claurst.CLAURST_RELEASE_URL in script
     assert "npm" not in script  # npm's installer bypasses the proxy and fails
     assert "~/.local/bin/claurst" in script
@@ -56,3 +59,19 @@ def test_authed_claurst_run_allows_none_env_file(monkeypatch: pytest.MonkeyPatch
     )
     claurst.authed_claurst_run(None)(Runner(), "box", "hi")
     assert captured["env_file"] is None
+
+
+def test_interactive_launch_script_default_relay_upstream() -> None:
+    argv = claurst.interactive_launch_script("ollama/qwen3-coder-next", [])
+    assert argv[:2] == ["bash", "-lc"]
+    script = argv[2]
+    assert "claurst -m ollama/qwen3-coder-next" in script
+    assert "DANNO_RELAY_UPSTREAM_PORT=11434 python3" in script  # real Ollama by default
+
+
+def test_interactive_launch_script_capture_port_redirects_relay() -> None:
+    # --capture points the interactive session's relay at the recording proxy port.
+    argv = claurst.interactive_launch_script("ollama/x", ["--foo"], capture_port=40404)
+    script = argv[2]
+    assert "DANNO_RELAY_UPSTREAM_PORT=40404 python3" in script
+    assert "--foo" in script  # passthru args preserved
