@@ -177,6 +177,12 @@ shows its system prompt, tool definitions, and the model's reply). Because the p
 buffers each response before replay, a *captured* interactive claurst session loses
 live token-streaming — fine for a diagnostic run, and only while `--capture` is set.
 
+To debug the relay itself (e.g. a session that appears to hang), set
+`--env DANNO_RELAY_LOG=/tmp/danno-relay.log`: the in-VM relay then writes a flushed,
+per-connection trace of both ends (`CONN open` / `REQ` / `-> upstream` / `<- upstream`
+/ `RESP done` / `CONN close`) so the last line written pinpoints exactly where a turn
+stalled. Off by default; read it with `docker sandbox exec <name> tail -f /tmp/danno-relay.log`.
+
 **What gets captured depends on whether danno controls the endpoint URL.** A model
 reaches danno's proxy only when its traffic flows through a `base_url` danno wrote.
 That splits the cases into three:
