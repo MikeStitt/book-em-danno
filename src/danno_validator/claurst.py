@@ -55,6 +55,11 @@ def install_claurst(runner: Runner, sandbox: str) -> list[str]:
     apt-installed first (`sudo -E` keeps the proxy env; verified 2026-06-23). Fails
     loud (CommandFailedError via `exec_in_container` under --apply) if any step
     fails. Returns the exec command for inspection.
+
+    The release download is **resumable + retried** (`--retry --retry-all-errors -C -`):
+    the squid egress proxy intermittently truncates the GitHub-CDN HTTPS transfer
+    (`curl: (18) transfer closed`), which a single shot cannot survive — the resume
+    picks up the partial file and completes (observed 2026-06-26).
     """
     script = (
         # Skip only if claurst is present and actually runs (libs + binary OK).
@@ -67,7 +72,9 @@ def install_claurst(runner: Runner, sandbox: str) -> list[str]:
         "sudo -E apt-get install -y -qq libasound2t64 "
         "|| sudo -E apt-get install -y -qq libasound2; "
         'd=$(mktemp -d); cd "$d"; '
-        f"curl -fsSL --max-time 180 -o claurst.tgz {CLAURST_RELEASE_URL}; "
+        # Resume + retry: the egress proxy truncates the CDN transfer intermittently.
+        "curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 -C - "
+        f"-o claurst.tgz {CLAURST_RELEASE_URL}; "
         "tar xzf claurst.tgz; mkdir -p ~/.local/bin; "
         'install -m 0755 "$(find . -name claurst -type f | head -1)" ~/.local/bin/claurst; '
         "claurst --version"

@@ -19,6 +19,9 @@ def test_install_claurst_curl_fetches_release() -> None:
     assert cmd[:6] == ["docker", "sandbox", "exec", "box", "bash", "-lc"]
     script = cmd[6]
     assert "curl -fsSL" in script
+    # Resume + retry survives the egress proxy truncating the CDN transfer (curl 18).
+    assert "--retry-all-errors" in script
+    assert "-C -" in script
     assert claurst.CLAURST_RELEASE_URL in script
     assert "npm" not in script  # npm's installer bypasses the proxy and fails
     assert "~/.local/bin/claurst" in script
