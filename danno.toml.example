@@ -1,5 +1,5 @@
 # danno.toml — declarative source of truth for book-em-danno.
-# Edit this file; `danno install` / `danno config generate` derive
+# Edit this file; `danno install` derives
 # .opencode/opencode.jsonc from it. Copy to danno.toml to use.
 
 [project]
