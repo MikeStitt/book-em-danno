@@ -189,6 +189,84 @@ def generate_claurst_models(config: DannoConfig) -> dict[str, Any]:
     return providers
 
 
+def claurst_agent_ref(config: DannoConfig, value: str) -> str:
+    """Resolve an [agents] model value to a claurst `<provider>/<tag>` ref.
+
+    The claurst counterpart of `agent_ref`: a value with a '/' is a raw claurst ref
+    (e.g. `anthropic/claude-opus-4-6`) passed through verbatim — claurst knows built-in
+    cloud models via its own provider registry — while a bare name resolves a [models]
+    entry through `claurst_model_ref` (claurst's provider id, NOT the opencode backend)."""
+    if "/" in value:
+        return value
+    return claurst_model_ref(config, value)
+
+
+# danno AgentSpec field -> claurst AgentDefinition field. `model` is handled separately
+# (it needs ref resolution); these copy across verbatim. `hidden` inverts to `visible`.
+_CLAURST_AGENT_FIELD_MAP = {
+    "description": "description",
+    "prompt": "prompt",
+    "temperature": "temperature",
+    "steps": "max_turns",
+    "color": "color",
+}
+# AgentSpec fields claurst's AgentDefinition has no home for. Set-but-unmapped → warn
+# loud rather than silently drop (Working Rule 8): `mode`/`top_p` have no claurst concept,
+# `disable` differs from `visible` (hide ≠ remove), and `permission` is an opencode-shaped
+# dict that does not translate to claurst's single `access` enum.
+_CLAURST_AGENT_UNMAPPED = frozenset({"mode", "top_p", "disable", "permission"})
+
+
+def generate_claurst_agents(config: DannoConfig) -> dict[str, Any]:
+    """Build claurst's `settings.json` `agents` map from danno.toml [agents].
+
+    The claurst sibling of the opencode `agent.<name>` block (`_danno_doc`): each danno
+    agent becomes a claurst `AgentDefinition`. The string shorthand carries only a model;
+    the rich `AgentSpec` maps field-by-field via `_CLAURST_AGENT_FIELD_MAP` (notably
+    `steps` → `max_turns`, the Bug-2 turn lever, and `hidden` → `visible` inverted). The
+    `model`, when set, resolves through `claurst_agent_ref`. Fields claurst can't express
+    (`_CLAURST_AGENT_UNMAPPED`) are skipped here and surfaced by
+    `claurst_agent_unmapped_warnings`. An agent left with no claurst-side fields is dropped,
+    mirroring the opencode generator."""
+    agents: dict[str, Any] = {}
+    for agent, value in config.agents.items():
+        if isinstance(value, str):
+            agents[agent] = {"model": claurst_agent_ref(config, value)}
+            continue
+        entry: dict[str, Any] = {}
+        if value.model is not None:
+            entry["model"] = claurst_agent_ref(config, value.model)
+        for danno_field, claurst_field in _CLAURST_AGENT_FIELD_MAP.items():
+            v = getattr(value, danno_field)
+            if v is not None:
+                entry[claurst_field] = v
+        if value.hidden is not None:
+            entry["visible"] = not value.hidden
+        if entry:  # drop an agent that mapped to nothing claurst understands
+            agents[agent] = entry
+    return agents
+
+
+def claurst_agent_unmapped_warnings(config: DannoConfig) -> list[str]:
+    """Loud warnings (Working Rule 8) for [agents] fields claurst cannot express.
+
+    `generate_claurst_agents` silently skips fields with no `AgentDefinition` home; this
+    surfaces them so a danno.toml setting is never quietly lost when targeting claurst."""
+    warnings: list[str] = []
+    for agent, value in config.agents.items():
+        if isinstance(value, str):
+            continue
+        unmapped = sorted(_danno_agent_fields(value) & _CLAURST_AGENT_UNMAPPED)
+        if unmapped:
+            shown = ", ".join(unmapped)
+            warnings.append(
+                f"agent '{agent}': danno.toml sets {shown}, which claurst's agent "
+                "definition has no field for — the value(s) will be ignored for claurst. "
+                "Use steps (→max_turns), prompt, temperature, color, or hidden instead."
+            )
+    return warnings
+
+
 def _danno_doc(
     config: DannoConfig, md_routed_agents: frozenset[str], *, disable_title: bool = False
 ) -> dict[str, Any]:

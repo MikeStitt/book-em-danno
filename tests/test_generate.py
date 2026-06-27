@@ -8,9 +8,12 @@ import pytest
 from book_em_danno.config.generate import (
     Action,
     agent_markdown_collisions,
+    claurst_agent_ref,
+    claurst_agent_unmapped_warnings,
     claurst_model_ref,
     claurst_provider_id,
     generate,
+    generate_claurst_agents,
     generate_claurst_models,
     generate_md,
     render_config,
@@ -269,6 +272,76 @@ def test_claurst_models_llamacpp_is_stubbed() -> None:
     )
     with pytest.raises(NotImplementedError):
         generate_claurst_models(cfg)
+
+
+def _claurst_agents_cfg(agents: dict[str, object]) -> DannoConfig:
+    """`_claurst_cfg`'s backends/models with a caller-supplied [agents] map."""
+    base = _claurst_cfg()
+    return DannoConfig(
+        defaults=Defaults(default_agent="build"),
+        backends=base.backends,
+        models=base.models,
+        agents=agents,  # type: ignore[arg-type]
+    )
+
+
+def test_generate_claurst_agents_string_shorthand() -> None:
+    agents = generate_claurst_agents(_claurst_cfg())
+    # `build = "coder"` -> a claurst agent pinning the resolved provider/tag model.
+    assert agents == {"build": {"model": "ollama/qwen3-coder-next"}}
+
+
+def test_generate_claurst_agents_rich_field_map() -> None:
+    cfg = _claurst_agents_cfg(
+        {
+            "review": AgentSpec(
+                model="glm",
+                description="reviewer",
+                prompt="be strict",
+                temperature=0.3,
+                steps=30,
+                color="magenta",
+                hidden=True,
+            )
+        }
+    )
+    agents = generate_claurst_agents(cfg)
+    assert agents["review"] == {
+        "model": "nvidia/z-ai/glm-5.1",  # resolved via claurst provider
+        "description": "reviewer",
+        "prompt": "be strict",
+        "temperature": 0.3,
+        "max_turns": 30,  # steps -> max_turns (Bug-2 turn lever)
+        "color": "magenta",
+        "visible": False,  # hidden -> visible inverted
+    }
+
+
+def test_claurst_agent_ref_passthrough_vs_models_entry() -> None:
+    cfg = _claurst_cfg()
+    # A '/'-bearing value is a raw claurst ref; a bare name resolves a [models] entry.
+    assert claurst_agent_ref(cfg, "anthropic/claude-opus-4-6") == "anthropic/claude-opus-4-6"
+    assert claurst_agent_ref(cfg, "coder") == "ollama/qwen3-coder-next"
+
+
+def test_generate_claurst_agents_drops_empty_and_warns_unmapped() -> None:
+    cfg = _claurst_agents_cfg(
+        {"sub": AgentSpec(mode="subagent", top_p=0.9, permission={"edit": "deny"})}
+    )
+    # Every set field is unmapped -> the agent maps to nothing -> dropped.
+    assert generate_claurst_agents(cfg) == {}
+    warnings = claurst_agent_unmapped_warnings(cfg)
+    assert len(warnings) == 1
+    assert "mode, permission, top_p" in warnings[0]
+    assert "claurst" in warnings[0]
+
+
+def test_claurst_agent_unmapped_warnings_silent_when_clean() -> None:
+    # String shorthand and fully-mappable rich agents produce no warnings.
+    cfg = _claurst_agents_cfg(
+        {"build": "coder", "r": AgentSpec(model="glm", steps=10, color="cyan")}
+    )
+    assert claurst_agent_unmapped_warnings(cfg) == []
 
 
 def test_first_run_writes(tmp_path: Path) -> None:
