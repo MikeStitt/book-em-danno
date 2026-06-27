@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .schema import AgentSpec, DannoConfig, LlamacppBackend, OllamaBackend, OpenAIBackend
 
@@ -36,6 +37,13 @@ _HEADER = (
 )
 
 _LLAMACPP_STUB = "llama.cpp backend not yet implemented (stubbed slot in danno.toml)"
+
+# claurst's built-in provider id (and display name) for each danno backend. claurst is
+# launched `-m <provider>/<tag>` and resolves <provider> against its OWN registry
+# (ollama via OLLAMA_HOST, nvidia via NVIDIA_API_KEY), so this is NOT the danno backend
+# name that model_ref() emits for opencode. openai-kind backends are mapped by host.
+_CLAURST_PROVIDER_NAMES = {"ollama": "Ollama", "nvidia": "Nvidia"}
+_NVIDIA_NIM_HOST = "integrate.api.nvidia.com"
 
 # Partial-ownership markers. danno owns only the region between begin/end; everything
 # outside (user keys/comments in jsonc; other frontmatter keys + the body in md) is
@@ -108,6 +116,77 @@ def agent_model_name(value: str | AgentSpec) -> str | None:
     be unset when the agent only pins mode/permission). Distinct from `agent_ref`,
     which RESOLVES a name to its OpenCode ref."""
     return value if isinstance(value, str) else value.model
+
+
+def claurst_provider_id(config: DannoConfig, model_name: str) -> str:
+    """The claurst built-in provider id that serves a danno [models] entry.
+
+    claurst resolves `-m <provider>/<tag>` against its own provider registry, so the
+    provider here is claurst's (ollama / nvidia / …), NOT the danno backend name that
+    `model_ref` emits for OpenCode. ollama-kind backends map to `ollama`; openai-kind
+    backends are mapped by host (NVIDIA NIM → `nvidia`). Unmapped hosts raise."""
+    backend = config.backends[config.models[model_name].backend]
+    if isinstance(backend, OllamaBackend):
+        return "ollama"
+    if isinstance(backend, OpenAIBackend):
+        host = urlsplit(backend.base_url).hostname or ""
+        if host == _NVIDIA_NIM_HOST:
+            return "nvidia"
+        raise NotImplementedError(
+            f"model '{model_name}': no claurst provider mapping for openai host "
+            f"'{host}' yet (only NVIDIA NIM at {_NVIDIA_NIM_HOST} is mapped)."
+        )
+    raise NotImplementedError(_LLAMACPP_STUB)
+
+
+def claurst_model_ref(config: DannoConfig, model_name: str) -> str:
+    """The `-m` ref danno passes to claurst: `<claurst_provider>/<tag>`.
+
+    Sibling of `model_ref` (which yields the OpenCode `<backend>/<tag>` ref)."""
+    model = config.models[model_name]
+    if not model.tag:
+        raise ValueError(f"model '{model_name}' needs a 'tag' for claurst")
+    return f"{claurst_provider_id(config, model_name)}/{model.tag}"
+
+
+def generate_claurst_models(config: DannoConfig) -> dict[str, Any]:
+    """Build claurst's model-registry overlay (models.dev api.json shape) from danno.toml.
+
+    claurst gates BOTH the outgoing tools array and the context-meter window on a
+    model's registry entry: an uncatalogued model gets a wrong window, and an overlay
+    that omits `tool_call` silently disables tools (it defaults to false). danno owns
+    the truth, so it emits this overlay — pointed at via `CLAURST_MODELS_PATH` — which
+    registers every [models] entry with `tool_call: true` and danno's context/output
+    budget, grouped by claurst provider. The model id is the danno `tag` (what the
+    endpoint expects); `reasoning` is set for a non-`none` reasoning_effort. Mirrors the
+    opencode generator's models block."""
+    providers: dict[str, Any] = {}
+    for name, model in config.models.items():
+        backend = config.backends[model.backend]
+        if not isinstance(backend, OllamaBackend | OpenAIBackend):
+            raise NotImplementedError(_LLAMACPP_STUB)
+        if not model.tag:
+            raise ValueError(f"model '{name}' needs a 'tag' for claurst")
+        provider = claurst_provider_id(config, name)
+        entry: dict[str, Any] = {
+            "id": model.tag,
+            "name": name,
+            "tool_call": True,
+            "limit": {"context": backend.context_budget, "output": backend.output_limit},
+        }
+        if model.reasoning_effort is not None and model.reasoning_effort != "none":
+            entry["reasoning"] = True
+        prov = providers.setdefault(
+            provider,
+            {
+                "id": provider,
+                "name": _CLAURST_PROVIDER_NAMES.get(provider, provider),
+                "env": [],
+                "models": {},
+            },
+        )
+        prov["models"][model.tag] = entry
+    return providers
 
 
 def _danno_doc(

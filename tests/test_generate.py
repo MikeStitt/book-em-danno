@@ -8,7 +8,10 @@ import pytest
 from book_em_danno.config.generate import (
     Action,
     agent_markdown_collisions,
+    claurst_model_ref,
+    claurst_provider_id,
     generate,
+    generate_claurst_models,
     generate_md,
     render_config,
     scan_agent_frontmatter,
@@ -182,6 +185,90 @@ def test_openai_backend_emits_env_substituted_api_key() -> None:
     assert model["tool_call"] is True
     assert model["limit"]["context"] == 128000
     assert doc["agent"]["plan"]["model"] == "nvidia/nvidia/nemotron-3-ultra-550b-a55b"
+
+
+def _claurst_cfg() -> DannoConfig:
+    """A mixed ollama + NVIDIA-NIM config for the claurst-overlay tests."""
+    return DannoConfig(
+        defaults=Defaults(default_agent="build"),
+        backends={
+            "danno-ollama": OllamaBackend(
+                kind="ollama",
+                base_url="http://host.docker.internal:11434/v1",
+                context_budget=65536,
+                output_limit=8192,
+            ),
+            "danno-nvidia": OpenAIBackend(
+                kind="openai",
+                base_url="https://integrate.api.nvidia.com/v1",
+                api_key_env="NVIDIA_API_KEY",
+                context_budget=262144,
+                output_limit=32768,
+            ),
+        },
+        models={
+            "coder": Model(backend="danno-ollama", tag="qwen3-coder-next", reasoning_effort="none"),
+            "glm": Model(backend="danno-nvidia", tag="z-ai/glm-5.1", reasoning_effort="medium"),
+        },
+        agents={"build": "coder"},
+    )
+
+
+def test_generate_claurst_models_overlay_shape() -> None:
+    overlay = generate_claurst_models(_claurst_cfg())
+    # Grouped by claurst PROVIDER id (ollama/nvidia), not the danno backend name.
+    assert set(overlay) == {"ollama", "nvidia"}
+    assert overlay["ollama"]["id"] == "ollama"
+    assert overlay["nvidia"]["name"] == "Nvidia"
+    # Model keyed by tag, with tool_call=true (Bug 7) and danno's window (Bug 4).
+    ollama_entry = overlay["ollama"]["models"]["qwen3-coder-next"]
+    assert ollama_entry["tool_call"] is True
+    assert ollama_entry["limit"] == {"context": 65536, "output": 8192}
+    nvidia_entry = overlay["nvidia"]["models"]["z-ai/glm-5.1"]
+    assert nvidia_entry["tool_call"] is True
+    assert nvidia_entry["limit"] == {"context": 262144, "output": 32768}
+
+
+def test_generate_claurst_models_reasoning_flag() -> None:
+    overlay = generate_claurst_models(_claurst_cfg())
+    # reasoning_effort="none" -> not a reasoning model; "medium" -> reasoning=true.
+    assert "reasoning" not in overlay["ollama"]["models"]["qwen3-coder-next"]
+    assert overlay["nvidia"]["models"]["z-ai/glm-5.1"]["reasoning"] is True
+
+
+def test_claurst_model_ref_uses_claurst_provider() -> None:
+    cfg = _claurst_cfg()
+    # provider/tag, where provider is claurst's (NOT the danno backend name).
+    assert claurst_model_ref(cfg, "coder") == "ollama/qwen3-coder-next"
+    assert claurst_model_ref(cfg, "glm") == "nvidia/z-ai/glm-5.1"
+    assert claurst_provider_id(cfg, "coder") == "ollama"
+    assert claurst_provider_id(cfg, "glm") == "nvidia"
+
+
+def test_claurst_models_unmapped_openai_host_raises() -> None:
+    cfg = DannoConfig(
+        defaults=Defaults(default_agent="build"),
+        backends={
+            "other": OpenAIBackend(
+                kind="openai", base_url="https://api.example.com/v1", api_key_env="X_KEY"
+            )
+        },
+        models={"m": Model(backend="other", tag="some-model")},
+        agents={"build": "m"},
+    )
+    with pytest.raises(NotImplementedError, match="no claurst provider mapping"):
+        generate_claurst_models(cfg)
+
+
+def test_claurst_models_llamacpp_is_stubbed() -> None:
+    cfg = DannoConfig(
+        defaults=Defaults(default_agent="build"),
+        backends={"lc": LlamacppBackend(kind="llamacpp", base_url="http://x:8080/v1")},
+        models={"m": Model(backend="lc", tag="m")},
+        agents={"build": "m"},
+    )
+    with pytest.raises(NotImplementedError):
+        generate_claurst_models(cfg)
 
 
 def test_first_run_writes(tmp_path: Path) -> None:
