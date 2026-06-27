@@ -13,6 +13,7 @@ from book_em_danno.config.generate import (
     claurst_model_ref,
     claurst_provider_id,
     generate,
+    generate_claurst,
     generate_claurst_agents,
     generate_claurst_models,
     generate_md,
@@ -342,6 +343,49 @@ def test_claurst_agent_unmapped_warnings_silent_when_clean() -> None:
         {"build": "coder", "r": AgentSpec(model="glm", steps=10, color="cyan")}
     )
     assert claurst_agent_unmapped_warnings(cfg) == []
+
+
+def test_generate_claurst_writes_overlay_and_settings(tmp_path: Path) -> None:
+    cdir = tmp_path / ".claurst"
+    results = generate_claurst(_claurst_cfg(), cdir, apply=True)
+    # Fresh dir: both files written (nothing to clobber -> no --apply needed).
+    assert {r.action for r in results} == {Action.WROTE}
+    models = json.loads((cdir / "models.json").read_text())
+    assert models["ollama"]["models"]["qwen3-coder-next"]["tool_call"] is True
+    settings = json.loads((cdir / "settings.json").read_text())
+    assert settings["agents"] == {"build": {"model": "ollama/qwen3-coder-next"}}
+
+
+def test_generate_claurst_settings_preserves_other_keys(tmp_path: Path) -> None:
+    cdir = tmp_path / ".claurst"
+    cdir.mkdir()
+    # A user's existing settings.json with their own keys and a stale agents map.
+    (cdir / "settings.json").write_text(
+        json.dumps({"theme": "dark", "agents": {"old": {"model": "x"}}})
+    )
+    generate_claurst(_claurst_cfg(), cdir, apply=True)
+    settings = json.loads((cdir / "settings.json").read_text())
+    assert settings["theme"] == "dark"  # user key preserved
+    assert "old" not in settings["agents"]  # danno owns the agents key wholesale
+    assert settings["agents"] == {"build": {"model": "ollama/qwen3-coder-next"}}
+
+
+def test_generate_claurst_diff_without_apply(tmp_path: Path) -> None:
+    cdir = tmp_path / ".claurst"
+    cdir.mkdir()
+    (cdir / "models.json").write_text(json.dumps({"stale": True}))
+    (cdir / "settings.json").write_text(json.dumps({"agents": {}}))
+    results = generate_claurst(_claurst_cfg(), cdir, apply=False)
+    # Existing files that would change are advised (DIFF), not written.
+    assert {r.action for r in results} == {Action.DIFF}
+    assert json.loads((cdir / "models.json").read_text()) == {"stale": True}
+
+
+def test_generate_claurst_warns_unmapped_on_settings_result(tmp_path: Path) -> None:
+    cfg = _claurst_agents_cfg({"sub": AgentSpec(mode="subagent")})
+    results = generate_claurst(cfg, tmp_path / ".claurst", apply=True)
+    settings_result = next(r for r in results if r.path.name == "settings.json")
+    assert any("mode" in w and "claurst" in w for w in settings_result.warnings)
 
 
 def test_first_run_writes(tmp_path: Path) -> None:

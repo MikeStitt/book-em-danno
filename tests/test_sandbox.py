@@ -14,7 +14,7 @@ from book_em_danno.config.schema import (
     OpenAIBackend,
 )
 from book_em_danno.core import registry
-from book_em_danno.core.exec import CommandFailedError
+from book_em_danno.core.exec import CommandFailedError, Runner
 from conftest import RecordingRunner
 
 
@@ -210,7 +210,12 @@ def test_launch_claurst_forwards_passthru(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_agent_env_claurst_relocates_home() -> None:
     assert sandbox.agent_env("claurst", "u") == []
-    assert sandbox.agent_env("claurst", "u", home=Path("/h")) == ["HOME=/h"]
+    # With a home, HOME is relocated AND claurst is pointed at the danno-generated
+    # registry overlay under {home}/.claurst (Bug 4/7 fix for the local Ollama path).
+    assert sandbox.agent_env("claurst", "u", home=Path("/h")) == [
+        "HOME=/h",
+        "CLAURST_MODELS_PATH=/h/.claurst/models.json",
+    ]
 
 
 def _claurst_cfg() -> DannoConfig:
@@ -265,6 +270,21 @@ def test_resolve_model_for_agent_claurst_loads_and_resolves(tmp_path: Path) -> N
         encoding="utf-8",
     )
     assert sandbox.resolve_model_for_agent(tmp_path, "claurst", "gemma4") == "ollama/gemma4:26b"
+
+
+def test_emit_claurst_config_writes_overlay_and_settings(tmp_path: Path) -> None:
+    (tmp_path / "danno.toml").write_text(
+        '[backends.ollama]\nkind = "ollama"\nbase_url = "http://h:11434/v1"\n'
+        '[models.gemma4]\nbackend = "ollama"\ntag = "gemma4:26b"\n'
+        '[agents]\nbuild = "gemma4"\n',
+        encoding="utf-8",
+    )
+    home = tmp_path / "home"
+    sandbox._emit_claurst_config(Runner(apply=True), tmp_path, home)
+    overlay = json.loads((home / ".claurst" / "models.json").read_text())
+    assert overlay["ollama"]["models"]["gemma4:26b"]["tool_call"] is True
+    settings = json.loads((home / ".claurst" / "settings.json").read_text())
+    assert settings["agents"]["build"] == {"model": "ollama/gemma4:26b"}
 
 
 def _write_opencode_cfg(target: Path, body: str) -> None:

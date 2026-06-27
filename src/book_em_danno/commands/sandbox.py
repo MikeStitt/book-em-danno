@@ -33,7 +33,14 @@ from ..capture.wiring import (
     plan_capture,
     uncaptured_cloud_refs,
 )
-from ..config.generate import generate, model_ref
+from ..config.generate import (
+    _CLAURST_MODELS_FILE,
+    Action,
+    GenerateResult,
+    generate,
+    generate_claurst,
+    model_ref,
+)
 from ..config.loader import DannoConfigError, load_config
 from ..config.schema import DannoConfig, NpmPlugin, OllamaBackend, Sandbox
 from ..core import registry
@@ -50,6 +57,10 @@ CLAUDE_AUTH_VARS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 # `danno_validator.claurst.install_claurst`). The logical agent label stays "claurst"
 # everywhere (naming/registry/env/launch); only the create-time Docker image differs.
 CLAURST_AGENT = "claurst"
+# claurst's config dir inside its HOME (`~/.claurst`); danno writes its generated
+# registry overlay + settings.json here (see `_emit_claurst_config`). The models
+# filename is shared with the generator so the two cannot drift.
+_CLAURST_DIR = ".claurst"
 
 
 def _docker_image(agent: str) -> str:
@@ -399,10 +410,17 @@ def agent_env(agent: str, ollama_url: str, home: Path | None = None) -> list[str
     (full interactive resume across stop/start is best confirmed in a real TUI session).
     opencode reaches host Ollama via OLLAMA_BASE_URL; claurst's Ollama URL is set inline
     by the relay bracket (`OLLAMA_HOST`, see `claurst.interactive_launch_script`), so no
-    Ollama line here.
+    Ollama line here. For claurst with a home, `CLAURST_MODELS_PATH` also points at the
+    danno-generated registry overlay under `{home}/.claurst` (written by
+    `_emit_claurst_config`) so its tool-gating + context window come from danno.toml.
     """
     if agent == CLAURST_AGENT:
-        return [f"HOME={home}"] if home is not None else []
+        if home is None:
+            return []
+        # HOME relocation makes ~/.claurst == {home}/.claurst (mounted at the same path
+        # in the VM). Point claurst at the danno-generated registry overlay there so its
+        # tool-gating + context window come from danno.toml (Bug 4/7), not its catalog.
+        return [f"HOME={home}", f"CLAURST_MODELS_PATH={home / _CLAURST_DIR / _CLAURST_MODELS_FILE}"]
     if agent == "claude":
         lines: list[str] = []
         for var in CLAUDE_AUTH_VARS:
@@ -678,6 +696,27 @@ def launch(
     )
 
 
+def _emit_claurst_config(runner: Runner, target_abs: Path, home: Path) -> list[GenerateResult]:
+    """Generate claurst's registry overlay + settings.json agents into `{home}/.claurst`.
+
+    The claurst peer of install's opencode `_emit_config`: Tier-1 advise/apply, and a loud
+    warning (Working Rule 8) for any [agents] field claurst can't express. The overlay
+    fixes claurst's tool-gating + context window from danno.toml (Bug 4/7) for the local
+    Ollama path; cloud model SELECTION is still gated by `resolve_claurst_model`."""
+    config = load_config(target_abs / "danno.toml")
+    results = generate_claurst(config, home / _CLAURST_DIR, apply=runner.apply)
+    for result in results:
+        for warning in result.warnings:
+            log_warn(warning)
+        if result.action is Action.WROTE:
+            log_info(f"[green]wrote[/green] {result.path}")
+        elif result.action is Action.UNCHANGED:
+            log_info(f"unchanged: {result.path}")
+        else:  # DIFF — would change an existing file; needs --apply
+            log_info(f"[yellow]{result.path} would change[/yellow]; re-run with --apply.")
+    return results
+
+
 def _ensure_provisioned(
     runner: Runner,
     name: str,
@@ -707,6 +746,12 @@ def _ensure_provisioned(
             f"sandbox '{name}' is not provisioned. Run `danno sandbox start --apply` "
             f"(provisions then launches) or `danno install --apply` first."
         )
+    # claurst reads danno's generated config from its relocated HOME; emit it before the
+    # session so the launched (or hand-run) claurst sees the right models/agents. Both
+    # start and shell pass through here, keeping them in sync (SYNC REQUIREMENT). Needs a
+    # persistent agent_home (an ephemeral VM-local HOME has nowhere host-side to write).
+    if agent == CLAURST_AGENT and home is not None:
+        _emit_claurst_config(runner, target_abs, home)
 
 
 @dataclass(frozen=True)

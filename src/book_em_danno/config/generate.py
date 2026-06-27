@@ -667,3 +667,66 @@ def generate_md(config: DannoConfig, target: Path, *, apply: bool = False) -> li
             md_path.write_text(merged, encoding="utf-8")
             results.append(GenerateResult(Action.WROTE, md_path, merged, diff))
     return results
+
+
+# claurst's config filenames inside its HOME (`~/.claurst`). The overlay is pointed at
+# by CLAURST_MODELS_PATH (read by the upstream binary); settings.json is claurst's own.
+_CLAURST_MODELS_FILE = "models.json"
+_CLAURST_SETTINGS_FILE = "settings.json"
+
+
+def _emit_json(
+    dest: Path, proposed: dict[str, Any], *, apply: bool, warnings: list[str] | None = None
+) -> GenerateResult:
+    """Write `proposed` as pretty JSON to `dest` with the same WROTE/UNCHANGED/DIFF
+    advise/apply semantics as `generate`. A fresh file is written automatically (nothing
+    to clobber); an existing file that would change needs `--apply`."""
+    content = json.dumps(proposed, indent=2) + "\n"
+    warns = warnings or []
+    if dest.is_file():
+        existing = dest.read_text(encoding="utf-8")
+        if content == existing:
+            return GenerateResult(Action.UNCHANGED, dest, content, warnings=warns)
+        diff = _diff(existing, content, dest)
+        if not apply:
+            return GenerateResult(Action.DIFF, dest, content, diff, warnings=warns)
+        dest.write_text(content, encoding="utf-8")
+        return GenerateResult(Action.WROTE, dest, content, diff, warnings=warns)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(content, encoding="utf-8")
+    return GenerateResult(Action.WROTE, dest, content, warnings=warns)
+
+
+def generate_claurst(
+    config: DannoConfig, claurst_dir: Path, *, apply: bool = False
+) -> list[GenerateResult]:
+    """Generate claurst's config artifacts into `claurst_dir` (its `~/.claurst` HOME).
+
+    The claurst peer of `generate`/`generate_md`. Two files, same Tier-1 advise/apply
+    semantics (WROTE / UNCHANGED / DIFF):
+
+    - **`models.json`** — the model-registry overlay (`generate_claurst_models`), pointed
+      at by `CLAURST_MODELS_PATH`. danno owns this file wholesale (it is purely derived
+      from danno.toml), so it is rewritten, not merged.
+    - **`settings.json`** — claurst's own settings file, of which danno owns ONLY the
+      `agents` key (`generate_claurst_agents`). Every other key a user set is preserved;
+      danno replaces just `agents`. Unmappable [agents] fields are surfaced loud
+      (`claurst_agent_unmapped_warnings`) on this result rather than silently dropped."""
+    claurst_dir = Path(claurst_dir)
+    results = [
+        _emit_json(claurst_dir / _CLAURST_MODELS_FILE, generate_claurst_models(config), apply=apply)
+    ]
+
+    settings_dest = claurst_dir / _CLAURST_SETTINGS_FILE
+    settings: dict[str, Any] = {}
+    if settings_dest.is_file():
+        loaded = json.loads(settings_dest.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):  # preserve the user's other keys; own only `agents`
+            settings = loaded
+    settings["agents"] = generate_claurst_agents(config)
+    results.append(
+        _emit_json(
+            settings_dest, settings, apply=apply, warnings=claurst_agent_unmapped_warnings(config)
+        )
+    )
+    return results
