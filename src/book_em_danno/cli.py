@@ -354,7 +354,10 @@ def benchmark(
         None, "--judge-model", help="Pin the judge model (opus/sonnet/haiku or a full id)."
     ),
     agent: str = typer.Option(
-        sandbox_cmd.DEFAULT_AGENT, "--agent", help="Agent-under-test (default opencode)."
+        sandbox_cmd.DEFAULT_AGENT,
+        "--agent",
+        help="Agent-under-test. benchmark compares opencode config trees, so opencode "
+        "only; to benchmark claurst across danno.toml models use `danno bench --agent claurst`.",
     ),
     env: list[str] = typer.Option(
         None, "--env", help="KEY=VAL credential to inject into every config run (repeatable)."
