@@ -457,14 +457,17 @@ def _resolve_home(abs_target: Path, sandbox_name: str) -> Path | None:
         raise typer.Exit(code=2) from exc
 
 
-def _resolve_model(abs_target: Path, agent: str, model: str | None) -> str | None:
-    """Resolve `--model` for `sandbox start` (None passes through). Maps a danno
-    [models] name to claurst's `-m ollama/<tag>`, failing loud on a malformed config
-    (exit 2) or an unreachable/cloud model or a non-claurst agent (exit 4)."""
+def _resolve_model(abs_target: Path, agent: str, model: str | None) -> tuple[str | None, list[str]]:
+    """Resolve `--model` for `sandbox start`. Returns `(ref, cloud_env_lines)` — `ref`
+    is None when no `--model` is given; `cloud_env_lines` carries a cloud model's provider
+    key (`["<VAR>=<value>"]`, injected into the chmod-600 env-file) and is empty for local
+    Ollama. Maps a danno [models] name to claurst's `-m <provider>/<tag>`, failing loud on
+    a malformed config (exit 2) or an unreachable model, missing cloud key, or a non-claurst
+    agent (exit 4)."""
     if model is None:
-        return None
+        return None, []
     try:
-        return sandbox_cmd.resolve_model_for_agent(abs_target, agent, model)
+        return sandbox_cmd.resolve_claurst_start(abs_target, agent, model)
     except DannoConfigError as exc:
         log_err(str(exc))
         raise typer.Exit(code=2) from exc
@@ -530,14 +533,14 @@ def sandbox_start(
     """
     abs_target, sandbox_name = _sandbox_target(target, name, agent)
     home = _resolve_home(abs_target, sandbox_name)
-    resolved_model = _resolve_model(abs_target, agent, model)
+    resolved_model, cloud_env = _resolve_model(abs_target, agent, model)
     _guard(
         lambda: sandbox_cmd.start(
             Runner(apply=apply, verbose=verbose),
             sandbox_name,
             abs_target,
             agent=agent,
-            env_pairs=env or [],
+            env_pairs=(env or []) + cloud_env,
             env_files=env_file or [],
             home=home,
             registry_path=registry.default_path(),

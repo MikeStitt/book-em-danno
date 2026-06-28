@@ -37,12 +37,12 @@ from ..config.generate import (
     _CLAURST_MODELS_FILE,
     Action,
     GenerateResult,
+    claurst_model_ref,
     generate,
     generate_claurst,
-    model_ref,
 )
 from ..config.loader import DannoConfigError, load_config
-from ..config.schema import DannoConfig, NpmPlugin, OllamaBackend, Sandbox
+from ..config.schema import DannoConfig, NpmPlugin, OpenAIBackend, Sandbox
 from ..core import registry
 from ..core.exec import CommandFailedError, Runner, log_info, log_warn
 from . import ollama
@@ -445,36 +445,75 @@ def agent_env(agent: str, ollama_url: str, home: Path | None = None) -> list[str
 
 
 def resolve_claurst_model(config: DannoConfig, value: str) -> str:
-    """Resolve a `-m` value to claurst's `-m ollama/<tag>`, rejecting cloud loudly.
+    """Resolve a `-m` value to claurst's `-m <provider>/<tag>` (ollama or a cloud provider).
 
     `value` is a `[models]` name (the documented form, e.g. `gemma4`) or a raw
-    `provider/model` ref. claurst is local-only — its Rust client ignores the egress
-    proxy, and the in-VM relay reaches only host Ollama — so any non-Ollama target is
-    unreachable and MUST fail loud (Working Rule 8), naming the provider, rather than
-    launch and silently fail mid-session."""
+    `provider/model` ref. Named models map through `claurst_model_ref` into claurst's own
+    provider namespace: Ollama → `ollama/<tag>`, NVIDIA NIM → `nvidia/<tag>`. The fork
+    build honors the sandbox egress proxy, so a cloud provider danno can fully wire (key
+    injected from its `api_key_env`, reachable through the proxy) is launched; an unmapped
+    cloud host still fails loud (Working Rule 8). A raw non-Ollama ref is rejected: danno
+    can't derive its key env or vouch for its reachability, so it must be declared as a
+    [models] entry on a supported backend instead of launching to a silent failure."""
     if "/" in value:
         provider = value.split("/", 1)[0]
         if provider != "ollama":
             raise CommandFailedError(
-                f"--agent claurst is local-only and cannot reach the '{provider}' provider "
-                f"in '{value}' (claurst's client ignores the sandbox egress proxy). Pass an "
-                f"Ollama model (a [models] entry on an ollama backend, or `ollama/<tag>`)."
+                f"--agent claurst: a raw '{provider}/…' ref can't be wired by danno (it can't "
+                f"derive the API key or vouch for reachability). Declare it as a [models] entry "
+                f"on a supported backend (Ollama, or NVIDIA NIM) and pass that name instead."
             )
         return value
-    model = config.models.get(value)
-    if model is None:
+    if config.models.get(value) is None:
         raise CommandFailedError(
             f"model '{value}' is not defined in danno.toml [models]. "
-            f"Pass a local Ollama model for --agent claurst."
+            f"Pass a [models] entry (Ollama or NVIDIA NIM) for --agent claurst."
         )
-    backend = config.backends[model.backend]
-    if not isinstance(backend, OllamaBackend):
+    try:
+        return claurst_model_ref(config, value)
+    except NotImplementedError as exc:
         raise CommandFailedError(
-            f"--agent claurst is local-only, but model '{value}' is on the '{backend.kind}' "
-            f"backend '{model.backend}' (not Ollama), which claurst cannot reach from the "
-            f"sandbox (its client ignores the egress proxy). Pick an Ollama model."
+            f"--agent claurst can't reach model '{value}': {exc} Pick an Ollama model or an "
+            f"NVIDIA NIM model."
+        ) from exc
+
+
+def claurst_cloud_key_env(config: DannoConfig, value: str) -> str | None:
+    """The host env var holding the API key for a cloud claurst `-m` value, or None.
+
+    For a [models] name on a cloud (openai) backend that's the backend's `api_key_env`
+    (e.g. NVIDIA_API_KEY); `start` injects its value into the chmod-600 env-file so the
+    in-VM claurst authenticates to the provider through the egress proxy. None for local
+    Ollama (no key) and for raw refs (`resolve_claurst_model` only accepts raw `ollama/…`,
+    which needs none)."""
+    if "/" in value:
+        return None
+    model = config.models.get(value)
+    if model is None:
+        return None
+    backend = config.backends[model.backend]
+    if isinstance(backend, OpenAIBackend):
+        return backend.api_key_env
+    return None
+
+
+def claurst_cloud_env_lines(config: DannoConfig, value: str) -> list[str]:
+    """The env-file lines that inject a cloud claurst model's provider key, or [].
+
+    Reads the backend's `api_key_env` from danno's host environment and emits
+    `["<VAR>=<value>"]` so it lands only in the chmod-600 env-file (never a command line).
+    Fails loud (Working Rule 8) when the var is unset/empty, naming it, rather than
+    launching to an auth failure mid-session. Empty for local Ollama."""
+    var = claurst_cloud_key_env(config, value)
+    if var is None:
+        return []
+    val = os.environ.get(var)
+    if not val:
+        raise CommandFailedError(
+            f"--agent claurst -m {value} needs the cloud provider key '{var}', but it is unset "
+            f"in danno's environment. Export {var} (e.g. in your shell profile) and re-run."
         )
-    return model_ref(config, value)
+    return [f"{var}={val}"]
 
 
 def resolve_model_for_agent(target_abs: Path, agent: str, value: str) -> str:
@@ -490,6 +529,19 @@ def resolve_model_for_agent(target_abs: Path, agent: str, value: str) -> str:
         )
     config = load_config(target_abs / "danno.toml")
     return resolve_claurst_model(config, value)
+
+
+def resolve_claurst_start(target_abs: Path, agent: str, value: str) -> tuple[str, list[str]]:
+    """`sandbox start -m <value>`: the claurst `-m` ref PLUS any cloud-key env-file lines.
+
+    Loads danno.toml once and returns `(ref, env_lines)` — `env_lines` is empty for local
+    Ollama and `["<VAR>=<value>"]` for a cloud model (fail loud if the host var is unset).
+    Non-claurst agents fail loud via `resolve_model_for_agent` (model is claurst-only)."""
+    if agent != CLAURST_AGENT:
+        # Reuse the single source of truth for the non-claurst rejection message.
+        resolve_model_for_agent(target_abs, agent, value)
+    config = load_config(target_abs / "danno.toml")
+    return resolve_claurst_model(config, value), claurst_cloud_env_lines(config, value)
 
 
 def _build_env_file(agent_lines: list[str], env_pairs: list[str], env_files: list[str]) -> Path:

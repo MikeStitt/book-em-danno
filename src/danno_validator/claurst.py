@@ -9,10 +9,13 @@ spike, 2026-06-23). The sweep then drives claurst via `driver.claurst_run`, whic
 stands up the per-turn Ollama relay; this module only supplies the install step and
 the `TurnFn` seam, so `run_sweep`/`run_tiers`/the oracle stay unchanged.
 
-Scope: claurst is wired for **local Ollama** models. Its Rust client ignores the
-proxy, so cloud-backed variants in the matrix cannot reach their providers and will
-error in their own row (fail loud, visible in the report) rather than be silently
-skipped.
+Scope: claurst runs **local Ollama** and the cloud providers danno can fully wire
+(today NVIDIA NIM). The fork build honors the sandbox egress proxy, so a cloud model
+selected via `-m` is reached directly through it with the provider key injected from
+the backend's `api_key_env` (see `sandbox.resolve_claurst_model` /
+`claurst_cloud_env_lines`); an unmapped cloud host or a raw non-Ollama ref still fails
+loud rather than launching to a silent mid-session failure. NOTE: cloud requires the
+danno fork build (it honors the proxy); the pinned binary here must be that build.
 """
 
 from __future__ import annotations
@@ -97,15 +100,24 @@ def interactive_launch_script(
     single long-running `docker sandbox exec` (the whole session), which is why no
     persistent daemon is needed; the headless per-turn path is reused unchanged.
 
-    `model_ref` is claurst's `-m ollama/<tag>` (already resolved + locality-checked by
-    the caller); `passthru` is the agent's `--`-forwarded args, verbatim. `capture_port`,
-    when set (`--capture`), points the relay at a host-side recording proxy so claurst's
-    Ollama wire traffic is recorded (buffered, so live token-streaming is lost for the
-    captured session)."""
+    `model_ref` is claurst's `-m <provider>/<tag>` (already resolved + checked by the
+    caller); `passthru` is the agent's `--`-forwarded args, verbatim. A LOCAL Ollama ref
+    (`ollama/…`, or None for claurst's default) is run inside the relay bracket as above.
+    A CLOUD ref (e.g. `nvidia/…`) needs no relay: claurst dials the provider directly
+    through the sandbox egress proxy (`HTTPS_PROXY` is in the env-file, and the fork build
+    honors it), with the provider key injected by `start` — so the command is a plain
+    `claurst` argv, no `OLLAMA_HOST`. `capture_port`, when set (`--capture`), points the
+    relay at a host-side recording proxy so claurst's Ollama wire traffic is recorded
+    (buffered, so live token-streaming is lost); it applies only to the local relay path,
+    not cloud."""
     argv = ["claurst"]
     if model_ref is not None:
         argv += [CLAURST_MODEL_FLAG, model_ref]
     argv += passthru
+    is_local = model_ref is None or model_ref.startswith("ollama/")
+    if not is_local:
+        # Cloud: no Ollama relay; claurst reaches the provider via HTTPS_PROXY directly.
+        return argv
     claurst_cmd = f"OLLAMA_HOST={CLAURST_OLLAMA_HOST} {shlex.join(argv)}"
     upstream_port = CLAURST_RELAY_DEFAULT_UPSTREAM_PORT if capture_port is None else capture_port
     return ["bash", "-lc", _claurst_script(claurst_cmd, upstream_port=upstream_port)]
