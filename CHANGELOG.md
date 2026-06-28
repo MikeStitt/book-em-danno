@@ -3,6 +3,34 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.10.0] - 2026-06-28
+
+### Bug Fixes
+
+- *(sandbox)* Make claurst install survive proxy-truncated downloads
+- *(config)* Drop reference to non-existent 'danno config generate'
+- *(validator)* Drive cloud claurst models direct, skip the Ollama relay
+
+### Documentation
+
+- Investigate claurst + qwen3-coder-next narrate-then-stop
+- Record captured claurst request (narrate-then-stop is model-side)
+- *(claurst)* Record claurst integration findings and multi-model spike
+- *(claurst)* Add fork + first-class-integration plan
+- *(upstream)* Draft bug reports + PR text for the 6 claurst fork fixes
+- *(claurst)* Describe claurst as a first-class danno agent (local + cloud)
+
+### Features
+
+- *(capture)* Record claurst<->Ollama wire traffic via the relay
+- *(relay)* Opt-in flushed both-ends tracing via DANNO_RELAY_LOG
+- *(config)* Generate claurst model-registry overlay from danno.toml
+- *(config)* Map danno [agents] to claurst agent definitions (Part 3 / M2)
+- *(sandbox)* Emit + consume claurst config from danno.toml (Part 3 / wiring)
+- *(sandbox)* Claurst cloud lift — reach NVIDIA NIM through the egress proxy (Part 3 / Layer 2)
+- *(claurst)* Ship the danno fork build (v0.1.6-danno1) + stamp-gated skip
+- *(benchmark)* Reject non-opencode agents loud (claurst is a bench/validate AUT)
+
 ## [0.8.0] - 2026-06-24
 
 ### Documentation
