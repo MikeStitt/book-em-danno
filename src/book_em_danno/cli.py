@@ -431,15 +431,15 @@ def benchmark(
 _AGENT_OPT = typer.Option(
     sandbox_cmd.DEFAULT_AGENT,
     "--agent",
-    help="Agent: opencode, claude, or claurst (local-only); non-default agents get a "
-    "separate sandbox.",
+    help="Agent: opencode, claude, or claurst; non-default agents get a separate sandbox.",
 )
 _MODEL_OPT = typer.Option(
     None,
     "--model",
     "-m",
-    help="Local model for --agent claurst (a danno.toml models entry, e.g. gemma4). "
-    "claurst-only; cloud/non-Ollama models are rejected.",
+    help="Model for --agent claurst (a danno.toml models entry, e.g. gemma4 or an "
+    "NVIDIA NIM model). claurst-only; a backend danno can't wire, or a raw non-Ollama "
+    "ref, is rejected loud.",
 )
 
 
@@ -530,9 +530,11 @@ def sandbox_start(
     Tip: `cd <project> && danno sandbox start` (no --target/--name) recomputes the
     same name every time — stand in the sandbox's directory rather than naming it.
 
-    `--agent claurst` runs a pure-Rust Claude-Code clone on local Ollama only; pick the
-    model with `-m <name>` (a danno.toml models entry). Anything after `--` is forwarded
-    verbatim to the agent, e.g. `danno sandbox start --agent claude -- --resume <id>`.
+    `--agent claurst` runs a pure-Rust Claude-Code clone on local Ollama or a cloud
+    provider danno can fully wire (today NVIDIA NIM); pick the model with `-m <name>`
+    (a danno.toml models entry — its cloud key is injected from the backend's
+    `api_key_env`). Anything after `--` is forwarded verbatim to the agent, e.g.
+    `danno sandbox start --agent claude -- --resume <id>`.
     """
     abs_target, sandbox_name = _sandbox_target(target, name, agent)
     home = _resolve_home(abs_target, sandbox_name)
