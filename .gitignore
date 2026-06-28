@@ -315,5 +315,9 @@ temp/
 # danno-validator work-dir + reports (seeded throwaway workspaces, per-config runs)
 .danno-validator/
 
+# danno bench / benchmark output dirs (timestamped throwaway runs)
+.danno-bench/
+.danno-benchmark/
+
 # danno --capture wire-traffic recordings (sandbox start/shell default dir)
 .danno/

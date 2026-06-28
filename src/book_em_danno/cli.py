@@ -354,7 +354,10 @@ def benchmark(
         None, "--judge-model", help="Pin the judge model (opus/sonnet/haiku or a full id)."
     ),
     agent: str = typer.Option(
-        sandbox_cmd.DEFAULT_AGENT, "--agent", help="Agent-under-test (default opencode)."
+        sandbox_cmd.DEFAULT_AGENT,
+        "--agent",
+        help="Agent-under-test. benchmark compares opencode config trees, so opencode "
+        "only; to benchmark claurst across danno.toml models use `danno bench --agent claurst`.",
     ),
     env: list[str] = typer.Option(
         None, "--env", help="KEY=VAL credential to inject into every config run (repeatable)."
@@ -428,15 +431,15 @@ def benchmark(
 _AGENT_OPT = typer.Option(
     sandbox_cmd.DEFAULT_AGENT,
     "--agent",
-    help="Agent: opencode, claude, or claurst (local-only); non-default agents get a "
-    "separate sandbox.",
+    help="Agent: opencode, claude, or claurst; non-default agents get a separate sandbox.",
 )
 _MODEL_OPT = typer.Option(
     None,
     "--model",
     "-m",
-    help="Local model for --agent claurst (a danno.toml models entry, e.g. gemma4). "
-    "claurst-only; cloud/non-Ollama models are rejected.",
+    help="Model for --agent claurst (a danno.toml models entry, e.g. gemma4 or an "
+    "NVIDIA NIM model). claurst-only; a backend danno can't wire, or a raw non-Ollama "
+    "ref, is rejected loud.",
 )
 
 
@@ -457,14 +460,17 @@ def _resolve_home(abs_target: Path, sandbox_name: str) -> Path | None:
         raise typer.Exit(code=2) from exc
 
 
-def _resolve_model(abs_target: Path, agent: str, model: str | None) -> str | None:
-    """Resolve `--model` for `sandbox start` (None passes through). Maps a danno
-    [models] name to claurst's `-m ollama/<tag>`, failing loud on a malformed config
-    (exit 2) or an unreachable/cloud model or a non-claurst agent (exit 4)."""
+def _resolve_model(abs_target: Path, agent: str, model: str | None) -> tuple[str | None, list[str]]:
+    """Resolve `--model` for `sandbox start`. Returns `(ref, cloud_env_lines)` — `ref`
+    is None when no `--model` is given; `cloud_env_lines` carries a cloud model's provider
+    key (`["<VAR>=<value>"]`, injected into the chmod-600 env-file) and is empty for local
+    Ollama. Maps a danno [models] name to claurst's `-m <provider>/<tag>`, failing loud on
+    a malformed config (exit 2) or an unreachable model, missing cloud key, or a non-claurst
+    agent (exit 4)."""
     if model is None:
-        return None
+        return None, []
     try:
-        return sandbox_cmd.resolve_model_for_agent(abs_target, agent, model)
+        return sandbox_cmd.resolve_claurst_start(abs_target, agent, model)
     except DannoConfigError as exc:
         log_err(str(exc))
         raise typer.Exit(code=2) from exc
@@ -524,20 +530,22 @@ def sandbox_start(
     Tip: `cd <project> && danno sandbox start` (no --target/--name) recomputes the
     same name every time — stand in the sandbox's directory rather than naming it.
 
-    `--agent claurst` runs a pure-Rust Claude-Code clone on local Ollama only; pick the
-    model with `-m <name>` (a danno.toml models entry). Anything after `--` is forwarded
-    verbatim to the agent, e.g. `danno sandbox start --agent claude -- --resume <id>`.
+    `--agent claurst` runs a pure-Rust Claude-Code clone on local Ollama or a cloud
+    provider danno can fully wire (today NVIDIA NIM); pick the model with `-m <name>`
+    (a danno.toml models entry — its cloud key is injected from the backend's
+    `api_key_env`). Anything after `--` is forwarded verbatim to the agent, e.g.
+    `danno sandbox start --agent claude -- --resume <id>`.
     """
     abs_target, sandbox_name = _sandbox_target(target, name, agent)
     home = _resolve_home(abs_target, sandbox_name)
-    resolved_model = _resolve_model(abs_target, agent, model)
+    resolved_model, cloud_env = _resolve_model(abs_target, agent, model)
     _guard(
         lambda: sandbox_cmd.start(
             Runner(apply=apply, verbose=verbose),
             sandbox_name,
             abs_target,
             agent=agent,
-            env_pairs=env or [],
+            env_pairs=(env or []) + cloud_env,
             env_files=env_file or [],
             home=home,
             registry_path=registry.default_path(),

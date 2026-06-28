@@ -1,7 +1,8 @@
 # book-em-danno
 
 `danno` CLI reads a single `danno.toml` then declaratively provisions 
-an [OpenCode](https://opencode.ai) or [Claude Code](https://github.com/anthropics/claude-code) 
+an [OpenCode](https://opencode.ai), [Claude Code](https://github.com/anthropics/claude-code),
+or [claurst](https://github.com/Kuberwastaken/claurst) (a pure-Rust Claude-Code clone)
 agentic coding tool **inside a Docker Sandbox**. The `--target` folder defaults to `.`
 which is the `cwd` for the sandboxed coding tool. The sandboxed coding tool shares the `--target`
 folder, and a local host [ollama](https://ollama.com/) server, accesses the **internet**,
@@ -170,12 +171,14 @@ danno sandbox start --capture --apply --agent claurst   # claurst<->Ollama too
 danno validate --capture --only <model> # <out>/captures/<backend>.jsonl
 ```
 
-For `--agent claurst` the lever is different: claurst ignores both `opencode.jsonc`
-and the egress proxy, so danno points its in-VM Ollama relay at the same recording
-proxy instead. Capture therefore covers claurst's local-Ollama traffic too (the JSONL
-shows its system prompt, tool definitions, and the model's reply). Because the proxy
-buffers each response before replay, a *captured* interactive claurst session loses
-live token-streaming — fine for a diagnostic run, and only while `--capture` is set.
+For `--agent claurst` the lever depends on where the model lives. A **local Ollama**
+model doesn't flow through `opencode.jsonc`, so danno points its in-VM Ollama relay at
+the same recording proxy instead — capture covers claurst's local-Ollama traffic too
+(the JSONL shows its system prompt, tool definitions, and the model's reply). A **cloud**
+(NVIDIA NIM) model is reached through the egress proxy danno already owns, the same path
+the NVIDIA row above uses. Because the proxy buffers each response before replay, a
+*captured* interactive claurst session loses live token-streaming — fine for a diagnostic
+run, and only while `--capture` is set.
 
 To debug the relay itself (e.g. a session that appears to hang), set
 `--env DANNO_RELAY_LOG=/tmp/danno-relay.log`: the in-VM relay then writes a flushed,
@@ -251,17 +254,30 @@ If neither is set, `sandbox start --agent claude` **fails loud** with the
 `claude setup-token` hint rather than launching unauthenticated. The token is
 re-injected on every `start`, so it survives `sandbox rebuild`.
 
-**claurst (local-only)** — `--agent claurst` runs [claurst](https://github.com/Kuberwastaken/claurst),
-a pure-Rust Claude-Code clone, on **local Ollama only** (no cloud, no auth). claurst
-isn't a prebuilt image, so danno hosts it in the `shell` sandbox and curl-installs the
-binary on first provision. Pick the model with `-m <name>` (a danno.toml `[models]`
-entry); cloud/non-Ollama models are **rejected loudly** (claurst's client can't reach
-them through the sandbox proxy).
+**claurst** — `--agent claurst` runs [claurst](https://github.com/Kuberwastaken/claurst),
+a pure-Rust Claude-Code clone, as a first-class danno agent on **local Ollama and the
+cloud providers danno can fully wire** (today NVIDIA NIM). danno ships a danno-pinned
+fork build (`MikeStitt/claurst`) that honors the sandbox egress proxy; claurst isn't a
+prebuilt image, so danno hosts it in the `shell` sandbox and curl-installs the binary on
+first provision (skipped on later launches via a version stamp). Pick the model with
+`-m <name>` (a danno.toml `[models]` entry): a **local Ollama** model runs through the
+in-VM Ollama relay; an **NVIDIA NIM** model is dialed directly through the egress proxy
+with the provider key injected from the backend's `api_key_env` (chmod-600 `--env-file`,
+never on the command line). A `[models]` entry on a backend danno can't wire, or a raw
+`provider/…` ref it can't derive a key for, is **rejected loudly** rather than launching
+to a silent mid-session failure.
 
 ```bash
 danno sandbox start --apply --agent claurst              # claurst's default model
-danno sandbox start --apply --agent claurst -m gemma4    # a local [models] entry
+danno sandbox start --apply --agent claurst -m gemma4    # a local Ollama [models] entry
+danno sandbox start --apply --agent claurst -m qwen-coder # an NVIDIA NIM [models] entry
 ```
+
+claurst is also a first-class **agent-under-test**: `danno validate --agent claurst` and
+`danno bench --agent claurst` sweep your danno.toml `[models]` through the same tiered
+battery / benchmark suites opencode runs (local Ollama, and NVIDIA NIM for validate's
+cloud matrix). `danno benchmark` compares opencode config trees and stays opencode-only —
+use `danno bench --agent claurst` to benchmark claurst across models instead.
 
 ## `danno.toml` quickstart
 

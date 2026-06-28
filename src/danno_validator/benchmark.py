@@ -185,7 +185,20 @@ def run_benchmark(
     `config` supplies sandbox/workspace orchestration (`[sandbox]`, env) exactly as
     `validate` uses danno.toml; the per-candidate opencode config comes from the
     candidate dirs, not `config`. `now`/`version` are injected for deterministic tests.
+
+    `benchmark` is opencode-only by construction: a candidate is a `.opencode/` tree
+    (`apply_config`) and every tier is driven by `_authed_opencode_run`. claurst has no
+    candidate-config analog, so `--agent claurst` (or any non-opencode AUT) is rejected
+    loud here rather than provisioning that agent and then silently driving it as
+    opencode. claurst remains a first-class AUT in `validate` and `bench`, which sweep
+    danno.toml's models (not config trees).
     """
+    if opts.agent != sb.DEFAULT_AGENT:
+        raise ValueError(
+            f"`danno benchmark` compares opencode config trees and only supports "
+            f"--agent {sb.DEFAULT_AGENT}, not {opts.agent!r}. To benchmark {opts.agent} "
+            f"across your danno.toml models, use `danno bench --agent {opts.agent}`."
+        )
     now = now or datetime.now(UTC)
     version = version or _danno_version()
     timestamp = now.strftime("%Y-%m-%dT%H-%M-%S")
