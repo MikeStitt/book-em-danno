@@ -105,6 +105,22 @@ def test_claurst_run_ignores_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "--agent" not in _script(calls)
 
 
+def test_claurst_run_cloud_model_skips_relay(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A cloud (`nvidia/…`) model dials the provider directly through HTTPS_PROXY, so the
+    # turn is a plain claurst argv — no relay bracket, no `bash -lc`, no OLLAMA_HOST.
+    calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
+    driver.claurst_run(
+        Runner(), "box", "go", model="nvidia/qwen/qwen3.5-397b-a17b", env_file="/tmp/danno-env"
+    )
+    argv = calls[0]
+    assert argv[:5] == ["docker", "sandbox", "exec", "--env-file", "/tmp/danno-env"]
+    assert argv[5] == "box"
+    assert argv[6] == "claurst"  # direct exec, not bash -lc
+    assert "bash" not in argv
+    assert "-m" in argv and "nvidia/qwen/qwen3.5-397b-a17b" in argv
+    assert not any("OLLAMA_HOST" in str(a) for a in argv)
+
+
 def test_claurst_run_default_relay_upstream_is_real_ollama(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
