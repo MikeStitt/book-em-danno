@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .schema import AgentSpec, DannoConfig, LlamacppBackend, OllamaBackend, OpenAIBackend
 
@@ -36,6 +37,13 @@ _HEADER = (
 )
 
 _LLAMACPP_STUB = "llama.cpp backend not yet implemented (stubbed slot in danno.toml)"
+
+# claurst's built-in provider id (and display name) for each danno backend. claurst is
+# launched `-m <provider>/<tag>` and resolves <provider> against its OWN registry
+# (ollama via OLLAMA_HOST, nvidia via NVIDIA_API_KEY), so this is NOT the danno backend
+# name that model_ref() emits for opencode. openai-kind backends are mapped by host.
+_CLAURST_PROVIDER_NAMES = {"ollama": "Ollama", "nvidia": "Nvidia"}
+_NVIDIA_NIM_HOST = "integrate.api.nvidia.com"
 
 # Partial-ownership markers. danno owns only the region between begin/end; everything
 # outside (user keys/comments in jsonc; other frontmatter keys + the body in md) is
@@ -108,6 +116,155 @@ def agent_model_name(value: str | AgentSpec) -> str | None:
     be unset when the agent only pins mode/permission). Distinct from `agent_ref`,
     which RESOLVES a name to its OpenCode ref."""
     return value if isinstance(value, str) else value.model
+
+
+def claurst_provider_id(config: DannoConfig, model_name: str) -> str:
+    """The claurst built-in provider id that serves a danno [models] entry.
+
+    claurst resolves `-m <provider>/<tag>` against its own provider registry, so the
+    provider here is claurst's (ollama / nvidia / …), NOT the danno backend name that
+    `model_ref` emits for OpenCode. ollama-kind backends map to `ollama`; openai-kind
+    backends are mapped by host (NVIDIA NIM → `nvidia`). Unmapped hosts raise."""
+    backend = config.backends[config.models[model_name].backend]
+    if isinstance(backend, OllamaBackend):
+        return "ollama"
+    if isinstance(backend, OpenAIBackend):
+        host = urlsplit(backend.base_url).hostname or ""
+        if host == _NVIDIA_NIM_HOST:
+            return "nvidia"
+        raise NotImplementedError(
+            f"model '{model_name}': no claurst provider mapping for openai host "
+            f"'{host}' yet (only NVIDIA NIM at {_NVIDIA_NIM_HOST} is mapped)."
+        )
+    raise NotImplementedError(_LLAMACPP_STUB)
+
+
+def claurst_model_ref(config: DannoConfig, model_name: str) -> str:
+    """The `-m` ref danno passes to claurst: `<claurst_provider>/<tag>`.
+
+    Sibling of `model_ref` (which yields the OpenCode `<backend>/<tag>` ref)."""
+    model = config.models[model_name]
+    if not model.tag:
+        raise ValueError(f"model '{model_name}' needs a 'tag' for claurst")
+    return f"{claurst_provider_id(config, model_name)}/{model.tag}"
+
+
+def generate_claurst_models(config: DannoConfig) -> dict[str, Any]:
+    """Build claurst's model-registry overlay (models.dev api.json shape) from danno.toml.
+
+    claurst gates BOTH the outgoing tools array and the context-meter window on a
+    model's registry entry: an uncatalogued model gets a wrong window, and an overlay
+    that omits `tool_call` silently disables tools (it defaults to false). danno owns
+    the truth, so it emits this overlay — pointed at via `CLAURST_MODELS_PATH` — which
+    registers every [models] entry with `tool_call: true` and danno's context/output
+    budget, grouped by claurst provider. The model id is the danno `tag` (what the
+    endpoint expects); `reasoning` is set for a non-`none` reasoning_effort. Mirrors the
+    opencode generator's models block."""
+    providers: dict[str, Any] = {}
+    for name, model in config.models.items():
+        backend = config.backends[model.backend]
+        if not isinstance(backend, OllamaBackend | OpenAIBackend):
+            raise NotImplementedError(_LLAMACPP_STUB)
+        if not model.tag:
+            raise ValueError(f"model '{name}' needs a 'tag' for claurst")
+        provider = claurst_provider_id(config, name)
+        entry: dict[str, Any] = {
+            "id": model.tag,
+            "name": name,
+            "tool_call": True,
+            "limit": {"context": backend.context_budget, "output": backend.output_limit},
+        }
+        if model.reasoning_effort is not None and model.reasoning_effort != "none":
+            entry["reasoning"] = True
+        prov = providers.setdefault(
+            provider,
+            {
+                "id": provider,
+                "name": _CLAURST_PROVIDER_NAMES.get(provider, provider),
+                "env": [],
+                "models": {},
+            },
+        )
+        prov["models"][model.tag] = entry
+    return providers
+
+
+def claurst_agent_ref(config: DannoConfig, value: str) -> str:
+    """Resolve an [agents] model value to a claurst `<provider>/<tag>` ref.
+
+    The claurst counterpart of `agent_ref`: a value with a '/' is a raw claurst ref
+    (e.g. `anthropic/claude-opus-4-6`) passed through verbatim — claurst knows built-in
+    cloud models via its own provider registry — while a bare name resolves a [models]
+    entry through `claurst_model_ref` (claurst's provider id, NOT the opencode backend)."""
+    if "/" in value:
+        return value
+    return claurst_model_ref(config, value)
+
+
+# danno AgentSpec field -> claurst AgentDefinition field. `model` is handled separately
+# (it needs ref resolution); these copy across verbatim. `hidden` inverts to `visible`.
+_CLAURST_AGENT_FIELD_MAP = {
+    "description": "description",
+    "prompt": "prompt",
+    "temperature": "temperature",
+    "steps": "max_turns",
+    "color": "color",
+}
+# AgentSpec fields claurst's AgentDefinition has no home for. Set-but-unmapped → warn
+# loud rather than silently drop (Working Rule 8): `mode`/`top_p` have no claurst concept,
+# `disable` differs from `visible` (hide ≠ remove), and `permission` is an opencode-shaped
+# dict that does not translate to claurst's single `access` enum.
+_CLAURST_AGENT_UNMAPPED = frozenset({"mode", "top_p", "disable", "permission"})
+
+
+def generate_claurst_agents(config: DannoConfig) -> dict[str, Any]:
+    """Build claurst's `settings.json` `agents` map from danno.toml [agents].
+
+    The claurst sibling of the opencode `agent.<name>` block (`_danno_doc`): each danno
+    agent becomes a claurst `AgentDefinition`. The string shorthand carries only a model;
+    the rich `AgentSpec` maps field-by-field via `_CLAURST_AGENT_FIELD_MAP` (notably
+    `steps` → `max_turns`, the Bug-2 turn lever, and `hidden` → `visible` inverted). The
+    `model`, when set, resolves through `claurst_agent_ref`. Fields claurst can't express
+    (`_CLAURST_AGENT_UNMAPPED`) are skipped here and surfaced by
+    `claurst_agent_unmapped_warnings`. An agent left with no claurst-side fields is dropped,
+    mirroring the opencode generator."""
+    agents: dict[str, Any] = {}
+    for agent, value in config.agents.items():
+        if isinstance(value, str):
+            agents[agent] = {"model": claurst_agent_ref(config, value)}
+            continue
+        entry: dict[str, Any] = {}
+        if value.model is not None:
+            entry["model"] = claurst_agent_ref(config, value.model)
+        for danno_field, claurst_field in _CLAURST_AGENT_FIELD_MAP.items():
+            v = getattr(value, danno_field)
+            if v is not None:
+                entry[claurst_field] = v
+        if value.hidden is not None:
+            entry["visible"] = not value.hidden
+        if entry:  # drop an agent that mapped to nothing claurst understands
+            agents[agent] = entry
+    return agents
+
+
+def claurst_agent_unmapped_warnings(config: DannoConfig) -> list[str]:
+    """Loud warnings (Working Rule 8) for [agents] fields claurst cannot express.
+
+    `generate_claurst_agents` silently skips fields with no `AgentDefinition` home; this
+    surfaces them so a danno.toml setting is never quietly lost when targeting claurst."""
+    warnings: list[str] = []
+    for agent, value in config.agents.items():
+        if isinstance(value, str):
+            continue
+        unmapped = sorted(_danno_agent_fields(value) & _CLAURST_AGENT_UNMAPPED)
+        if unmapped:
+            shown = ", ".join(unmapped)
+            warnings.append(
+                f"agent '{agent}': danno.toml sets {shown}, which claurst's agent "
+                "definition has no field for — the value(s) will be ignored for claurst. "
+                "Use steps (→max_turns), prompt, temperature, color, or hidden instead."
+            )
+    return warnings
 
 
 def _danno_doc(
@@ -509,4 +666,67 @@ def generate_md(config: DannoConfig, target: Path, *, apply: bool = False) -> li
                 continue
             md_path.write_text(merged, encoding="utf-8")
             results.append(GenerateResult(Action.WROTE, md_path, merged, diff))
+    return results
+
+
+# claurst's config filenames inside its HOME (`~/.claurst`). The overlay is pointed at
+# by CLAURST_MODELS_PATH (read by the upstream binary); settings.json is claurst's own.
+_CLAURST_MODELS_FILE = "models.json"
+_CLAURST_SETTINGS_FILE = "settings.json"
+
+
+def _emit_json(
+    dest: Path, proposed: dict[str, Any], *, apply: bool, warnings: list[str] | None = None
+) -> GenerateResult:
+    """Write `proposed` as pretty JSON to `dest` with the same WROTE/UNCHANGED/DIFF
+    advise/apply semantics as `generate`. A fresh file is written automatically (nothing
+    to clobber); an existing file that would change needs `--apply`."""
+    content = json.dumps(proposed, indent=2) + "\n"
+    warns = warnings or []
+    if dest.is_file():
+        existing = dest.read_text(encoding="utf-8")
+        if content == existing:
+            return GenerateResult(Action.UNCHANGED, dest, content, warnings=warns)
+        diff = _diff(existing, content, dest)
+        if not apply:
+            return GenerateResult(Action.DIFF, dest, content, diff, warnings=warns)
+        dest.write_text(content, encoding="utf-8")
+        return GenerateResult(Action.WROTE, dest, content, diff, warnings=warns)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(content, encoding="utf-8")
+    return GenerateResult(Action.WROTE, dest, content, warnings=warns)
+
+
+def generate_claurst(
+    config: DannoConfig, claurst_dir: Path, *, apply: bool = False
+) -> list[GenerateResult]:
+    """Generate claurst's config artifacts into `claurst_dir` (its `~/.claurst` HOME).
+
+    The claurst peer of `generate`/`generate_md`. Two files, same Tier-1 advise/apply
+    semantics (WROTE / UNCHANGED / DIFF):
+
+    - **`models.json`** — the model-registry overlay (`generate_claurst_models`), pointed
+      at by `CLAURST_MODELS_PATH`. danno owns this file wholesale (it is purely derived
+      from danno.toml), so it is rewritten, not merged.
+    - **`settings.json`** — claurst's own settings file, of which danno owns ONLY the
+      `agents` key (`generate_claurst_agents`). Every other key a user set is preserved;
+      danno replaces just `agents`. Unmappable [agents] fields are surfaced loud
+      (`claurst_agent_unmapped_warnings`) on this result rather than silently dropped."""
+    claurst_dir = Path(claurst_dir)
+    results = [
+        _emit_json(claurst_dir / _CLAURST_MODELS_FILE, generate_claurst_models(config), apply=apply)
+    ]
+
+    settings_dest = claurst_dir / _CLAURST_SETTINGS_FILE
+    settings: dict[str, Any] = {}
+    if settings_dest.is_file():
+        loaded = json.loads(settings_dest.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):  # preserve the user's other keys; own only `agents`
+            settings = loaded
+    settings["agents"] = generate_claurst_agents(config)
+    results.append(
+        _emit_json(
+            settings_dest, settings, apply=apply, warnings=claurst_agent_unmapped_warnings(config)
+        )
+    )
     return results

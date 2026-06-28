@@ -14,7 +14,7 @@ from book_em_danno.config.schema import (
     OpenAIBackend,
 )
 from book_em_danno.core import registry
-from book_em_danno.core.exec import CommandFailedError
+from book_em_danno.core.exec import CommandFailedError, Runner
 from conftest import RecordingRunner
 
 
@@ -208,9 +208,25 @@ def test_launch_claurst_forwards_passthru(monkeypatch: pytest.MonkeyPatch) -> No
     assert "claurst -m ollama/g:1b --resume x" in script
 
 
+def test_launch_claurst_cloud_runs_direct_no_relay(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Layer 2: a cloud ref runs claurst directly (it dials the provider via HTTPS_PROXY),
+    # so the command is a plain claurst argv — no bash -lc relay bracket, no OLLAMA_HOST.
+    r = RecordingRunner()
+    sandbox.launch(r, "probe", Path("/repo"), agent="claurst", model="nvidia/nvidia/nemotron")
+    cmd = r.commands[0]
+    assert cmd[-3:] == ["claurst", "-m", "nvidia/nvidia/nemotron"]
+    assert "bash" not in cmd[8:]  # no relay wrapper
+    assert not any("OLLAMA_HOST" in c or "RELAY_PY" in c for c in cmd)
+
+
 def test_agent_env_claurst_relocates_home() -> None:
     assert sandbox.agent_env("claurst", "u") == []
-    assert sandbox.agent_env("claurst", "u", home=Path("/h")) == ["HOME=/h"]
+    # With a home, HOME is relocated AND claurst is pointed at the danno-generated
+    # registry overlay under {home}/.claurst (Bug 4/7 fix for the local Ollama path).
+    assert sandbox.agent_env("claurst", "u", home=Path("/h")) == [
+        "HOME=/h",
+        "CLAURST_MODELS_PATH=/h/.claurst/models.json",
+    ]
 
 
 def _claurst_cfg() -> DannoConfig:
@@ -218,12 +234,19 @@ def _claurst_cfg() -> DannoConfig:
         backends={
             "ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1"),
             "nvidia": OpenAIBackend(
-                kind="openai", base_url="http://x/v1", api_key_env="NVIDIA_API_KEY"
+                kind="openai",
+                base_url="https://integrate.api.nvidia.com/v1",
+                api_key_env="NVIDIA_API_KEY",
+            ),
+            # An openai backend at a host claurst has no provider mapping for.
+            "other": OpenAIBackend(
+                kind="openai", base_url="https://api.example.com/v1", api_key_env="EXAMPLE_KEY"
             ),
         },
         models={
             "gemma4": Model(backend="ollama", tag="gemma4:26b"),
             "nemotron": Model(backend="nvidia", tag="nvidia/nemotron"),
+            "exotic": Model(backend="other", tag="exo-1"),
         },
     )
 
@@ -236,9 +259,16 @@ def test_resolve_claurst_model_raw_ollama_ref_passthrough() -> None:
     assert sandbox.resolve_claurst_model(_claurst_cfg(), "ollama/foo:1b") == "ollama/foo:1b"
 
 
-def test_resolve_claurst_model_cloud_backend_fails_loud() -> None:
-    with pytest.raises(CommandFailedError, match="local-only.*openai|openai.*claurst"):
-        sandbox.resolve_claurst_model(_claurst_cfg(), "nemotron")
+def test_resolve_claurst_model_nim_cloud_resolves() -> None:
+    # Layer 2: an NVIDIA NIM model is now reachable (fork build honors the egress proxy),
+    # resolved into claurst's own provider namespace.
+    assert sandbox.resolve_claurst_model(_claurst_cfg(), "nemotron") == "nvidia/nvidia/nemotron"
+
+
+def test_resolve_claurst_model_unmapped_cloud_host_fails_loud() -> None:
+    # A cloud backend at a host claurst has no provider mapping for must fail loud, not launch.
+    with pytest.raises(CommandFailedError, match="can't reach model 'exotic'"):
+        sandbox.resolve_claurst_model(_claurst_cfg(), "exotic")
 
 
 def test_resolve_claurst_model_raw_cloud_ref_fails_loud() -> None:
@@ -249,6 +279,26 @@ def test_resolve_claurst_model_raw_cloud_ref_fails_loud() -> None:
 def test_resolve_claurst_model_unknown_name_fails_loud() -> None:
     with pytest.raises(CommandFailedError, match="not defined"):
         sandbox.resolve_claurst_model(_claurst_cfg(), "nope")
+
+
+def test_claurst_cloud_key_env_maps_provider_to_var() -> None:
+    cfg = _claurst_cfg()
+    assert sandbox.claurst_cloud_key_env(cfg, "nemotron") == "NVIDIA_API_KEY"
+    assert sandbox.claurst_cloud_key_env(cfg, "gemma4") is None  # local Ollama needs no key
+    assert sandbox.claurst_cloud_key_env(cfg, "ollama/foo:1b") is None  # raw ollama ref
+
+
+def test_claurst_cloud_env_lines_injects_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-secret")
+    lines = sandbox.claurst_cloud_env_lines(_claurst_cfg(), "nemotron")
+    assert lines == ["NVIDIA_API_KEY=nvapi-secret"]
+    assert sandbox.claurst_cloud_env_lines(_claurst_cfg(), "gemma4") == []  # local: no injection
+
+
+def test_claurst_cloud_env_lines_missing_key_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    with pytest.raises(CommandFailedError, match="NVIDIA_API_KEY"):
+        sandbox.claurst_cloud_env_lines(_claurst_cfg(), "nemotron")
 
 
 def test_resolve_model_for_agent_rejects_non_claurst(tmp_path: Path) -> None:
@@ -265,6 +315,47 @@ def test_resolve_model_for_agent_claurst_loads_and_resolves(tmp_path: Path) -> N
         encoding="utf-8",
     )
     assert sandbox.resolve_model_for_agent(tmp_path, "claurst", "gemma4") == "ollama/gemma4:26b"
+
+
+def test_resolve_claurst_start_local_returns_ref_no_env(tmp_path: Path) -> None:
+    (tmp_path / "danno.toml").write_text(
+        '[backends.ollama]\nkind = "ollama"\nbase_url = "http://h:11434/v1"\n'
+        '[models.gemma4]\nbackend = "ollama"\ntag = "gemma4:26b"\n',
+        encoding="utf-8",
+    )
+    ref, env_lines = sandbox.resolve_claurst_start(tmp_path, "claurst", "gemma4")
+    assert ref == "ollama/gemma4:26b"
+    assert env_lines == []  # local Ollama injects no key
+
+
+def test_resolve_claurst_start_cloud_returns_ref_and_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-secret")
+    (tmp_path / "danno.toml").write_text(
+        '[backends.nvidia]\nkind = "openai"\n'
+        'base_url = "https://integrate.api.nvidia.com/v1"\napi_key_env = "NVIDIA_API_KEY"\n'
+        '[models.nemotron]\nbackend = "nvidia"\ntag = "nvidia/nemotron"\n',
+        encoding="utf-8",
+    )
+    ref, env_lines = sandbox.resolve_claurst_start(tmp_path, "claurst", "nemotron")
+    assert ref == "nvidia/nvidia/nemotron"
+    assert env_lines == ["NVIDIA_API_KEY=nvapi-secret"]
+
+
+def test_emit_claurst_config_writes_overlay_and_settings(tmp_path: Path) -> None:
+    (tmp_path / "danno.toml").write_text(
+        '[backends.ollama]\nkind = "ollama"\nbase_url = "http://h:11434/v1"\n'
+        '[models.gemma4]\nbackend = "ollama"\ntag = "gemma4:26b"\n'
+        '[agents]\nbuild = "gemma4"\n',
+        encoding="utf-8",
+    )
+    home = tmp_path / "home"
+    sandbox._emit_claurst_config(Runner(apply=True), tmp_path, home)
+    overlay = json.loads((home / ".claurst" / "models.json").read_text())
+    assert overlay["ollama"]["models"]["gemma4:26b"]["tool_call"] is True
+    settings = json.loads((home / ".claurst" / "settings.json").read_text())
+    assert settings["agents"]["build"] == {"model": "ollama/gemma4:26b"}
 
 
 def _write_opencode_cfg(target: Path, body: str) -> None:
