@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from book_em_danno.commands import sandbox as sb
+from book_em_danno.config.generate import generate
 from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import CommandFailedError, Runner, log_info, log_warn
 from danno_validator import baseline
@@ -99,6 +100,22 @@ def _build_bench_env_file(config: DannoConfig, agent: str) -> Path | None:
     if not lines:
         return None
     return sb._build_env_file(lines, [], [])
+
+
+def _seed_opencode_config(config: DannoConfig, agent: str, workspace: Path) -> None:
+    """Generate `.opencode/opencode.jsonc` into the bench workspace for opencode.
+
+    Only opencode reads this file — it declares the `ollama`/openai providers (with
+    `host.docker.internal:11434`, which the sandbox's egress proxy rewrites to
+    `localhost`) and the model registry, so a `-m ollama/<tag>` turn resolves. The
+    `validate` sweep seeds it via `prepare_workspace`, but bench never did — so
+    every opencode turn failed with "Model not found: ollama/<tag>". claurst/occ/
+    claude don't read opencode.jsonc (they dial Ollama through the in-VM relay or a
+    cloud provider), so this is a no-op for them. `disable_title` matches the sweep:
+    no throwaway per-session title-gen call against the local model."""
+    if agent != sb.DEFAULT_AGENT:  # "opencode"
+        return
+    generate(config, workspace, apply=True, disable_title=True)
 
 
 def _run_aider(
@@ -262,6 +279,7 @@ def run_bench(
     workspace = opts.workspace or Path(tempfile.gettempdir()) / _sandbox_name(opts.target, "ws")
     workspace = workspace.resolve()
     seed_workspace(workspace)
+    _seed_opencode_config(config, opts.agent, workspace)
 
     # One agent-scoped, model-independent env-file for the whole run: it carries occ's
     # loop-ceiling knobs + cloud keys ([env]) — or claude's auth — into every turn. Built

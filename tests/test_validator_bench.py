@@ -58,6 +58,24 @@ def test_build_bench_env_file_occ_carries_knob_defaults_overridable(tmp_path: Pa
     assert "CLAUDE_CODE_MAX_RECURSION_DEPTH=500" not in body
 
 
+def test_seed_opencode_config_writes_provider_and_models(tmp_path: Path) -> None:
+    # opencode reads its provider/model registry from .opencode/opencode.jsonc; bench must
+    # seed it (validate does so via prepare_workspace) or every turn fails "Model not found".
+    bench._seed_opencode_config(_config(), "opencode", tmp_path)
+    jsonc = tmp_path / ".opencode" / "opencode.jsonc"
+    assert jsonc.is_file()
+    body = jsonc.read_text(encoding="utf-8")
+    assert "ollama" in body  # the provider is declared
+    assert "qwen3:latest" in body  # the model registry is declared
+
+
+def test_seed_opencode_config_noop_for_non_opencode_agents(tmp_path: Path) -> None:
+    # claurst/occ/claude dial Ollama through the relay or a cloud provider, not opencode.jsonc.
+    for agent in ("claurst", "occ", "claude"):
+        bench._seed_opencode_config(_config(), agent, tmp_path)
+        assert not (tmp_path / ".opencode" / "opencode.jsonc").exists()
+
+
 def test_build_bench_env_file_claude_uses_host_token(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
