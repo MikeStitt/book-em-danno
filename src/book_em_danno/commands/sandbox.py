@@ -62,10 +62,18 @@ CLAURST_AGENT = "claurst"
 # filename is shared with the generator so the two cannot drift.
 _CLAURST_DIR = ".claurst"
 # occ (open-claude-code, a Node/ESM Claude-Code clone) is likewise NOT a prebuilt
-# `docker sandbox` image: it is git-cloned + patched into the `shell` image post-create
-# (see `danno_validator.occ.install_occ`). Like claurst, the logical label stays "occ"
+# `docker sandbox` image: it is git-cloned into the `shell` image post-create (see
+# `danno_validator.occ.install_occ`). Like claurst, the logical label stays "occ"
 # everywhere; only the create-time Docker image differs.
 OCC_AGENT = "occ"
+# Generous level-4 agentic-loop ceilings for occ against slow local models. The fork reads
+# these from the environment (see its ADR-004); danno supplies them as env-file DEFAULTS so
+# `danno.toml [env]` (or an exported host var) can override them via `assemble_agent_env`.
+# 60-min API timeout matches the relay's DANNO_RELAY_TIMEOUT default; the deep tool-recursion
+# cap keeps long local loops from hitting occ's faithful default of 50. Max-turns is left to
+# occ's `--max-turns` flag (driver.OCC_DEFAULT_MAX_TURNS), so it is not defaulted here.
+OCC_API_TIMEOUT_DEFAULT_MS = 3600000
+OCC_MAX_RECURSION_DEPTH_DEFAULT = 500
 
 
 def _docker_image(agent: str) -> str:
@@ -440,15 +448,21 @@ def agent_env(agent: str, ollama_url: str, home: Path | None = None) -> list[str
         # tool-gating + context window come from danno.toml (Bug 4/7), not its catalog.
         return [f"HOME={home}", f"CLAURST_MODELS_PATH={home / _CLAURST_DIR / _CLAURST_MODELS_FILE}"]
     if agent == OCC_AGENT:
-        # occ's OpenAI env (OPENAI_BASE_URL/KEY, CLAUDE_CODE_STREAMING) is set INLINE in the
-        # launch/headless command (like claurst's OLLAMA_HOST), not here. The clone + shim
-        # live VM-local at fixed paths, so only a relocated HOME (occ's own session/state)
-        # follows the mounted home; without one, occ runs entirely VM-local.
-        if home is None:
-            return []
-        return [f"HOME={home}"]
+        # occ's *mandatory* OpenAI env (OPENAI_BASE_URL/KEY, CLAUDE_CODE_STREAMING) is set
+        # INLINE in the launch/headless command (like claurst's OLLAMA_HOST), NOT here, so it
+        # cannot be user-overridden. Here we supply the *tunable* agentic-loop ceilings as
+        # level-4 DEFAULTS, so danno.toml [env] can raise/lower them (see the fork's ADR-004).
+        # The clone lives VM-local at a fixed path, so only a relocated HOME (occ's own
+        # session/state) follows the mounted home; without one, occ runs entirely VM-local.
+        lines = [
+            f"CLAUDE_CODE_API_TIMEOUT={OCC_API_TIMEOUT_DEFAULT_MS}",
+            f"CLAUDE_CODE_MAX_RECURSION_DEPTH={OCC_MAX_RECURSION_DEPTH_DEFAULT}",
+        ]
+        if home is not None:
+            lines.append(f"HOME={home}")
+        return lines
     if agent == "claude":
-        lines: list[str] = []
+        lines = []
         for var in CLAUDE_AUTH_VARS:
             val = os.environ.get(var)
             if val:

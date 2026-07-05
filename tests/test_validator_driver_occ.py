@@ -85,15 +85,30 @@ def test_occ_run_local_sets_up_relay(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_occ_run_default_relay_upstream_is_real_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
     driver.occ_run(Runner(), "box", "go", model="ollama/x")
-    assert "DANNO_RELAY_UPSTREAM_PORT=11434 python3" in _script(calls)
+    assert "DANNO_RELAY_UPSTREAM_PORT=11434 " in _script(calls)
 
 
 def test_occ_run_capture_port_redirects_relay_upstream(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
     driver.occ_run(Runner(), "box", "go", model="ollama/x", capture_port=54321)
     script = _script(calls)
-    assert "DANNO_RELAY_UPSTREAM_PORT=54321 python3" in script
+    assert "DANNO_RELAY_UPSTREAM_PORT=54321 " in script
     assert 'python3 "$RELAY_PY" 11434' in script  # relay still LISTENS on 11434
+
+
+def test_occ_run_relay_timeout_defaults_and_is_overridable(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The relay-read timeout is set on the launch line with a generous default (60 min for
+    # slow local prefills) but honors an inherited DANNO_RELAY_TIMEOUT so [env]/host can raise
+    # it. The relay source itself reads the var with the same default. See Phase 3 / ADR-004.
+    calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
+    driver.occ_run(Runner(), "box", "go", model="ollama/x")
+    script = _script(calls)
+    assert (
+        f'DANNO_RELAY_TIMEOUT="${{DANNO_RELAY_TIMEOUT:-{driver.CLAURST_RELAY_DEFAULT_TIMEOUT}}}"'
+        in script
+    )
+    assert 'os.environ.get("DANNO_RELAY_TIMEOUT", "3600")' in script  # relay reads it
+    assert driver.CLAURST_RELAY_DEFAULT_TIMEOUT == 3600
 
 
 def test_occ_run_max_turns_default_and_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -115,7 +130,7 @@ def test_occ_run_workspace_becomes_exec_cwd(monkeypatch: pytest.MonkeyPatch) -> 
 # ── command construction: cloud path ────────────────────────────────────────────────
 
 
-def test_occ_run_cloud_uses_undici_shim_no_relay(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_occ_run_cloud_no_shim_no_relay(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
     driver.occ_run(
         Runner(), "box", "go", model="nvidia/qwen/qwen3.5-397b", env_file="/tmp/danno-env"
@@ -124,7 +139,8 @@ def test_occ_run_cloud_uses_undici_shim_no_relay(monkeypatch: pytest.MonkeyPatch
     # provider base URL + key ride the env-file (built config-side), forwarded on the exec.
     assert argv[:5] == ["docker", "sandbox", "exec", "--env-file", "/tmp/danno-env"]
     script = _script(calls)
-    assert f"NODE_OPTIONS=--import={driver.OCC_UNDICI_SHIM}" in script
+    # The fork's global dispatcher reads HTTPS_PROXY from the env-file — no NODE_OPTIONS shim.
+    assert "NODE_OPTIONS" not in script
     assert "CLAUDE_CODE_STREAMING=0" in script
     # no relay on the cloud path, and no local base-URL override
     assert "ThreadingHTTPServer" not in script

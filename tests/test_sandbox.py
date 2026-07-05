@@ -416,10 +416,19 @@ def test_provision_opencode_does_not_install_occ(
     assert not any("git clone" in c for c in r.joined())
 
 
-def test_agent_env_occ_relocates_home_only() -> None:
-    # occ's OpenAI env is set inline in the launch command, so agent_env only relocates HOME.
-    assert sandbox.agent_env("occ", "u") == []
-    assert sandbox.agent_env("occ", "u", home=Path("/h")) == ["HOME=/h"]
+def test_agent_env_occ_supplies_tunable_loop_defaults() -> None:
+    # occ's *mandatory* OpenAI env is set inline in the launch command; agent_env supplies
+    # the *tunable* agentic-loop ceilings as level-4 defaults (overridable via [env]), plus
+    # HOME when relocated. See the fork's ADR-004.
+    assert sandbox.agent_env("occ", "u") == [
+        f"CLAUDE_CODE_API_TIMEOUT={sandbox.OCC_API_TIMEOUT_DEFAULT_MS}",
+        f"CLAUDE_CODE_MAX_RECURSION_DEPTH={sandbox.OCC_MAX_RECURSION_DEPTH_DEFAULT}",
+    ]
+    assert sandbox.agent_env("occ", "u", home=Path("/h")) == [
+        f"CLAUDE_CODE_API_TIMEOUT={sandbox.OCC_API_TIMEOUT_DEFAULT_MS}",
+        f"CLAUDE_CODE_MAX_RECURSION_DEPTH={sandbox.OCC_MAX_RECURSION_DEPTH_DEFAULT}",
+        "HOME=/h",
+    ]
 
 
 def test_launch_occ_wraps_relay_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -436,11 +445,12 @@ def test_launch_occ_wraps_relay_and_model(monkeypatch: pytest.MonkeyPatch) -> No
     assert "RELAY_PY" in script and "trap 'kill $DANNO_RELAY_PID" in script
 
 
-def test_launch_occ_cloud_uses_shim_no_relay(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_launch_occ_cloud_no_shim_no_relay(monkeypatch: pytest.MonkeyPatch) -> None:
     r = RecordingRunner()
     sandbox.launch(r, "probe", Path("/repo"), agent="occ", model="nvidia/qwen/q3")
     script = r.commands[0][11]
-    assert "NODE_OPTIONS=--import=" in script
+    # The fork's global dispatcher reads HTTPS_PROXY from the env-file — no NODE_OPTIONS shim.
+    assert "NODE_OPTIONS" not in script
     assert "-m qwen/q3" in script
     assert "RELAY_PY" not in script  # no relay on the cloud path
 

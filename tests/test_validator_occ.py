@@ -1,8 +1,9 @@
 """Unit tests for the Phase-2 occ AUT seam — `install_occ` command construction
-(clone/checkout/patch/undici/stamp), `interactive_launch_script` (local relay vs cloud
-shim), `occ_repo_ref` pin precedence, and `authed_occ_run` forwarding. No Docker daemon:
-the install is asserted via the advised (non-apply) command, and the turn producer is
-checked by stubbing `driver.occ_run`."""
+(clone/checkout/npm-install/stamp; no source patch or shim — the fork carries those
+natively), `interactive_launch_script` (local relay vs shimless cloud), `occ_repo_ref`
+pin precedence, and `authed_occ_run` forwarding. No Docker daemon: the install is asserted
+via the advised (non-apply) command, and the turn producer is checked by stubbing
+`driver.occ_run`."""
 
 from __future__ import annotations
 
@@ -37,24 +38,23 @@ def test_install_occ_clones_checks_out_and_stamps() -> None:
     assert f'[ -f "{driver.OCC_ENTRY}" ]' in script
 
 
-def test_install_occ_patches_detectprovider_guarded_by_anchor() -> None:
+def test_install_occ_does_not_patch_source() -> None:
+    # The fork routes detectProvider on OPENAI_BASE_URL natively — install must NOT sed the
+    # source or write a proxy shim (both moved into the fork; see its ADR-004).
     script = occ.install_occ(Runner(), "box")[6]
-    # fail-loud anchor grep: refuse to patch (exit 1) if the schema drifted the anchor away
-    assert f'grep -q "{occ._OCC_PATCH_ANCHOR}"' in script
-    assert "refusing to patch" in script
-    # the 1-line patch routes detectProvider on OPENAI_BASE_URL when set
-    assert "process.env.OPENAI_BASE_URL || " in script
-    # idempotent: skip the sed if already routed
-    assert f'grep -q "OPENAI_BASE_URL || {occ._OCC_PATCH_ANCHOR}"' in script
+    assert "sed -i" not in script
+    assert "refusing to patch" not in script
+    assert "NODE_OPTIONS" not in script
+    assert "setGlobalDispatcher" not in script
+    assert "EnvHttpProxyAgent" not in script
 
 
-def test_install_occ_installs_undici_and_writes_shim() -> None:
+def test_install_occ_installs_deps_including_undici() -> None:
+    # The fork declares undici as a dependency (its global dispatcher needs it); install runs
+    # `npm install` in the v2 workspace, plus an explicit undici install as belt-and-suspenders.
     script = occ.install_occ(Runner(), "box")[6]
-    assert f'npm --prefix "{occ.OCC_CLONE_DIR}" install undici' in script
-    # the shim (heredoc'd, VM-local at the fixed driver path) makes Node fetch honor the proxy
-    assert driver.OCC_UNDICI_SHIM in script
-    assert "EnvHttpProxyAgent" in script
-    assert "setGlobalDispatcher" in script
+    assert f'npm --prefix "{occ.OCC_CLONE_DIR}/v2" install' in script
+    assert f'npm --prefix "{occ.OCC_CLONE_DIR}/v2" install undici' in script
 
 
 def test_install_occ_requires_node_and_npm() -> None:
@@ -117,19 +117,20 @@ def test_interactive_launch_local_relay_and_openai_env() -> None:
     assert "OPENAI_BASE_URL=http://127.0.0.1:11434/v1" in script
     assert "OPENAI_API_KEY=dummy" in script
     assert "CLAUDE_CODE_STREAMING=0" in script
-    assert "DANNO_RELAY_UPSTREAM_PORT=11434 python3" in script  # relay to real Ollama
+    assert "DANNO_RELAY_UPSTREAM_PORT=11434 " in script  # relay to real Ollama
     assert "-p" not in script.split()  # TUI: no headless print flag
 
 
 def test_interactive_launch_local_capture_port_redirects_relay() -> None:
     script = occ.interactive_launch_script("ollama/x", ["--foo"], capture_port=40404)[2]
-    assert "DANNO_RELAY_UPSTREAM_PORT=40404 python3" in script
+    assert "DANNO_RELAY_UPSTREAM_PORT=40404 " in script
     assert "--foo" in script  # passthru preserved
 
 
-def test_interactive_launch_cloud_uses_shim_no_relay() -> None:
+def test_interactive_launch_cloud_no_shim_no_relay() -> None:
     script = occ.interactive_launch_script("nvidia/qwen/q3", [])[2]
-    assert f"NODE_OPTIONS=--import={driver.OCC_UNDICI_SHIM}" in script
+    # The fork's global dispatcher reads HTTPS_PROXY from the env-file — no NODE_OPTIONS shim.
+    assert "NODE_OPTIONS" not in script
     assert "CLAUDE_CODE_STREAMING=0" in script
     assert "-m qwen/q3" in script  # backend prefix stripped
     assert "ThreadingHTTPServer" not in script  # no relay

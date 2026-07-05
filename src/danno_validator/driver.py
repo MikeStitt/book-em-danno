@@ -98,18 +98,27 @@ CLAURST_OLLAMA_HOST = "http://127.0.0.1:11434"
 CLAURST_RELAY_UPSTREAM_ENV = "DANNO_RELAY_UPSTREAM_PORT"
 CLAURST_RELAY_DEFAULT_UPSTREAM_PORT = 11434
 
-# occ (open-claude-code) headless flags — pinned against the ruvnet/open-claude-code
-# snapshot the integration spike cloned (v2, 2026-07-02). occ is a Node/ESM Claude-Code
-# clone run headless as `node <clone>/v2/src/index.mjs`. Its CLI mirrors claude's: `-p`
-# prompt, `-m` model, `--output-format stream-json` JSONL, `--permission-mode
-# bypassPermissions` auto-approves tools (safe ONLY because the Docker sandbox is the
-# isolation boundary — occ's Bash tool has no isolation of its own), `--max-turns N`
-# bounds the agent loop. After danno's 1-line detectProvider patch (see
-# `occ.install_occ`), occ routes to the OpenAI-compatible path whenever OPENAI_BASE_URL
-# is set — so both local Ollama (via the relay) and cloud (OpenAI-compatible) work.
-# occ is installed VM-local at a FIXED absolute path (not $HOME-relative) so a relocated
-# HOME (agent-home) cannot move the entrypoint out from under the driver — mirrors how
-# claurst's binary stays VM-local on PATH.
+# How long the relay waits on a single upstream read before giving up (seconds). Slow
+# local models (large context, tiny batch → minutes-long prefill on a non-streaming POST)
+# can exceed the old hardcoded 600s, so the relay reads `DANNO_RELAY_TIMEOUT` (default
+# 3600 = 60 min; <= 0 disables the timeout). `_claurst_script` sets it on the launch line
+# but honors an inherited value first, so `danno.toml [env]`/an exported var can override.
+# Shared by claurst + occ (both ride `_claurst_script`); only ever raises a ceiling.
+CLAURST_RELAY_TIMEOUT_ENV = "DANNO_RELAY_TIMEOUT"
+CLAURST_RELAY_DEFAULT_TIMEOUT = 3600
+
+# occ (open-claude-code) headless flags — pinned against danno's fork
+# (`MikeStitt/open-claude-code`, branch `danno-integration`; see `occ.OCC_REF_DEFAULT`).
+# occ is a Node/ESM Claude-Code clone run headless as `node <clone>/v2/src/index.mjs`. Its
+# CLI mirrors claude's: `-p` prompt, `-m` model, `--output-format stream-json` JSONL,
+# `--permission-mode bypassPermissions` auto-approves tools (safe ONLY because the Docker
+# sandbox is the isolation boundary — occ's Bash tool has no isolation of its own),
+# `--max-turns N` bounds the agent loop. The fork's `detectProvider` natively routes to the
+# OpenAI-compatible path whenever OPENAI_BASE_URL is set (no source patch), and its global
+# undici dispatcher honors HTTPS_PROXY (no NODE_OPTIONS shim) — so both local Ollama (via
+# the relay) and cloud (OpenAI-compatible) work. occ is installed VM-local at a FIXED
+# absolute path (not $HOME-relative) so a relocated HOME (agent-home) cannot move the
+# entrypoint out from under the driver — mirrors how claurst's binary stays VM-local.
 OCC_ENTRY = "/home/agent/.local/share/danno/occ/v2/src/index.mjs"
 OCC_PRINT_FLAG = "-p"
 OCC_FORMAT_FLAG = "--output-format"
@@ -119,11 +128,6 @@ OCC_PERMISSION_FLAG = "--permission-mode"
 OCC_PERMISSION_VALUE = "bypassPermissions"
 OCC_MAX_TURNS_FLAG = "--max-turns"
 OCC_DEFAULT_MAX_TURNS = 30
-# The undici proxy shim occ imports (NODE_OPTIONS=--import) on the CLOUD path so Node's
-# global fetch honors HTTPS_PROXY (CONNECT to :443 works through squid). Local Ollama
-# uses the plain-forward relay instead (squid rejects CONNECT to :11434). Same fixed
-# VM-local convention as OCC_ENTRY.
-OCC_UNDICI_SHIM = "/home/agent/.local/share/danno/occ-proxy-shim.mjs"
 # occ's OpenAI/Ollama path is non-streaming; its default streaming path crashes
 # (`Symbol.asyncIterator` on undefined), so every occ invocation forces it off.
 OCC_STREAMING_ENV = "CLAUDE_CODE_STREAMING=0"
@@ -135,6 +139,10 @@ import os, sys, threading, time, urllib.error, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 UPSTREAM = "http://host.docker.internal:" + os.environ.get("DANNO_RELAY_UPSTREAM_PORT", "11434")
+# Single-upstream-read timeout (seconds). Default 3600 (60 min) so a slow local model's
+# minutes-long prefill on a non-streaming POST is not cut off; <= 0 means no timeout.
+_TIMEOUT = int(os.environ.get("DANNO_RELAY_TIMEOUT", "3600"))
+TIMEOUT = _TIMEOUT if _TIMEOUT > 0 else None
 PROXY = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
 _opener = urllib.request.build_opener(
     urllib.request.ProxyHandler({"http": PROXY} if PROXY else {})
@@ -180,7 +188,7 @@ class H(BaseHTTPRequestHandler):
                 req.add_header(k, v)
         _log("-> upstream %s%s" % (UPSTREAM, self.path))
         try:
-            r = _opener.open(req, timeout=600)
+            r = _opener.open(req, timeout=TIMEOUT)
         except urllib.error.HTTPError as e:
             r = e
         except Exception as e:
@@ -834,10 +842,16 @@ def _claurst_script(
     11434 (claurst's `OLLAMA_HOST`); only the upstream changes.
     """
     heredoc = f"cat > \"$RELAY_PY\" <<'DANNO_RELAY_EOF'\n{_OLLAMA_RELAY_SOURCE}\nDANNO_RELAY_EOF"
+    # The upstream port is computed (capture proxy vs real Ollama) so it is set inline. The
+    # relay-read timeout defaults to CLAURST_RELAY_DEFAULT_TIMEOUT but honors an inherited
+    # value first (`${VAR:-default}`), so a [env]/host `DANNO_RELAY_TIMEOUT` can override it.
+    _t = CLAURST_RELAY_TIMEOUT_ENV
+    timeout_env = f'{_t}="${{{_t}:-{CLAURST_RELAY_DEFAULT_TIMEOUT}}}"'
     return (
         "RELAY_PY=$(mktemp /tmp/danno-relay-XXXXXX.py)\n"
         f"{heredoc}\n"
         f"{CLAURST_RELAY_UPSTREAM_ENV}={upstream_port} "
+        f"{timeout_env} "
         'python3 "$RELAY_PY" 11434 >/tmp/danno-ollama-relay.log 2>&1 &\n'
         "DANNO_RELAY_PID=$!\n"
         "trap 'kill $DANNO_RELAY_PID 2>/dev/null' EXIT\n"
@@ -1021,7 +1035,7 @@ def occ_model_target(model_ref: str | None) -> tuple[str | None, bool]:
 
     The sweep passes opencode-format `<backend>/<tag>` refs for EVERY agent (e.g.
     `ollama/gemma3:27b`), but occ's `-m` wants the provider's bare model id and routes on
-    OPENAI_BASE_URL after danno's detectProvider patch. This is the ONE place that knows
+    OPENAI_BASE_URL (the fork's native detectProvider). This is the ONE place that knows
     the `<backend>/<tag>` ↔ occ mapping, so drift is contained. Returns `(m_value, is_local)`:
 
     - `None` → `(None, True)`: interactive with no `-m`; occ falls back to its own default
@@ -1065,9 +1079,10 @@ def occ_run(
     LOCAL Ollama: wrapped in the shared `_claurst_script` relay bracket (reused verbatim),
     with `OPENAI_BASE_URL`→the relay + a dummy `OPENAI_API_KEY` + `CLAUDE_CODE_STREAMING=0`
     set inline. `capture_port` redirects the relay's upstream at a `--capture` proxy.
-    CLOUD: no relay; `NODE_OPTIONS=--import=<undici shim>` + `CLAUDE_CODE_STREAMING=0` are
-    set inline so Node fetch honors HTTPS_PROXY, and the provider's `OPENAI_BASE_URL` +
-    `OPENAI_API_KEY` come from `env_file` (built config-side, see `occ_cloud_env_lines`).
+    CLOUD: no relay; only `CLAUDE_CODE_STREAMING=0` is set inline. The fork's global undici
+    dispatcher honors HTTPS_PROXY (read from `env_file`), so no shim is needed; the
+    provider's `OPENAI_BASE_URL` + `OPENAI_API_KEY` also come from `env_file` (built
+    config-side, see `occ_cloud_env_lines`).
 
     Returns the parsed events alongside the raw capture — never raises on a non-zero exit.
     """
@@ -1098,11 +1113,10 @@ def occ_run(
         )
         cmd += [name, "bash", "-lc", _claurst_script(occ_cmd, upstream_port=upstream_port)]
     else:
-        # Cloud: no relay; the undici shim makes Node fetch honor HTTPS_PROXY. The
-        # provider base URL + key ride the env-file (OPENAI_BASE_URL / OPENAI_API_KEY).
-        occ_cmd = (
-            f"{OCC_STREAMING_ENV} NODE_OPTIONS=--import={OCC_UNDICI_SHIM} {shlex.join(node_argv)}"
-        )
+        # Cloud: no relay. The fork's global undici dispatcher reads HTTPS_PROXY from the
+        # env-file (no NODE_OPTIONS shim). The provider base URL + key also ride the
+        # env-file (OPENAI_BASE_URL / OPENAI_API_KEY, see `occ_cloud_env_lines`).
+        occ_cmd = f"{OCC_STREAMING_ENV} {shlex.join(node_argv)}"
         cmd += [name, "bash", "-lc", occ_cmd]
     result = runner.capture(cmd)
     return OccTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)

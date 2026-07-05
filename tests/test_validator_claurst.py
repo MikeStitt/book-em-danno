@@ -72,12 +72,12 @@ def test_interactive_launch_script_default_relay_upstream() -> None:
     assert argv[:2] == ["bash", "-lc"]
     script = argv[2]
     assert "claurst -m ollama/qwen3-coder-next" in script
-    assert "DANNO_RELAY_UPSTREAM_PORT=11434 python3" in script  # real Ollama by default
+    assert "DANNO_RELAY_UPSTREAM_PORT=11434 " in script  # real Ollama by default
 
 
 def test_interactive_launch_script_capture_port_redirects_relay() -> None:
     # --capture points the interactive session's relay at the recording proxy port.
     argv = claurst.interactive_launch_script("ollama/x", ["--foo"], capture_port=40404)
     script = argv[2]
-    assert "DANNO_RELAY_UPSTREAM_PORT=40404 python3" in script
+    assert "DANNO_RELAY_UPSTREAM_PORT=40404 " in script
     assert "--foo" in script  # passthru args preserved

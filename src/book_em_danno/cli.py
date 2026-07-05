@@ -260,12 +260,14 @@ def bench(
     agent: str = typer.Option(
         sandbox_cmd.DEFAULT_AGENT,
         "--agent",
-        help="Agent-under-test: opencode (default), claurst, or occ.",
+        help="Agent-under-test: opencode (default), claurst, occ, or claude "
+        "(the cloud reference row — one `claude-code` result, ignores the local model matrix).",
     ),
     only: list[str] = typer.Option(
         None,
         "--only",
-        help="Restrict the model matrix to these danno.toml model keys (repeatable).",
+        help="Restrict the model matrix to these danno.toml model keys (repeatable). "
+        "Ignored for --agent claude (single reference row).",
     ),
     benchmarks: Path = typer.Option(
         None, "--benchmarks", help="benchmarks.toml path (default: next to danno.toml)."
@@ -292,7 +294,8 @@ def bench(
 
     These run real benchmark task *content* via danno's own execution model — NOT the
     official Docker-per-task harness, so the pass counts are not official benchmark
-    scores. `--agent claurst` benchmarks the Rust Claude-Code clone on local models.
+    scores. `--agent claurst` benchmarks the Rust Claude-Code clone on local models;
+    `--agent claude` adds the cloud reference row (needs a host token; ignores `-m`).
     """
     from danno_validator.suites.bench import BenchOptions, run_bench
     from danno_validator.suites.config import DEFAULT_BENCHMARKS_FILE, load_benchmarks
