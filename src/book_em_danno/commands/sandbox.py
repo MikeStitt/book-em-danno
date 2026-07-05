@@ -42,7 +42,7 @@ from ..config.generate import (
     generate_claurst,
 )
 from ..config.loader import DannoConfigError, load_config
-from ..config.schema import DannoConfig, NpmPlugin, OpenAIBackend, Sandbox
+from ..config.schema import DannoConfig, NpmPlugin, OllamaBackend, OpenAIBackend, Sandbox
 from ..core import registry
 from ..core.exec import CommandFailedError, Runner, log_info, log_warn
 from . import ollama
@@ -61,18 +61,27 @@ CLAURST_AGENT = "claurst"
 # registry overlay + settings.json here (see `_emit_claurst_config`). The models
 # filename is shared with the generator so the two cannot drift.
 _CLAURST_DIR = ".claurst"
+# occ (open-claude-code, a Node/ESM Claude-Code clone) is likewise NOT a prebuilt
+# `docker sandbox` image: it is git-cloned + patched into the `shell` image post-create
+# (see `danno_validator.occ.install_occ`). Like claurst, the logical label stays "occ"
+# everywhere; only the create-time Docker image differs.
+OCC_AGENT = "occ"
 
 
 def _docker_image(agent: str) -> str:
     """The prebuilt `docker sandbox` image backing a logical agent label.
 
-    Almost always the label itself (opencode/claude/… ARE images). claurst is the
-    exception — it has no prebuilt image, so it rides the `shell` image and is
+    Almost always the label itself (opencode/claude/… ARE images). claurst and occ are
+    the exceptions — neither has a prebuilt image, so both ride the `shell` image and are
     installed afterwards; the label is preserved for the sandbox name and registry."""
     if agent == CLAURST_AGENT:
         from danno_validator.claurst import CLAURST_SANDBOX_IMAGE  # local: avoids import cycle
 
         return CLAURST_SANDBOX_IMAGE
+    if agent == OCC_AGENT:
+        from danno_validator.occ import OCC_SANDBOX_IMAGE  # local: avoids import cycle
+
+        return OCC_SANDBOX_IMAGE
     return agent
 
 
@@ -386,6 +395,15 @@ def provision(
         from danno_validator.claurst import install_claurst
 
         cmds.append(install_claurst(runner, name))
+    if agent == OCC_AGENT:
+        # occ has no prebuilt image either: git-clone + patch it into the `shell` VM.
+        # Same placement rationale as claurst (after stop → auto-start with egress armed;
+        # git clone + `npm install undici` need the proxy). Idempotent (stamp skip). The
+        # pins (OCC_REPO/OCC_REF) resolve from danno.toml [env] + host env, so the project
+        # config is loaded here. Local import: occ.py imports back into this module.
+        from danno_validator.occ import install_occ
+
+        cmds.append(install_occ(runner, name, _maybe_load_config(target_abs)))
     return cmds
 
 
@@ -421,6 +439,14 @@ def agent_env(agent: str, ollama_url: str, home: Path | None = None) -> list[str
         # in the VM). Point claurst at the danno-generated registry overlay there so its
         # tool-gating + context window come from danno.toml (Bug 4/7), not its catalog.
         return [f"HOME={home}", f"CLAURST_MODELS_PATH={home / _CLAURST_DIR / _CLAURST_MODELS_FILE}"]
+    if agent == OCC_AGENT:
+        # occ's OpenAI env (OPENAI_BASE_URL/KEY, CLAUDE_CODE_STREAMING) is set INLINE in the
+        # launch/headless command (like claurst's OLLAMA_HOST), not here. The clone + shim
+        # live VM-local at fixed paths, so only a relocated HOME (occ's own session/state)
+        # follows the mounted home; without one, occ runs entirely VM-local.
+        if home is None:
+            return []
+        return [f"HOME={home}"]
     if agent == "claude":
         lines: list[str] = []
         for var in CLAUDE_AUTH_VARS:
@@ -516,18 +542,83 @@ def claurst_cloud_env_lines(config: DannoConfig, value: str) -> list[str]:
     return [f"{var}={val}"]
 
 
+def resolve_occ_model(config: DannoConfig, value: str) -> str:
+    """Resolve a `-m` value to occ's `<backend>/<tag>` ref (parsed by `driver.occ_model_target`).
+
+    `value` is a `[models]` name (e.g. `gemma4`) or a raw `ollama/<tag>` ref. An Ollama
+    model always yields `ollama/<tag>` (so the driver's locality detection is by prefix,
+    independent of the backend's config name); an OpenAI-compatible (cloud) model yields
+    `<backend>/<tag>` — the driver strips the backend and drives occ with the bare tag as
+    the provider model id, routing on `OPENAI_BASE_URL` (injected by `occ_cloud_env_lines`).
+    A raw non-Ollama ref is rejected: danno can't derive its key/base URL, so it must be a
+    [models] entry on a supported backend (Working Rule 8)."""
+    if "/" in value:
+        provider = value.split("/", 1)[0]
+        if provider != "ollama":
+            raise CommandFailedError(
+                f"--agent occ: a raw '{provider}/…' ref can't be wired by danno (it can't "
+                f"derive the OPENAI_BASE_URL/key). Declare it as a [models] entry on a "
+                f"supported backend (Ollama, or an OpenAI-compatible cloud) and pass that name."
+            )
+        return value
+    model = config.models.get(value)
+    if model is None:
+        raise CommandFailedError(
+            f"model '{value}' is not defined in danno.toml [models]. "
+            f"Pass a [models] entry (Ollama or an OpenAI-compatible cloud) for --agent occ."
+        )
+    backend = config.backends[model.backend]
+    if isinstance(backend, OllamaBackend):
+        return f"ollama/{model.tag}"
+    if isinstance(backend, OpenAIBackend):
+        return f"{model.backend}/{model.tag}"
+    raise CommandFailedError(
+        f"--agent occ can't reach model '{value}': backend kind '{backend.kind}' is not "
+        f"supported (use an Ollama or OpenAI-compatible backend)."
+    )
+
+
+def occ_cloud_env_lines(config: DannoConfig, value: str) -> list[str]:
+    """The env-file lines that point occ at a cloud model's provider, or [].
+
+    occ reaches an OpenAI-compatible provider via `OPENAI_BASE_URL` + `OPENAI_API_KEY`
+    (its OpenAI path), so a cloud [models] name emits BOTH: the backend's `base_url` and
+    the host value of its `api_key_env` mapped onto `OPENAI_API_KEY`. They land only in the
+    chmod-600 env-file (never a command line). Fails loud (Working Rule 8) when the key var
+    is unset. Empty for local Ollama (the relay path sets `OPENAI_BASE_URL` inline) and for
+    raw `ollama/…` refs."""
+    if "/" in value:
+        return []
+    model = config.models.get(value)
+    if model is None:
+        return []
+    backend = config.backends[model.backend]
+    if not isinstance(backend, OpenAIBackend):
+        return []
+    key = os.environ.get(backend.api_key_env)
+    if not key:
+        raise CommandFailedError(
+            f"--agent occ -m {value} needs the cloud provider key '{backend.api_key_env}', but "
+            f"it is unset in danno's environment. Export {backend.api_key_env} and re-run."
+        )
+    return [f"OPENAI_BASE_URL={backend.base_url}", f"OPENAI_API_KEY={key}"]
+
+
 def resolve_model_for_agent(target_abs: Path, agent: str, value: str) -> str:
     """The `-m/--model` flow for `sandbox start`: load danno.toml and resolve `value`
-    for `agent`. claurst-only — claude has its own `--model` and opencode's model comes
-    from the generated opencode.jsonc, so `-m` with either fails loud rather than being
-    silently ignored. Raises `DannoConfigError` (bad toml) or `CommandFailedError`."""
-    if agent != CLAURST_AGENT:
+    for `agent`. Supported only for the danno-clone agents claurst and occ — claude has
+    its own `--model` and opencode's model comes from the generated opencode.jsonc, so `-m`
+    with either fails loud rather than being silently ignored. Raises `DannoConfigError`
+    (bad toml) or `CommandFailedError`."""
+    if agent not in (CLAURST_AGENT, OCC_AGENT):
         raise CommandFailedError(
-            "`-m/--model` on `danno sandbox start` is only supported with `--agent claurst`. "
-            "Claude Code uses its own `--model` (pass it after `--`); opencode's model comes "
-            "from danno.toml. Re-run without `-m`."
+            "`-m/--model` on `danno sandbox start` is only supported with `--agent claurst` "
+            "or `--agent occ`. Claude Code uses its own `--model` (pass it after `--`); "
+            "opencode's model comes from danno.toml. Re-run without `-m`."
         )
     config = load_config(target_abs / "danno.toml")
+    if agent == OCC_AGENT:
+        return resolve_occ_model(config, value)
     return resolve_claurst_model(config, value)
 
 
@@ -535,13 +626,27 @@ def resolve_claurst_start(target_abs: Path, agent: str, value: str) -> tuple[str
     """`sandbox start -m <value>`: the claurst `-m` ref PLUS any cloud-key env-file lines.
 
     Loads danno.toml once and returns `(ref, env_lines)` — `env_lines` is empty for local
-    Ollama and `["<VAR>=<value>"]` for a cloud model (fail loud if the host var is unset).
-    Non-claurst agents fail loud via `resolve_model_for_agent` (model is claurst-only)."""
-    if agent != CLAURST_AGENT:
-        # Reuse the single source of truth for the non-claurst rejection message.
-        resolve_model_for_agent(target_abs, agent, value)
+    Ollama and `["<VAR>=<value>"]` for a cloud model (fail loud if the host var is unset)."""
     config = load_config(target_abs / "danno.toml")
     return resolve_claurst_model(config, value), claurst_cloud_env_lines(config, value)
+
+
+def resolve_occ_start(target_abs: Path, agent: str, value: str) -> tuple[str, list[str]]:
+    """`sandbox start -m <value>` for occ: the occ `<backend>/<tag>` ref PLUS any cloud
+    env-file lines (`OPENAI_BASE_URL` + `OPENAI_API_KEY`; empty for local Ollama)."""
+    config = load_config(target_abs / "danno.toml")
+    return resolve_occ_model(config, value), occ_cloud_env_lines(config, value)
+
+
+def resolve_start(target_abs: Path, agent: str, value: str) -> tuple[str, list[str]]:
+    """Dispatch `sandbox start -m` to the per-agent resolver. Non-clone agents fail loud
+    via `resolve_model_for_agent` (which rejects `-m` for claude/opencode)."""
+    if agent == OCC_AGENT:
+        return resolve_occ_start(target_abs, agent, value)
+    if agent == CLAURST_AGENT:
+        return resolve_claurst_start(target_abs, agent, value)
+    resolve_model_for_agent(target_abs, agent, value)  # raises the non-clone rejection
+    raise AssertionError("unreachable")  # resolve_model_for_agent always raises here
 
 
 def _build_env_file(agent_lines: list[str], env_pairs: list[str], env_files: list[str]) -> Path:
@@ -644,6 +749,85 @@ def reconcile_env_refs(target_abs: Path, env_pairs: list[str], env_files: list[s
     return augmented
 
 
+def _maybe_load_config(target_abs: Path) -> DannoConfig | None:
+    """Load `{target}/danno.toml` for env assembly, or None if it is absent.
+
+    A config-less `danno sandbox shell`/`start` on a bare directory still works — it
+    simply gets no `[env]` overlay (only agent defaults + CLI env)."""
+    cfg = target_abs / "danno.toml"
+    if not cfg.is_file():
+        return None
+    return load_config(cfg)
+
+
+def _resolve_env_indirection(value: str) -> tuple[str, list[str]]:
+    """Resolve `{env:VAR}` host-indirection inside an `[env]` value.
+
+    Returns `(resolved, missing)` where `missing` names any referenced host var that
+    is unset/empty (each expands to '' in `resolved`; the caller decides raise vs skip)."""
+    missing: list[str] = []
+
+    def sub(m: re.Match[str]) -> str:
+        var = m.group(1)
+        host = os.environ.get(var)
+        if not host:
+            missing.append(var)
+            return ""
+        return host
+
+    return _ENV_REF.sub(sub, value), missing
+
+
+def assemble_agent_env(
+    config: DannoConfig | None,
+    *,
+    agent_defaults: list[str],
+    env_pairs: list[str],
+    env_files: list[str],
+    strict: bool = False,
+) -> list[str]:
+    """Final `KEY=VAL` env-file lines for a config-driven agent (opencode/claurst/occ),
+    applying the locked precedence (highest wins):
+
+        CLI (--env / --env-file)  >  host os.environ  >  danno.toml [env]  >  agent default
+
+    The host-env tier is deliberately scoped to keys the operator opted into managing
+    (those named in `[env]` or on the CLI): a bare same-named host var does NOT clobber
+    a computed agent default (e.g. `OLLAMA_BASE_URL`), which would silently break the
+    sandbox's Ollama networking. A `{env:VAR}` reference inside an `[env]` value resolves
+    from `os.environ`; an unset reference raises in `strict` mode (Working Rule 8) or
+    warns + drops the key otherwise. Claude does NOT flow through here — its auth stays
+    in `agent_env` exactly as-is."""
+    merged: dict[str, str] = {}
+    for line in agent_defaults:  # level 4: code default
+        if "=" in line:
+            key, val = line.split("=", 1)
+            merged[key] = val
+    literal = dict(config.env) if config is not None else {}
+    for key, raw in literal.items():
+        host = os.environ.get(key)
+        if host:  # level 2: an exported host var overrides the committed [env] value
+            if merged.get(key) != host:
+                log_info(f"[env] {key}: using danno's host environment value")
+            merged[key] = host
+            continue
+        resolved, missing = _resolve_env_indirection(raw)  # level 3: [env] literal
+        if missing:
+            names = ", ".join(missing)
+            if strict:
+                raise CommandFailedError(
+                    f"danno.toml [env] {key} references host env var(s) not set: {names}. "
+                    f"Export them (e.g. `export {missing[0]}=…`) or drop the {{env:…}} reference."
+                )
+            log_warn(
+                f"danno.toml [env] {key} references unset host var(s) {names}; dropping {key}."
+            )
+            continue
+        merged[key] = resolved
+    merged.update(_provided_env(env_pairs, env_files))  # level 1: CLI (highest)
+    return [f"{k}={v}" for k, v in merged.items()]
+
+
 def _exec_session(
     runner: Runner,
     name: str,
@@ -674,14 +858,29 @@ def _exec_session(
     exiting the shell is not a danno error."""
     if agent == "claude" and home is not None:
         seed_onboarding(home, target_abs)
-    if agent == DEFAULT_AGENT:
-        # opencode reads opencode.jsonc; verify every {env:VAR} it references is
-        # supplied (auto-injecting host-exported ones), else fail loud up front.
-        env_pairs = reconcile_env_refs(target_abs, env_pairs, env_files)
-    lines = agent_env(agent, ollama_url, home)
+    if agent == "claude":
+        # claude's auth injection stays exactly as-is (it is NOT danno.toml-config
+        # driven); agent_env lines win over --env/--env-file via _build_env_file.
+        lines = agent_env(agent, ollama_url, home)
+        env_path_lines, env_path_pairs, env_path_files = lines, env_pairs, env_files
+    else:
+        if agent == DEFAULT_AGENT:
+            # opencode reads opencode.jsonc; verify every {env:VAR} it references is
+            # supplied (auto-injecting host-exported ones), else fail loud up front.
+            env_pairs = reconcile_env_refs(target_abs, env_pairs, env_files)
+        # opencode/claurst/occ: fold agent defaults, danno.toml [env], host env and CLI
+        # into one precedence-ordered file. assemble_agent_env already applied
+        # env_pairs/env_files, so pass them empty to _build_env_file (avoid double-apply).
+        lines = assemble_agent_env(
+            _maybe_load_config(target_abs),
+            agent_defaults=agent_env(agent, ollama_url, home),
+            env_pairs=env_pairs,
+            env_files=env_files,
+        )
+        env_path_lines, env_path_pairs, env_path_files = lines, [], []
     injected = ", ".join(line.split("=", 1)[0] for line in lines)
     log_info(f"injecting {injected} via a chmod-600 --env-file")
-    env_path = _build_env_file(lines, env_pairs, env_files)
+    env_path = _build_env_file(env_path_lines, env_path_pairs, env_path_files)
     cmd = [
         "docker",
         "sandbox",
@@ -732,6 +931,10 @@ def launch(
         container_argv = interactive_launch_script(
             model, agent_args or [], capture_port=capture_relay_port
         )
+    elif agent == OCC_AGENT:
+        from danno_validator.occ import interactive_launch_script as occ_launch_script
+
+        container_argv = occ_launch_script(model, agent_args or [], capture_port=capture_relay_port)
     else:
         container_argv = [agent, *(agent_args or [])]
     return _exec_session(
@@ -862,10 +1065,10 @@ def _capture_session(
     if capture_dir is None:
         yield _CaptureWiring(base_allow_hosts)
         return
-    if agent not in (DEFAULT_AGENT, CLAURST_AGENT):
+    if agent not in (DEFAULT_AGENT, CLAURST_AGENT, OCC_AGENT):
         log_warn(
-            f"--capture supports the '{DEFAULT_AGENT}' and '{CLAURST_AGENT}' agents; "
-            f"not capturing '{agent}'."
+            f"--capture supports the '{DEFAULT_AGENT}', '{CLAURST_AGENT}' and '{OCC_AGENT}' "
+            f"agents; not capturing '{agent}'."
         )
         yield _CaptureWiring(base_allow_hosts)
         return
@@ -883,11 +1086,12 @@ def _capture_session(
             f"{', '.join(uncap)}"
         )
     allow = capture_allow_hosts(targets, base_allow_hosts)
-    if agent == CLAURST_AGENT:
-        # claurst reads neither opencode.jsonc nor the egress proxy; it dials an in-VM
-        # relay. Point that relay at the Ollama recording proxy (no opencode.jsonc rewrite).
+    if agent in (CLAURST_AGENT, OCC_AGENT):
+        # claurst/occ read neither opencode.jsonc nor the egress proxy; both dial an in-VM
+        # relay (occ reuses claurst's `_claurst_script` bracket). Point that relay at the
+        # Ollama recording proxy (no opencode.jsonc rewrite).
         relay_port = _claurst_relay_capture_port(targets)
-        log_info(f"--capture: recording claurst<->Ollama wire traffic to {capture_dir}")
+        log_info(f"--capture: recording {agent}<->Ollama wire traffic to {capture_dir}")
         with captures_running(targets):
             yield _CaptureWiring(allow, relay_port)
         return

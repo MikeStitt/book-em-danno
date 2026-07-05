@@ -84,6 +84,7 @@ def _run_aider(
     *,
     workspace: Path,
     variants: list[ConfigVariant],
+    config: DannoConfig,
 ) -> list[BenchVerdict]:
     ap = cfg.aider_polyglot
     if not (ap.enabled and ap.select):
@@ -92,7 +93,7 @@ def _run_aider(
     image = resolve_image(opts.agent)
     log_info(f"[bench] aider — provision {opts.agent} sandbox '{name}'")
     sb.provision(runner, name, workspace, agent=image)
-    install_aut(runner, name, opts.agent)
+    install_aut(runner, name, opts.agent, config)
     checkout = clone_polyglot(runner, ap.source, temp_checkout_dir())
     verdicts: list[BenchVerdict] = []
     try:
@@ -120,6 +121,7 @@ def _run_swebench(
     *,
     workspace: Path,
     variants: list[ConfigVariant],
+    config: DannoConfig,
 ) -> list[BenchVerdict]:
     sw = cfg.swebench
     if not (sw.enabled and sw.select):
@@ -130,7 +132,7 @@ def _run_swebench(
         name = _sandbox_name(opts.target, f"swe-{task.id}")
         log_info(f"[bench] swebench {task.id} — provision {opts.agent} sandbox '{name}'")
         sb.provision(runner, name, workspace, agent=resolve_image(opts.agent))
-        install_aut(runner, name, opts.agent)
+        install_aut(runner, name, opts.agent, config)
         try:
             try:
                 task.provision(runner, name, workspace)
@@ -230,9 +232,11 @@ def run_bench(
     workspace = workspace.resolve()
     seed_workspace(workspace)
 
-    report.verdicts += _run_aider(runner, bench_cfg, opts, workspace=workspace, variants=variants)
+    report.verdicts += _run_aider(
+        runner, bench_cfg, opts, workspace=workspace, variants=variants, config=config
+    )
     report.verdicts += _run_swebench(
-        runner, bench_cfg, opts, workspace=workspace, variants=variants
+        runner, bench_cfg, opts, workspace=workspace, variants=variants, config=config
     )
 
     report.results_json = _write_results(

@@ -38,7 +38,7 @@ from book_em_danno.capture.wiring import (
 from book_em_danno.commands import sandbox as sb
 from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import CommandFailedError, Runner, log_info, log_warn
-from danno_validator import claurst
+from danno_validator import claurst, occ
 from danno_validator.baseline import BASELINE_MODEL, run_baseline
 from danno_validator.events import ValidateEvent
 from danno_validator.judge import JudgeFn
@@ -192,9 +192,15 @@ def _build_sweep_env_file(
             f"no credentials for {', '.join(missing)} — those configs will error at "
             f"L0. Export them or pass `--env KEY=VAL` to inject them into the sweep."
         )
-    if not augmented and not opts.env_file:
+    # Fold danno.toml [env] into the sweep credentials file. The opencode.jsonc
+    # {env:} refs (augmented) + --env-file ride the CLI tier (highest, as before);
+    # [env] composes underneath. None only when truly nothing needs injecting.
+    lines = sb.assemble_agent_env(
+        config, agent_defaults=[], env_pairs=augmented, env_files=opts.env_file
+    )
+    if not lines:
         return None
-    return sb._build_env_file([], augmented, opts.env_file)
+    return sb._build_env_file(lines, [], [])
 
 
 def _build_judge(judge: bool, judge_model: str | None = None) -> JudgeFn | None:
@@ -311,7 +317,13 @@ def run_validate(
         # provision, then driven by `claurst.authed_claurst_run` (which relays Ollama
         # per turn). Other values pass through as a Docker image name unchanged.
         is_claurst = opts.agent == "claurst"
-        image = claurst.CLAURST_SANDBOX_IMAGE if is_claurst else opts.agent
+        is_occ = opts.agent == "occ"
+        if is_claurst:
+            image = claurst.CLAURST_SANDBOX_IMAGE
+        elif is_occ:
+            image = occ.OCC_SANDBOX_IMAGE
+        else:
+            image = opts.agent
         reporter.phase(f"provision {opts.agent} sandbox  {plan.sweep_sandbox}")
         sb.provision(
             runner,
@@ -324,9 +336,18 @@ def run_validate(
         if is_claurst:
             reporter.phase(f"install claurst  {plan.sweep_sandbox}")
             claurst.install_claurst(runner, plan.sweep_sandbox)
+        elif is_occ:
+            reporter.phase(f"install occ  {plan.sweep_sandbox}")
+            occ.install_occ(runner, plan.sweep_sandbox, config)
         # Credentials for swept cloud configs: bound into every agent exec via
         # --env-file, removed after the sweep (the secret never lingers on disk).
         sweep_env_file = _build_sweep_env_file(config, opts, plan.workspace)
+        if is_occ:
+            make_run_turn = occ.authed_occ_run
+        elif is_claurst:
+            make_run_turn = claurst.authed_claurst_run
+        else:
+            make_run_turn = None
         try:
             results = run_sweep(
                 runner,
@@ -338,7 +359,7 @@ def run_validate(
                 level1=level1,
                 level2=level2,
                 env_file=sweep_env_file,
-                make_run_turn=claurst.authed_claurst_run if is_claurst else None,
+                make_run_turn=make_run_turn,
                 judge=judge,
                 on_event=reporter.event,
             )

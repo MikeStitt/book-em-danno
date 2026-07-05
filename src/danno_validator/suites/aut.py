@@ -10,23 +10,37 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import Runner
-from danno_validator import claurst
+from danno_validator import claurst, occ
 from danno_validator.driver import Turn, TurnFn, opencode_run
 from danno_validator.sweep import DEFAULT_AGENT
 
 CLAURST = "claurst"
+OCC = "occ"
 
 
 def resolve_image(agent: str) -> str:
     """The prebuilt sandbox image to `docker sandbox create` for this AUT."""
-    return claurst.CLAURST_SANDBOX_IMAGE if agent == CLAURST else agent
+    if agent == CLAURST:
+        return claurst.CLAURST_SANDBOX_IMAGE
+    if agent == OCC:
+        return occ.OCC_SANDBOX_IMAGE
+    return agent
 
 
-def install_aut(runner: Runner, sandbox: str, agent: str) -> None:
-    """Post-provision install for AUTs that aren't a prebuilt image (claurst)."""
+def install_aut(
+    runner: Runner, sandbox: str, agent: str, config: DannoConfig | None = None
+) -> None:
+    """Post-provision install for AUTs that aren't a prebuilt image (claurst, occ).
+
+    `config` carries the `[env]` pins (occ's OCC_REPO/OCC_REF) through to the
+    installer; claurst has a fixed install-time version and ignores it.
+    """
     if agent == CLAURST:
         claurst.install_claurst(runner, sandbox)
+    elif agent == OCC:
+        occ.install_occ(runner, sandbox, config)
 
 
 def run_turn_for(agent: str, env_file: Path | None) -> TurnFn:
@@ -37,6 +51,8 @@ def run_turn_for(agent: str, env_file: Path | None) -> TurnFn:
     """
     if agent == CLAURST:
         return claurst.authed_claurst_run(env_file)
+    if agent == OCC:
+        return occ.authed_occ_run(env_file)
 
     def run(
         runner: Runner,

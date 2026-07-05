@@ -142,7 +142,7 @@ def validate(
     agent: str = typer.Option(
         sandbox_cmd.DEFAULT_AGENT,
         "--agent",
-        help="Agent-under-test for the sweep: opencode (default) or claurst.",
+        help="Agent-under-test for the sweep: opencode (default), claurst, or occ.",
     ),
     env: list[str] = typer.Option(
         None, "--env", help="KEY=VAL credential to inject into cloud-config sweeps (repeatable)."
@@ -260,7 +260,7 @@ def bench(
     agent: str = typer.Option(
         sandbox_cmd.DEFAULT_AGENT,
         "--agent",
-        help="Agent-under-test: opencode (default) or claurst.",
+        help="Agent-under-test: opencode (default), claurst, or occ.",
     ),
     only: list[str] = typer.Option(
         None,
@@ -431,15 +431,15 @@ def benchmark(
 _AGENT_OPT = typer.Option(
     sandbox_cmd.DEFAULT_AGENT,
     "--agent",
-    help="Agent: opencode, claude, or claurst; non-default agents get a separate sandbox.",
+    help="Agent: opencode, claude, claurst, or occ; non-default agents get a separate sandbox.",
 )
 _MODEL_OPT = typer.Option(
     None,
     "--model",
     "-m",
-    help="Model for --agent claurst (a danno.toml models entry, e.g. gemma4 or an "
-    "NVIDIA NIM model). claurst-only; a backend danno can't wire, or a raw non-Ollama "
-    "ref, is rejected loud.",
+    help="Model for --agent claurst or occ (a danno.toml models entry, e.g. gemma4 or an "
+    "OpenAI-compatible cloud model). clone-agents only; a backend danno can't wire, or a "
+    "raw non-Ollama ref, is rejected loud.",
 )
 
 
@@ -464,13 +464,13 @@ def _resolve_model(abs_target: Path, agent: str, model: str | None) -> tuple[str
     """Resolve `--model` for `sandbox start`. Returns `(ref, cloud_env_lines)` — `ref`
     is None when no `--model` is given; `cloud_env_lines` carries a cloud model's provider
     key (`["<VAR>=<value>"]`, injected into the chmod-600 env-file) and is empty for local
-    Ollama. Maps a danno [models] name to claurst's `-m <provider>/<tag>`, failing loud on
-    a malformed config (exit 2) or an unreachable model, missing cloud key, or a non-claurst
+    Ollama. Maps a danno [models] name to the clone agent's `-m` ref, failing loud on a
+    malformed config (exit 2) or an unreachable model, missing cloud key, or a non-clone
     agent (exit 4)."""
     if model is None:
         return None, []
     try:
-        return sandbox_cmd.resolve_claurst_start(abs_target, agent, model)
+        return sandbox_cmd.resolve_start(abs_target, agent, model)
     except DannoConfigError as exc:
         log_err(str(exc))
         raise typer.Exit(code=2) from exc

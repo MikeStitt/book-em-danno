@@ -358,6 +358,169 @@ def test_emit_claurst_config_writes_overlay_and_settings(tmp_path: Path) -> None
     assert settings["agents"]["build"] == {"model": "ollama/gemma4:26b"}
 
 
+# --- occ (open-claude-code, a Node/ESM clone git-cloned + patched in the `shell` image) ---
+
+
+def _occ_cfg() -> DannoConfig:
+    return DannoConfig(
+        backends={
+            "ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1"),
+            "nvidia": OpenAIBackend(
+                kind="openai",
+                base_url="https://integrate.api.nvidia.com/v1",
+                api_key_env="NVIDIA_API_KEY",
+            ),
+        },
+        models={
+            "gemma4": Model(backend="ollama", tag="gemma4:26b"),
+            "nemotron": Model(backend="nvidia", tag="nvidia/nemotron"),
+        },
+    )
+
+
+def test_default_name_occ_suffix() -> None:
+    assert sandbox.default_name(Path("/tmp/my-proj"), "occ") == "danno-tmp-my-proj-occ"
+
+
+def test_docker_image_occ_uses_shell() -> None:
+    assert sandbox._docker_image("occ") == "shell"
+
+
+def test_create_occ_uses_shell_image(tmp_path: Path) -> None:
+    r = RecordingRunner()
+    sandbox.create(r, "danno-x-occ", tmp_path, "occ")
+    assert r.joined() == [f"docker sandbox create --name danno-x-occ shell {tmp_path}"]
+
+
+def test_provision_occ_installs_after_stop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Same create(shell)/proxy/stop order as claurst, plus a trailing clone/patch exec.
+    monkeypatch.setattr(ollama, "loopback_warning", lambda **kw: None)
+    r = RecordingRunner()
+    sandbox.provision(r, "probe", tmp_path, agent="occ")
+    joined = r.joined()
+    assert joined[:3] == [
+        f"docker sandbox create --name probe shell {tmp_path}",
+        "docker sandbox network proxy probe --policy allow --allow-host localhost:11434",
+        "docker sandbox stop probe",
+    ]
+    assert joined[3].startswith("docker sandbox exec probe bash -lc ")
+    assert "git clone" in joined[3] and "checkout" in joined[3]
+
+
+def test_provision_opencode_does_not_install_occ(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ollama, "loopback_warning", lambda **kw: None)
+    r = RecordingRunner()
+    sandbox.provision(r, "probe", tmp_path)  # default opencode
+    assert not any("git clone" in c for c in r.joined())
+
+
+def test_agent_env_occ_relocates_home_only() -> None:
+    # occ's OpenAI env is set inline in the launch command, so agent_env only relocates HOME.
+    assert sandbox.agent_env("occ", "u") == []
+    assert sandbox.agent_env("occ", "u", home=Path("/h")) == ["HOME=/h"]
+
+
+def test_launch_occ_wraps_relay_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    r = RecordingRunner()
+    sandbox.launch(r, "probe", Path("/repo"), agent="occ", model="ollama/gemma4:26b")
+    cmd = r.commands[0]
+    assert cmd[8:11] == ["probe", "bash", "-lc"]
+    script = cmd[11]
+    # bare ollama tag on -m; NO -p (interactive TUI); relay bracket reused
+    assert "-m gemma4:26b" in script
+    assert "ollama/gemma4:26b" not in script
+    assert "OPENAI_BASE_URL=http://127.0.0.1:11434/v1" in script
+    assert "CLAUDE_CODE_STREAMING=0" in script
+    assert "RELAY_PY" in script and "trap 'kill $DANNO_RELAY_PID" in script
+
+
+def test_launch_occ_cloud_uses_shim_no_relay(monkeypatch: pytest.MonkeyPatch) -> None:
+    r = RecordingRunner()
+    sandbox.launch(r, "probe", Path("/repo"), agent="occ", model="nvidia/qwen/q3")
+    script = r.commands[0][11]
+    assert "NODE_OPTIONS=--import=" in script
+    assert "-m qwen/q3" in script
+    assert "RELAY_PY" not in script  # no relay on the cloud path
+
+
+def test_resolve_occ_model_local_name() -> None:
+    assert sandbox.resolve_occ_model(_occ_cfg(), "gemma4") == "ollama/gemma4:26b"
+
+
+def test_resolve_occ_model_raw_ollama_ref_passthrough() -> None:
+    assert sandbox.resolve_occ_model(_occ_cfg(), "ollama/foo:1b") == "ollama/foo:1b"
+
+
+def test_resolve_occ_model_cloud_resolves() -> None:
+    assert sandbox.resolve_occ_model(_occ_cfg(), "nemotron") == "nvidia/nvidia/nemotron"
+
+
+def test_resolve_occ_model_raw_cloud_ref_fails_loud() -> None:
+    with pytest.raises(CommandFailedError, match="can't be wired"):
+        sandbox.resolve_occ_model(_occ_cfg(), "openai/gpt-4o")
+
+
+def test_resolve_occ_model_unknown_name_fails_loud() -> None:
+    with pytest.raises(CommandFailedError, match="not defined"):
+        sandbox.resolve_occ_model(_occ_cfg(), "nope")
+
+
+def test_occ_cloud_env_lines_injects_base_url_and_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-secret")
+    lines = sandbox.occ_cloud_env_lines(_occ_cfg(), "nemotron")
+    assert lines == [
+        "OPENAI_BASE_URL=https://integrate.api.nvidia.com/v1",
+        "OPENAI_API_KEY=nvapi-secret",
+    ]
+    assert sandbox.occ_cloud_env_lines(_occ_cfg(), "gemma4") == []  # local: no injection
+
+
+def test_occ_cloud_env_lines_missing_key_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    with pytest.raises(CommandFailedError, match="NVIDIA_API_KEY"):
+        sandbox.occ_cloud_env_lines(_occ_cfg(), "nemotron")
+
+
+def test_resolve_start_dispatches_occ_local(tmp_path: Path) -> None:
+    (tmp_path / "danno.toml").write_text(
+        '[backends.ollama]\nkind = "ollama"\nbase_url = "http://h:11434/v1"\n'
+        '[models.gemma4]\nbackend = "ollama"\ntag = "gemma4:26b"\n',
+        encoding="utf-8",
+    )
+    ref, env_lines = sandbox.resolve_start(tmp_path, "occ", "gemma4")
+    assert ref == "ollama/gemma4:26b"
+    assert env_lines == []
+
+
+def test_resolve_start_dispatches_occ_cloud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-secret")
+    (tmp_path / "danno.toml").write_text(
+        '[backends.nvidia]\nkind = "openai"\n'
+        'base_url = "https://integrate.api.nvidia.com/v1"\napi_key_env = "NVIDIA_API_KEY"\n'
+        '[models.nemotron]\nbackend = "nvidia"\ntag = "nvidia/nemotron"\n',
+        encoding="utf-8",
+    )
+    ref, env_lines = sandbox.resolve_start(tmp_path, "occ", "nemotron")
+    assert ref == "nvidia/nvidia/nemotron"
+    assert env_lines == [
+        "OPENAI_BASE_URL=https://integrate.api.nvidia.com/v1",
+        "OPENAI_API_KEY=nvapi-secret",
+    ]
+
+
+def test_resolve_model_for_agent_accepts_occ(tmp_path: Path) -> None:
+    (tmp_path / "danno.toml").write_text(
+        '[backends.ollama]\nkind = "ollama"\nbase_url = "http://h:11434/v1"\n'
+        '[models.gemma4]\nbackend = "ollama"\ntag = "gemma4:26b"\n',
+        encoding="utf-8",
+    )
+    assert sandbox.resolve_model_for_agent(tmp_path, "occ", "gemma4") == "ollama/gemma4:26b"
+
+
 def _write_opencode_cfg(target: Path, body: str) -> None:
     (target / ".opencode").mkdir(parents=True, exist_ok=True)
     (target / ".opencode" / "opencode.jsonc").write_text(body, encoding="utf-8")
@@ -732,3 +895,58 @@ def test_ls_prints_registered_targets(tmp_path: Path, monkeypatch: pytest.Monkey
     monkeypatch.setattr(sandbox, "log_info", lambda m: lines.append(m))
     sandbox.ls(reg)
     assert any("danno-work-acme → /work/acme (claude) [live]" in line for line in lines)
+
+
+# --- Phase 1: [env] reaches the session env-file (integration through _exec_session) ---
+
+
+class _EnvCapturingRunner(RecordingRunner):
+    """Records commands AND snapshots each exec's --env-file content before the
+    caller's `finally` unlinks it — so tests can assert the assembled env lines."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.env_snapshots: list[list[str]] = []
+
+    def _snapshot(self, cmd: list[str]) -> None:
+        if "--env-file" in cmd:
+            path = Path(cmd[cmd.index("--env-file") + 1])
+            if path.is_file():
+                self.env_snapshots.append(path.read_text(encoding="utf-8").splitlines())
+
+    def advise(self, cmd: list[str], why: str, **kw: object) -> list[str]:  # type: ignore[override]
+        self._snapshot(cmd)
+        return super().advise(cmd, why, **kw)  # type: ignore[arg-type]
+
+    def run(self, cmd: list[str], why: str, **kw: object) -> list[str]:  # type: ignore[override]
+        self._snapshot(cmd)
+        return super().run(cmd, why, **kw)  # type: ignore[arg-type]
+
+
+def test_launch_opencode_env_file_includes_toml_env(tmp_path: Path) -> None:
+    # A danno.toml [env] KEY lands in the opencode session env-file, composed on top
+    # of the agent default (OLLAMA_BASE_URL).
+    (tmp_path / "danno.toml").write_text('[env]\nMY_FLAG = "on"\n', encoding="utf-8")
+    r = _EnvCapturingRunner()
+    sandbox.launch(r, "probe", tmp_path, agent="opencode")
+    assert r.env_snapshots, "no env-file was captured"
+    env = dict(line.split("=", 1) for line in r.env_snapshots[0])
+    assert env["MY_FLAG"] == "on"
+    assert env["OLLAMA_BASE_URL"] == sandbox.DEFAULT_OLLAMA_URL
+
+
+def test_launch_opencode_cli_env_overrides_toml_env(tmp_path: Path) -> None:
+    (tmp_path / "danno.toml").write_text('[env]\nMY_FLAG = "on"\n', encoding="utf-8")
+    r = _EnvCapturingRunner()
+    sandbox.launch(r, "probe", tmp_path, agent="opencode", env_pairs=["MY_FLAG=override"])
+    env = dict(line.split("=", 1) for line in r.env_snapshots[0])
+    assert env["MY_FLAG"] == "override"  # CLI wins over [env]
+
+
+def test_launch_claude_ignores_toml_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # claude's auth branch stays exactly as-is: [env] must NOT leak into its env-file.
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
+    (tmp_path / "danno.toml").write_text('[env]\nMY_FLAG = "on"\n', encoding="utf-8")
+    r = _EnvCapturingRunner()
+    sandbox.launch(r, "probe", tmp_path, agent="claude")
+    assert r.env_snapshots[0] == ["CLAUDE_CODE_OAUTH_TOKEN=tok"]

@@ -676,3 +676,12 @@ def test_merge_md_preserves_body_and_other_keys() -> None:
 
 def _strip_comments(text: str) -> str:
     return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("//"))
+
+
+def test_no_occ_config_generation_exists() -> None:
+    # occ takes its model via `-m` and, after danno's detectProvider patch, routes purely
+    # on OPENAI_BASE_URL presence — no models.dev-shaped registry or settings.json like
+    # claurst needs. This asserts that design of record: no occ config-gen was added.
+    import book_em_danno.config.generate as gen
+
+    assert not [name for name in dir(gen) if name.startswith("generate_occ")]
