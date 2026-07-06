@@ -184,13 +184,23 @@ def interactive_launch_script(
     return ["bash", "-lc", _claurst_script(occ_cmd, upstream_port=upstream_port)]
 
 
-def authed_occ_run(env_file: Path | None, capture_port: int | None = None) -> TurnFn:
+def authed_occ_run(
+    env_file: Path | None,
+    capture_port: int | None = None,
+    model_override: str | None = None,
+) -> TurnFn:
     """A `TurnFn` that drives `occ_run` with `env_file` bound, for `run_sweep`.
 
     Mirrors `claurst.authed_claurst_run`. Local Ollama occ needs no auth; `env_file` is
     forwarded to the exec for matrix parity (cloud configs, which carry OPENAI_BASE_URL +
     OPENAI_API_KEY) and is harmless when None. The relay is set up inside `occ_run` per turn.
     `capture_port` (from `--capture`) points that relay at the recording proxy.
+
+    `model_override`, when set, is the ref occ actually dials (`-m`) instead of the caller's
+    generic matrix ref. Bench/sweep report the generic `<backend>/<tag>` ref (to keep the
+    comparison grid + headroom lookups keyed consistently) but must dial a ref whose leading
+    segment `occ_run`'s locality check understands — an Ollama backend named anything other
+    than the literal `ollama` would otherwise be misread as cloud and fall back to Anthropic.
     """
 
     def run(
@@ -210,7 +220,7 @@ def authed_occ_run(env_file: Path | None, capture_port: int | None = None) -> Tu
             prompt,
             session=session,
             agent=agent,
-            model=model,
+            model=model_override if model_override is not None else model,
             skip_permissions=skip_permissions,
             workspace=workspace,
             env_file=env_file,

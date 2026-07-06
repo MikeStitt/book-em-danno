@@ -47,7 +47,12 @@ def install_aut(
         occ.install_occ(runner, sandbox, config)
 
 
-def run_turn_for(agent: str, env_file: Path | None, capture_port: int | None = None) -> TurnFn:
+def run_turn_for(
+    agent: str,
+    env_file: Path | None,
+    capture_port: int | None = None,
+    model_override: str | None = None,
+) -> TurnFn:
     """The `TurnFn` driving one turn for this AUT, with `env_file` bound.
 
     claurst sets up its Ollama relay per turn; opencode is pinned to its read-write
@@ -57,11 +62,17 @@ def run_turn_for(agent: str, env_file: Path | None, capture_port: int | None = N
     `capture_port` (from `--capture`) points occ/claurst's in-VM Ollama relay at the
     recording proxy so their local wire traffic is captured; opencode captures via its
     rewritten backend `base_url` instead and ignores it, as does the cloud claude row.
+    `model_override` (occ/claurst only) is the normalized ref they dial when the reported
+    matrix ref's backend segment isn't the literal `ollama` their locality check expects.
     """
     if agent == CLAURST:
-        return claurst.authed_claurst_run(env_file, capture_port=capture_port)
+        return claurst.authed_claurst_run(
+            env_file, capture_port=capture_port, model_override=model_override
+        )
     if agent == OCC:
-        return occ.authed_occ_run(env_file, capture_port=capture_port)
+        return occ.authed_occ_run(
+            env_file, capture_port=capture_port, model_override=model_override
+        )
     if agent == CLAUDE:
         if env_file is None:  # defensive: bench builds the auth file before dispatch
             raise ValueError("claude AUT requires an auth env-file (host token)")

@@ -293,6 +293,77 @@ def test_run_turn_for_occ_forwards_capture_port(monkeypatch: pytest.MonkeyPatch)
     assert seen["capture_port"] == 7777
 
 
+def test_run_turn_for_occ_forwards_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    # run_turn_for threads the normalized dial ref into occ_run (item-3 fix).
+    from danno_validator import occ
+
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(occ, "occ_run", lambda r, n, p, **kw: seen.update(kw) or object())
+    aut.run_turn_for("occ", None, model_override="ollama/qwen")(
+        Runner(), "box", "go", model="danno-ollama/qwen"
+    )
+    assert seen["model"] == "ollama/qwen"
+
+
+def test_run_turn_for_claurst_forwards_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    from danno_validator import claurst
+
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(claurst, "claurst_run", lambda r, n, p, **kw: seen.update(kw) or object())
+    aut.run_turn_for("claurst", None, model_override="ollama/qwen")(
+        Runner(), "box", "go", model="danno-ollama/qwen"
+    )
+    assert seen["model"] == "ollama/qwen"
+
+
+def _dial_config() -> DannoConfig:
+    """An Ollama backend named NOT `ollama` (the item-3 trigger) plus an NVIDIA cloud one."""
+    return DannoConfig(
+        backends={
+            "danno-ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1"),
+            "nv": OpenAIBackend(
+                kind="openai",
+                base_url="https://integrate.api.nvidia.com/v1",
+                api_key_env="NVIDIA_API_KEY",
+            ),
+        },
+        models={
+            "qwen": Model(backend="danno-ollama", tag="qwen3-coder-next"),
+            "nemo": Model(backend="nv", tag="nvidia/nemotron-super-49b"),
+        },
+        agents={"build": "qwen"},
+    )
+
+
+def test_agent_dial_ref_occ_local_normalizes_backend_name() -> None:
+    # The reported ref is `danno-ollama/…` (misread as cloud); the dial ref is `ollama/…`.
+    cfg = _dial_config()
+    (qwen,) = [v for v in model_variants(cfg) if v.model_name == "qwen"]
+    assert qwen.model_ref == "danno-ollama/qwen3-coder-next"
+    assert bench._agent_dial_ref("occ", cfg, qwen) == "ollama/qwen3-coder-next"
+
+
+def test_agent_dial_ref_claurst_local_normalizes_backend_name() -> None:
+    cfg = _dial_config()
+    (qwen,) = [v for v in model_variants(cfg) if v.model_name == "qwen"]
+    assert bench._agent_dial_ref("claurst", cfg, qwen) == "ollama/qwen3-coder-next"
+
+
+def test_agent_dial_ref_cloud_matches_reported_ref_for_occ() -> None:
+    # A cloud (openai) backend's dial ref equals its reported `<backend>/<tag>` ref.
+    cfg = _dial_config()
+    (nemo,) = [v for v in model_variants(cfg) if v.model_name == "nemo"]
+    assert bench._agent_dial_ref("occ", cfg, nemo) == nemo.model_ref
+
+
+def test_agent_dial_ref_opencode_and_claude_are_none() -> None:
+    # opencode (provider = backend name in opencode.jsonc) and claude need no override.
+    cfg = _dial_config()
+    (qwen,) = [v for v in model_variants(cfg) if v.model_name == "qwen"]
+    assert bench._agent_dial_ref("opencode", cfg, qwen) is None
+    assert bench._agent_dial_ref("claude", cfg, qwen) is None
+
+
 def test_sandbox_name_sanitises_instance_ids() -> None:
     name = bench._sandbox_name(Path("/tmp/proj"), "swe-astropy__astropy-12907")
     assert "__" not in name  # underscores -> hyphens for a valid sandbox name

@@ -154,7 +154,11 @@ def interactive_launch_script(
     return ["bash", "-lc", _claurst_script(claurst_cmd, upstream_port=upstream_port)]
 
 
-def authed_claurst_run(env_file: Path | None, capture_port: int | None = None) -> TurnFn:
+def authed_claurst_run(
+    env_file: Path | None,
+    capture_port: int | None = None,
+    model_override: str | None = None,
+) -> TurnFn:
     """A `TurnFn` that drives `claurst_run` with `env_file` bound, for `run_sweep`.
 
     Mirrors `sweep._authed_opencode_run` so the level runners just call a plain
@@ -162,6 +166,12 @@ def authed_claurst_run(env_file: Path | None, capture_port: int | None = None) -
     exec for matrix parity (cloud configs) and is harmless when None. The Ollama
     relay is set up inside `claurst_run` itself, per turn. `capture_port` (from
     `--capture`) points that relay at the recording proxy.
+
+    `model_override`, when set, is the ref claurst actually dials (`-m`) instead of the
+    caller's generic matrix ref. Bench/sweep report the generic `<backend>/<tag>` ref (to
+    keep the comparison grid + headroom lookups keyed consistently) but must dial a ref
+    whose provider segment `claurst_run`'s locality check understands — an Ollama backend
+    named anything other than the literal `ollama` would otherwise be misread as cloud.
     """
 
     def run(
@@ -181,7 +191,7 @@ def authed_claurst_run(env_file: Path | None, capture_port: int | None = None) -
             prompt,
             session=session,
             agent=agent,
-            model=model,
+            model=model_override if model_override is not None else model,
             skip_permissions=skip_permissions,
             workspace=workspace,
             env_file=env_file,

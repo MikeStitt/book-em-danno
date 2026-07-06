@@ -67,6 +67,20 @@ def test_authed_claurst_run_allows_none_env_file(monkeypatch: pytest.MonkeyPatch
     assert captured["env_file"] is None
 
 
+def test_authed_claurst_run_model_override_replaces_dial_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A `danno-ollama/…` reported ref would be misread as cloud by claurst_run's prefix
+    # check; model_override is the normalized ref that actually reaches claurst's `-m`.
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        claurst, "claurst_run", lambda r, n, p, **kw: captured.update(kw) or object()
+    )
+    run = claurst.authed_claurst_run(None, model_override="ollama/llama3.2:latest")
+    run(Runner(), "box", "go", model="danno-ollama/llama3.2:latest")
+    assert captured["model"] == "ollama/llama3.2:latest"
+
+
 def test_interactive_launch_script_default_relay_upstream() -> None:
     argv = claurst.interactive_launch_script("ollama/qwen3-coder-next", [])
     assert argv[:2] == ["bash", "-lc"]

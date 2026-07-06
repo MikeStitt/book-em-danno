@@ -148,6 +148,25 @@ def _variant_cloud_env_lines(agent: str, config: DannoConfig, model_name: str) -
     return []  # claude: the cloud reference AUT carries its own auth (never a [models] key)
 
 
+def _agent_dial_ref(agent: str, config: DannoConfig, variant: ConfigVariant) -> str | None:
+    """The ref occ/claurst must actually dial for `variant`, or None (report ref stands).
+
+    The matrix reports the generic `<backend>/<tag>` ref (`variant.model_ref`) so the
+    comparison grid and §6.3 headroom lookups key consistently. But occ/claurst detect
+    local-vs-cloud by the ref's leading segment (`startswith("ollama/")`), so an Ollama
+    backend named anything other than the literal `ollama` (e.g. `danno-ollama/…`) is
+    misread as cloud and falls back to Anthropic — the item-3 bug. Reuse the exact
+    resolvers `danno sandbox start` dials with (`resolve_occ_model`/`resolve_claurst_model`,
+    from the `[models]` name) so bench dials a ref their locality check understands: Ollama
+    → `ollama/<tag>`, cloud → each agent's own provider namespace. opencode (whose provider
+    is the backend name in the generated `opencode.jsonc`) and claude need no override."""
+    if agent == OCC:
+        return sb.resolve_occ_model(config, variant.model_name)
+    if agent == CLAURST:
+        return sb.resolve_claurst_model(config, variant.model_name)
+    return None
+
+
 def _merge_env_lines(base: list[str], extra: list[str]) -> list[str]:
     """`KEY=VAL` lines with `extra` (per-variant cloud auth) overriding `base` on collision."""
     merged: dict[str, str] = {}
@@ -287,7 +306,12 @@ def _run_aider(
                 checkout=checkout,
                 select=ap.select,
                 workspace=workspace,
-                run_turn=run_turn_for(opts.agent, env_files[variant.model_ref], capture_port),
+                run_turn=run_turn_for(
+                    opts.agent,
+                    env_files[variant.model_ref],
+                    capture_port,
+                    model_override=_agent_dial_ref(opts.agent, config, variant),
+                ),
                 model=variant.model_ref,
                 capture=capture,
                 sampler=sampler,
@@ -347,7 +371,12 @@ def _run_swebench(
                         workspace=workspace,
                         model=variant.model_ref,
                         run_turn=cwd_bound(
-                            run_turn_for(opts.agent, env_files[variant.model_ref], capture_port),
+                            run_turn_for(
+                                opts.agent,
+                                env_files[variant.model_ref],
+                                capture_port,
+                                model_override=_agent_dial_ref(opts.agent, config, variant),
+                            ),
                             task.workspace_dir(workspace),
                         ),
                         capture=capture,
