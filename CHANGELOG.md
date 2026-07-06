@@ -3,6 +3,18 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.11.0] - 2026-07-06
+
+### Bug Fixes
+
+- *(bench)* Seed opencode.jsonc so opencode resolves local models
+
+### Features
+
+- Unified [env] mechanism + occ as a first-class agent
+- *(occ)* Fork for long/slow local loops + 4-agent bench eval
+- *(bench)* Capture & report green+yellow telemetry
+
 ## [0.10.0] - 2026-06-28
 
 ### Bug Fixes
