@@ -154,13 +154,14 @@ def interactive_launch_script(
     return ["bash", "-lc", _claurst_script(claurst_cmd, upstream_port=upstream_port)]
 
 
-def authed_claurst_run(env_file: Path | None) -> TurnFn:
+def authed_claurst_run(env_file: Path | None, capture_port: int | None = None) -> TurnFn:
     """A `TurnFn` that drives `claurst_run` with `env_file` bound, for `run_sweep`.
 
     Mirrors `sweep._authed_opencode_run` so the level runners just call a plain
     `TurnFn`. Local Ollama claurst needs no auth; `env_file` is forwarded to the
     exec for matrix parity (cloud configs) and is harmless when None. The Ollama
-    relay is set up inside `claurst_run` itself, per turn.
+    relay is set up inside `claurst_run` itself, per turn. `capture_port` (from
+    `--capture`) points that relay at the recording proxy.
     """
 
     def run(
@@ -184,6 +185,7 @@ def authed_claurst_run(env_file: Path | None) -> TurnFn:
             skip_permissions=skip_permissions,
             workspace=workspace,
             env_file=env_file,
+            capture_port=capture_port,
         )
 
     return run

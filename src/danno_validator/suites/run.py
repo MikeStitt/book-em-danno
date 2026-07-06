@@ -15,10 +15,12 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
+from book_em_danno.capture.wiring import CaptureBinding
 from book_em_danno.core.exec import Runner
 from danno_validator.driver import TurnFn
 from danno_validator.suites.aider import AiderTask, load_aider_tasks
 from danno_validator.suites.base import BenchVerdict, run_bench_task
+from danno_validator.telemetry.sampler import SampleBinding
 
 _GIT_PREFIX = "git:"
 
@@ -49,6 +51,8 @@ def run_aider_suite(
     workspace: Path,
     run_turn: TurnFn,
     model: str | None = None,
+    capture: CaptureBinding | None = None,
+    sampler: SampleBinding | None = None,
 ) -> list[BenchVerdict]:
     """Run the selected Aider Polyglot exercises against one AUT, in `select` order.
 
@@ -56,6 +60,8 @@ def run_aider_suite(
     agent is driven with its cwd set to that subdir, and the exercise's own tests
     grade it. `run_turn` is the AUT's turn producer (e.g. `claurst_run` or an authed
     variant); `model` is the model ref passed through to it (the permutation axis).
+    `capture` (from `--capture`) and `sampler` (from `--sample`) are threaded to
+    `run_bench_task` for per-permutation wire recording and resource profiling.
     """
     tasks: list[AiderTask] = load_aider_tasks(checkout, list(select))
     verdicts: list[BenchVerdict] = []
@@ -70,6 +76,8 @@ def run_aider_suite(
                 workspace=workspace,
                 model=model,
                 run_turn=cwd_bound(run_turn, task.workspace_dir(workspace)),
+                capture=capture,
+                sampler=sampler,
             )
         )
     return verdicts

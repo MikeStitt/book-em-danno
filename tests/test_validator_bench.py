@@ -4,6 +4,7 @@ resolver/naming are pure."""
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -109,14 +110,20 @@ def test_run_bench_claude_collapses_matrix_to_reference_row(
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-abc")
     captured: dict[str, object] = {}
 
-    def fake_write(report, *, config_path, agent, variants):  # type: ignore[no-untyped-def]
+    def fake_write(
+        report, *, config_path, agent, variants, num_ctx_by_model=None, capture_dir=None
+    ):  # type: ignore[no-untyped-def]
         captured["models"] = [v.model_ref for v in variants]
         captured["model_names"] = [v.model_name for v in variants]
-        return tmp_path / "bench.json"
+        path = report.out_dir / "bench.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"agent": agent, "models": [v.model_ref for v in variants], "results": []}
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        return path
 
     # no suites enabled → no provisioning; we only assert the variant collapse + env-file.
     monkeypatch.setattr(bench, "_write_results", fake_write)
-    opts = bench.BenchOptions(target=tmp_path, agent="claude")
+    opts = bench.BenchOptions(target=tmp_path, agent="claude", out_dir=tmp_path / "out")
     report = bench.run_bench(_config(), BenchmarksConfig(), opts, Runner())
     assert captured["model_names"] == ["claude-code"]  # one reference row, not per local model
     assert report.verdicts == []
@@ -137,6 +144,72 @@ def test_run_turn_for_opencode_pins_build_agent(monkeypatch: pytest.MonkeyPatch)
 
 def test_run_turn_for_claurst_returns_callable() -> None:
     assert callable(aut.run_turn_for("claurst", None))
+
+
+def test_setup_bench_capture_off_is_a_noop() -> None:
+    # No --capture → the original config, no binding, the default egress, no relay port.
+    cfg = _config()
+    opts = bench.BenchOptions(target=Path("."), agent="opencode", capture=False)
+    cfg_for_run, binding, allow, port = bench._setup_bench_capture(cfg, opts, Path("/out"))
+    assert cfg_for_run is cfg  # the original config, unrewritten
+    assert binding is None
+    assert allow == bench.sb.DEFAULT_ALLOW_HOSTS
+    assert port is None
+
+
+def test_setup_bench_capture_on_rewrites_backend_and_opens_port(tmp_path: Path) -> None:
+    # --capture rewrites the ollama backend base_url at a proxy, opens its egress port,
+    # and reports that port as the occ/claurst relay upstream (capture_port).
+    cfg = _config()
+    opts = bench.BenchOptions(target=Path("."), agent="opencode", capture=True)
+    cfg_for_run, binding, allow, port = bench._setup_bench_capture(cfg, opts, tmp_path)
+    assert binding is not None and port is not None
+    # base_url now dials host.docker.internal:<proxy-port> (the recording proxy).
+    assert "host.docker.internal" in cfg_for_run.backends["ollama"].base_url
+    assert cfg.backends["ollama"].base_url == "http://h:11434/v1"  # original untouched
+    assert f"localhost:{port}" in allow  # the egress hole for the proxy
+    assert bench.sb.DEFAULT_ALLOW_HOSTS[0] in allow
+
+
+def test_capture_binding_namespaces_per_permutation(tmp_path: Path) -> None:
+    from book_em_danno.capture.wiring import CaptureBinding, CaptureTarget
+
+    binding = CaptureBinding(
+        targets=(
+            CaptureTarget(
+                backend_name="ollama",
+                real_base_url="http://h:11434/v1",
+                upstream="http://127.0.0.1:11434",
+                proxy_port=9999,
+                capture_file=tmp_path / "ollama.jsonl",
+            ),
+        ),
+        capture_dir=tmp_path / "captures",
+    )
+    per = binding.permutation_targets(
+        suite="aider", task_id="python/grade-school", model="ollama/qwen3:latest"
+    )
+    assert per[0].capture_file == (
+        tmp_path / "captures" / "aider" / "python-grade-school" / "ollama-qwen3-latest.ollama.jsonl"
+    )
+    # a null model (claude reference row) still gets a stable segment
+    dflt = binding.permutation_targets(suite="aider", task_id="t", model=None)
+    assert dflt[0].capture_file.name == "default.ollama.jsonl"
+
+
+def test_run_turn_for_occ_forwards_capture_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    # --capture threads the proxy port into occ's relay upstream (capture_port).
+    from danno_validator import occ
+
+    seen: dict[str, object] = {}
+
+    def fake_occ_run(runner, name, prompt, **kw):  # type: ignore[no-untyped-def]
+        seen.update(kw)
+        return object()
+
+    monkeypatch.setattr(occ, "occ_run", fake_occ_run)
+    aut.run_turn_for("occ", None, capture_port=7777)(Runner(), "box", "go", model="ollama/x")
+    assert seen["capture_port"] == 7777
 
 
 def test_sandbox_name_sanitises_instance_ids() -> None:

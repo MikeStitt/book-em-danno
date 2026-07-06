@@ -184,12 +184,13 @@ def interactive_launch_script(
     return ["bash", "-lc", _claurst_script(occ_cmd, upstream_port=upstream_port)]
 
 
-def authed_occ_run(env_file: Path | None) -> TurnFn:
+def authed_occ_run(env_file: Path | None, capture_port: int | None = None) -> TurnFn:
     """A `TurnFn` that drives `occ_run` with `env_file` bound, for `run_sweep`.
 
     Mirrors `claurst.authed_claurst_run`. Local Ollama occ needs no auth; `env_file` is
     forwarded to the exec for matrix parity (cloud configs, which carry OPENAI_BASE_URL +
     OPENAI_API_KEY) and is harmless when None. The relay is set up inside `occ_run` per turn.
+    `capture_port` (from `--capture`) points that relay at the recording proxy.
     """
 
     def run(
@@ -213,6 +214,7 @@ def authed_occ_run(env_file: Path | None) -> TurnFn:
             skip_permissions=skip_permissions,
             workspace=workspace,
             env_file=env_file,
+            capture_port=capture_port,
         )
 
     return run

@@ -47,18 +47,21 @@ def install_aut(
         occ.install_occ(runner, sandbox, config)
 
 
-def run_turn_for(agent: str, env_file: Path | None) -> TurnFn:
+def run_turn_for(agent: str, env_file: Path | None, capture_port: int | None = None) -> TurnFn:
     """The `TurnFn` driving one turn for this AUT, with `env_file` bound.
 
     claurst sets up its Ollama relay per turn; opencode is pinned to its read-write
     run-agent (`DEFAULT_AGENT`, "build") so benchmark edits actually land. claude is
     the cloud *reference* AUT — its `env_file` carries auth (never None; built loud
     from a host token) and it ignores the per-variant `-m` (fixed default model).
+    `capture_port` (from `--capture`) points occ/claurst's in-VM Ollama relay at the
+    recording proxy so their local wire traffic is captured; opencode captures via its
+    rewritten backend `base_url` instead and ignores it, as does the cloud claude row.
     """
     if agent == CLAURST:
-        return claurst.authed_claurst_run(env_file)
+        return claurst.authed_claurst_run(env_file, capture_port=capture_port)
     if agent == OCC:
-        return occ.authed_occ_run(env_file)
+        return occ.authed_occ_run(env_file, capture_port=capture_port)
     if agent == CLAUDE:
         if env_file is None:  # defensive: bench builds the auth file before dispatch
             raise ValueError("claude AUT requires an auth env-file (host token)")

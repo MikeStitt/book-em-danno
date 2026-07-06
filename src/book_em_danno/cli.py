@@ -279,6 +279,24 @@ def bench(
     keep_sandboxes: bool = typer.Option(
         False, "--keep-sandboxes", help="Leave the disposable sandboxes up for debugging."
     ),
+    capture: bool = typer.Option(
+        False,
+        "--capture",
+        help="Record each permutation's agent<->backend wire traffic (Ollama + openai/NVIDIA) "
+        "as JSONL under <out>/captures/. Unlocks the token-split and context telemetry.",
+    ),
+    capture_dir: Path = typer.Option(
+        None, "--capture-dir", help="Where to write capture JSONL (default <out>/captures/)."
+    ),
+    sample: bool = typer.Option(
+        False,
+        "--sample",
+        help="Sample host CPU/memory + GPU (nvidia-smi) + model VRAM (Ollama /api/ps) on an "
+        "interval during each permutation, writing a time series under <out>/samples/.",
+    ),
+    sample_interval: float = typer.Option(
+        0.5, "--sample-interval", help="Resource sampler interval in seconds (with --sample)."
+    ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print the plan and exit without provisioning or running."
     ),
@@ -322,6 +340,10 @@ def bench(
         out_dir=out,
         keep_sandboxes=keep_sandboxes,
         dry_run=dry_run,
+        capture=capture or capture_dir is not None,
+        capture_dir=capture_dir,
+        sample=sample,
+        sample_interval=sample_interval,
     )
     try:
         run_bench(cfg, bench_cfg, opts, Runner(apply=True, verbose=verbose))

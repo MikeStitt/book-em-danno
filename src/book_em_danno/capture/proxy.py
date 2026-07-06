@@ -22,6 +22,7 @@ import base64
 import itertools
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
@@ -110,6 +111,7 @@ class _Handler(BaseHTTPRequestHandler):
             {
                 "seq": seq,
                 "direction": "request",
+                "ts": time.time(),  # epoch seconds; response-request delta = per-call RTT (§2.3)
                 "method": self.command,
                 "path": self.path,
                 "headers": _redact_headers(self.headers),
@@ -140,6 +142,7 @@ class _Handler(BaseHTTPRequestHandler):
             {
                 "seq": seq,
                 "direction": "response",
+                "ts": time.time(),  # buffered-response completion time (§2.3 RTT / §2.2 TTFT)
                 "status": status,
                 "headers": _redact_headers(resp_headers),
                 "body": _decode_body(payload),
