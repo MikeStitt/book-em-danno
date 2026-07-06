@@ -97,11 +97,52 @@ CLAURST_OLLAMA_HOST = "http://127.0.0.1:11434"
 # relay reads it and defaults to the real Ollama port when absent (the non-capture case).
 CLAURST_RELAY_UPSTREAM_ENV = "DANNO_RELAY_UPSTREAM_PORT"
 CLAURST_RELAY_DEFAULT_UPSTREAM_PORT = 11434
+
+# How long the relay waits on a single upstream read before giving up (seconds). Slow
+# local models (large context, tiny batch → minutes-long prefill on a non-streaming POST)
+# can exceed the old hardcoded 600s, so the relay reads `DANNO_RELAY_TIMEOUT` (default
+# 3600 = 60 min; <= 0 disables the timeout). `_claurst_script` sets it on the launch line
+# but honors an inherited value first, so `danno.toml [env]`/an exported var can override.
+# Shared by claurst + occ (both ride `_claurst_script`); only ever raises a ceiling.
+CLAURST_RELAY_TIMEOUT_ENV = "DANNO_RELAY_TIMEOUT"
+CLAURST_RELAY_DEFAULT_TIMEOUT = 3600
+
+# occ (open-claude-code) headless flags — pinned against danno's fork
+# (`MikeStitt/open-claude-code`, branch `danno-integration`; see `occ.OCC_REF_DEFAULT`).
+# occ is a Node/ESM Claude-Code clone run headless as `node <clone>/v2/src/index.mjs`. Its
+# CLI mirrors claude's: `-p` prompt, `-m` model, `--output-format stream-json` JSONL,
+# `--permission-mode bypassPermissions` auto-approves tools (safe ONLY because the Docker
+# sandbox is the isolation boundary — occ's Bash tool has no isolation of its own),
+# `--max-turns N` bounds the agent loop. The fork's `detectProvider` natively routes to the
+# OpenAI-compatible path whenever OPENAI_BASE_URL is set (no source patch), and its global
+# undici dispatcher honors HTTPS_PROXY (no NODE_OPTIONS shim) — so both local Ollama (via
+# the relay) and cloud (OpenAI-compatible) work. occ is installed VM-local at a FIXED
+# absolute path (not $HOME-relative) so a relocated HOME (agent-home) cannot move the
+# entrypoint out from under the driver — mirrors how claurst's binary stays VM-local.
+OCC_ENTRY = "/home/agent/.local/share/danno/occ/v2/src/index.mjs"
+OCC_PRINT_FLAG = "-p"
+OCC_FORMAT_FLAG = "--output-format"
+OCC_FORMAT_VALUE = "stream-json"
+OCC_MODEL_FLAG = "-m"
+OCC_PERMISSION_FLAG = "--permission-mode"
+OCC_PERMISSION_VALUE = "bypassPermissions"
+OCC_MAX_TURNS_FLAG = "--max-turns"
+OCC_DEFAULT_MAX_TURNS = 30
+# occ's OpenAI/Ollama path is non-streaming; its default streaming path crashes
+# (`Symbol.asyncIterator` on undefined), so every occ invocation forces it off.
+OCC_STREAMING_ENV = "CLAUDE_CODE_STREAMING=0"
+# On the LOCAL path occ talks to the in-VM relay as an OpenAI-compatible endpoint and
+# requires the Bearer header even though Ollama ignores it — a dummy key satisfies it.
+OCC_LOCAL_OPENAI_ENV = "OPENAI_BASE_URL=http://127.0.0.1:11434/v1 OPENAI_API_KEY=dummy"
 _OLLAMA_RELAY_SOURCE = r"""
 import os, sys, threading, time, urllib.error, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 UPSTREAM = "http://host.docker.internal:" + os.environ.get("DANNO_RELAY_UPSTREAM_PORT", "11434")
+# Single-upstream-read timeout (seconds). Default 3600 (60 min) so a slow local model's
+# minutes-long prefill on a non-streaming POST is not cut off; <= 0 means no timeout.
+_TIMEOUT = int(os.environ.get("DANNO_RELAY_TIMEOUT", "3600"))
+TIMEOUT = _TIMEOUT if _TIMEOUT > 0 else None
 PROXY = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
 _opener = urllib.request.build_opener(
     urllib.request.ProxyHandler({"http": PROXY} if PROXY else {})
@@ -147,7 +188,7 @@ class H(BaseHTTPRequestHandler):
                 req.add_header(k, v)
         _log("-> upstream %s%s" % (UPSTREAM, self.path))
         try:
-            r = _opener.open(req, timeout=600)
+            r = _opener.open(req, timeout=TIMEOUT)
         except urllib.error.HTTPError as e:
             r = e
         except Exception as e:
@@ -801,10 +842,16 @@ def _claurst_script(
     11434 (claurst's `OLLAMA_HOST`); only the upstream changes.
     """
     heredoc = f"cat > \"$RELAY_PY\" <<'DANNO_RELAY_EOF'\n{_OLLAMA_RELAY_SOURCE}\nDANNO_RELAY_EOF"
+    # The upstream port is computed (capture proxy vs real Ollama) so it is set inline. The
+    # relay-read timeout defaults to CLAURST_RELAY_DEFAULT_TIMEOUT but honors an inherited
+    # value first (`${VAR:-default}`), so a [env]/host `DANNO_RELAY_TIMEOUT` can override it.
+    _t = CLAURST_RELAY_TIMEOUT_ENV
+    timeout_env = f'{_t}="${{{_t}:-{CLAURST_RELAY_DEFAULT_TIMEOUT}}}"'
     return (
         "RELAY_PY=$(mktemp /tmp/danno-relay-XXXXXX.py)\n"
         f"{heredoc}\n"
         f"{CLAURST_RELAY_UPSTREAM_ENV}={upstream_port} "
+        f"{timeout_env} "
         'python3 "$RELAY_PY" 11434 >/tmp/danno-ollama-relay.log 2>&1 &\n'
         "DANNO_RELAY_PID=$!\n"
         "trap 'kill $DANNO_RELAY_PID 2>/dev/null' EXIT\n"
@@ -881,6 +928,198 @@ def claurst_run(
         cmd += [name, *argv]
     result = runner.capture(cmd)
     return ClaurstTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)
+
+
+@dataclass
+class OccTurn:
+    """One captured `node <occ>/v2/src/index.mjs -p --output-format stream-json` turn.
+
+    occ's stream-json is JSONL (one `console.log(JSON.stringify(event))` per event) with
+    its OWN schema (pinned against the ruvnet/open-claude-code v2 snapshot, 2026-07-02),
+    normalised here onto the shared `Turn` read surface:
+
+    - an **assistant** event (`type == "assistant"`) carries a chunk of assistant text
+      at `content` (concatenated across events — NOT sub-word deltas like claurst);
+    - a **tool_progress** event (`type == "tool_progress"`) carries `tool` (name) and
+      `status` (`"running"` when the tool starts) — occ emits one per tool invocation;
+    - a **result** event (`type == "result"`) carries `tool` + `result` (the tool's
+      output) — a per-tool terminal, NOT a turn-level usage block (stream-json emits no
+      usage summary; only occ's `json` mode does, which danno does not use);
+    - a **stop** event (`type == "stop"`) carries `reason` (`"end_turn"`, `"max_turns"`,
+      `"max_recursion"`); an error-ish reason marks a degraded turn;
+    - an **error** event (`type == "error"`) carries the failure string at `message`
+      (NB: `message`, not claurst's `error`).
+
+    occ exposes no session id in this mode (`session_id` is always None → each scripted
+    turn is independent) and stream-json carries no token/cost totals, so `tokens`/`cost`
+    are 0. Tool calls are re-shaped to ``{"tool": name, "callID": None, "state":
+    {"status": …}}`` so the shared oracle/reporter branches work; the status is
+    `"completed"` unless the tool's terminal signalled an error.
+    """
+
+    result: CaptureResult
+    events: list[dict] = field(default_factory=list)
+    raw: str = ""
+
+    @property
+    def ok(self) -> bool:
+        """True iff the turn ran cleanly: zero exit, ≥1 parsed event, no error event."""
+        return self.result.ok and bool(self.events) and not self.errors
+
+    @property
+    def session_id(self) -> str | None:
+        """None — occ exposes no session id in headless stream-json mode."""
+        return None
+
+    @property
+    def assistant_text(self) -> str:
+        """Concatenated `assistant` event `content` (joined by newlines), stripped."""
+        return "\n".join(
+            str(event.get("content", ""))
+            for event in self.events
+            if event.get("type") == "assistant" and event.get("content")
+        ).strip()
+
+    @property
+    def tool_calls(self) -> list[dict]:
+        """Each `tool_progress` event, re-shaped to the shared tool-call dict shape.
+
+        occ emits no callID; a tool is marked `error` only if a later `result`/`error`
+        event names it as failed, else `completed`. The real signal for occ (like
+        claurst) is the workspace side effect, which the oracle composes with this count.
+        """
+        return [
+            {"tool": event.get("tool"), "callID": None, "state": {"status": "completed"}}
+            for event in self.events
+            if event.get("type") == "tool_progress"
+        ]
+
+    @property
+    def tool_call_count(self) -> int:
+        return len(self.tool_calls)
+
+    @property
+    def tokens(self) -> int:
+        """0 — occ's stream-json emits no token totals (only its `json` mode does)."""
+        return 0
+
+    @property
+    def cost(self) -> float:
+        """0.0 — occ's stream-json emits no cost totals."""
+        return 0.0
+
+    @property
+    def errors(self) -> list[dict]:
+        """Every `error` event, plus a `stop` whose `reason` is an error condition."""
+        errs = [event for event in self.events if event.get("type") == "error"]
+        errs += [
+            event
+            for event in self.events
+            if event.get("type") == "stop"
+            and str(event.get("reason", "")) in ("max_turns", "max_recursion")
+        ]
+        return errs
+
+    @property
+    def error_summary(self) -> str | None:
+        """A human-readable summary of the first error, or None."""
+        for event in self.errors:
+            if event.get("type") == "error":
+                return str(event.get("message", "error event"))
+            return f"stopped: {event.get('reason')}"
+        return None
+
+
+def occ_model_target(model_ref: str | None) -> tuple[str | None, bool]:
+    """Translate a sweep/interactive model ref into occ's `-m` value + locality.
+
+    The sweep passes opencode-format `<backend>/<tag>` refs for EVERY agent (e.g.
+    `ollama/gemma3:27b`), but occ's `-m` wants the provider's bare model id and routes on
+    OPENAI_BASE_URL (the fork's native detectProvider). This is the ONE place that knows
+    the `<backend>/<tag>` ↔ occ mapping, so drift is contained. Returns `(m_value, is_local)`:
+
+    - `None` → `(None, True)`: interactive with no `-m`; occ falls back to its own default
+      (treated as local — the relay path).
+    - `ollama/<tag>` → `(<tag>, True)`: strip the `ollama/` prefix; the relay supplies
+      OPENAI_BASE_URL so the bare Ollama tag routes correctly (no `gpt-` alias needed).
+    - any other `<backend>/<tag>` (or a bare ref) → `(part after the first '/', or the ref
+      itself, False)`: cloud; the config-aware caller supplies the provider's
+      OPENAI_BASE_URL + OPENAI_API_KEY via the env-file (see `sandbox.occ_cloud_env_lines`).
+    """
+    if model_ref is None:
+        return None, True
+    is_local = model_ref.startswith("ollama/")
+    m_value = model_ref.split("/", 1)[1] if "/" in model_ref else model_ref
+    return m_value, is_local
+
+
+def occ_run(
+    runner: Runner,
+    name: str,
+    prompt: str,
+    *,
+    session: str | None = None,
+    agent: str | None = None,
+    model: str | None = None,
+    skip_permissions: bool = False,
+    workspace: str | Path | None = None,
+    env_file: str | Path | None = None,
+    capture_port: int | None = None,
+    max_turns: int = OCC_DEFAULT_MAX_TURNS,
+) -> OccTurn:
+    """Drive one headless occ turn in sandbox `name` (the occ counterpart of `claurst_run`).
+
+    `TurnFn`-compatible so the level runners drive it unchanged. `model` is a
+    `<backend>/<tag>` ref (as the sweep passes every agent); `occ_model_target` translates
+    it to occ's `-m` value + locality. `skip_permissions` is a no-op for interface parity
+    (occ always runs `--permission-mode bypassPermissions` headless — the sandbox is the
+    isolation boundary); `session` is accepted but unused (occ exposes no session id);
+    `workspace` becomes the exec cwd (`-w`) so writes land where the oracle probes.
+
+    LOCAL Ollama: wrapped in the shared `_claurst_script` relay bracket (reused verbatim),
+    with `OPENAI_BASE_URL`→the relay + a dummy `OPENAI_API_KEY` + `CLAUDE_CODE_STREAMING=0`
+    set inline. `capture_port` redirects the relay's upstream at a `--capture` proxy.
+    CLOUD: no relay; only `CLAUDE_CODE_STREAMING=0` is set inline. The fork's global undici
+    dispatcher honors HTTPS_PROXY (read from `env_file`), so no shim is needed; the
+    provider's `OPENAI_BASE_URL` + `OPENAI_API_KEY` also come from `env_file` (built
+    config-side, see `occ_cloud_env_lines`).
+
+    Returns the parsed events alongside the raw capture — never raises on a non-zero exit.
+    """
+    m_value, is_local = occ_model_target(model)
+    node_argv = [
+        "node",
+        OCC_ENTRY,
+        OCC_FORMAT_FLAG,
+        OCC_FORMAT_VALUE,
+        OCC_PERMISSION_FLAG,
+        OCC_PERMISSION_VALUE,
+    ]
+    if m_value is not None:
+        node_argv += [OCC_MODEL_FLAG, m_value]
+    node_argv += [OCC_MAX_TURNS_FLAG, str(max_turns), OCC_PRINT_FLAG, prompt]
+
+    cmd = ["docker", "sandbox", "exec"]
+    if workspace is not None:
+        cmd += ["-w", str(workspace)]
+    if env_file is not None:
+        cmd += ["--env-file", str(env_file)]
+    if is_local:
+        # Local: the relay bracket (reused verbatim from claurst) + occ's OpenAI env set
+        # inline; occ reaches the relay at 127.0.0.1:11434 as an OpenAI-compatible endpoint.
+        occ_cmd = f"{OCC_LOCAL_OPENAI_ENV} {OCC_STREAMING_ENV} {shlex.join(node_argv)}"
+        upstream_port = (
+            CLAURST_RELAY_DEFAULT_UPSTREAM_PORT if capture_port is None else capture_port
+        )
+        cmd += [name, "bash", "-lc", _claurst_script(occ_cmd, upstream_port=upstream_port)]
+    else:
+        # Cloud: no relay. The fork's global undici dispatcher reads HTTPS_PROXY from the
+        # env-file (no NODE_OPTIONS shim). The provider base URL + key also ride the
+        # env-file (OPENAI_BASE_URL / OPENAI_API_KEY, see `occ_cloud_env_lines`).
+        occ_cmd = f"{OCC_STREAMING_ENV} {shlex.join(node_argv)}"
+        cmd += [name, "bash", "-lc", occ_cmd]
+    result = runner.capture(cmd)
+    return OccTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)
 
 
 def parse_events(text: str) -> list[dict]:

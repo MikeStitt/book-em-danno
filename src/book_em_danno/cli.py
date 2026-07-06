@@ -142,7 +142,7 @@ def validate(
     agent: str = typer.Option(
         sandbox_cmd.DEFAULT_AGENT,
         "--agent",
-        help="Agent-under-test for the sweep: opencode (default) or claurst.",
+        help="Agent-under-test for the sweep: opencode (default), claurst, or occ.",
     ),
     env: list[str] = typer.Option(
         None, "--env", help="KEY=VAL credential to inject into cloud-config sweeps (repeatable)."
@@ -260,12 +260,14 @@ def bench(
     agent: str = typer.Option(
         sandbox_cmd.DEFAULT_AGENT,
         "--agent",
-        help="Agent-under-test: opencode (default) or claurst.",
+        help="Agent-under-test: opencode (default), claurst, occ, or claude "
+        "(the cloud reference row — one `claude-code` result, ignores the local model matrix).",
     ),
     only: list[str] = typer.Option(
         None,
         "--only",
-        help="Restrict the model matrix to these danno.toml model keys (repeatable).",
+        help="Restrict the model matrix to these danno.toml model keys (repeatable). "
+        "Ignored for --agent claude (single reference row).",
     ),
     benchmarks: Path = typer.Option(
         None, "--benchmarks", help="benchmarks.toml path (default: next to danno.toml)."
@@ -276,6 +278,24 @@ def bench(
     out: Path = typer.Option(None, "--out", help="Output dir (default .danno-bench/<timestamp>/)."),
     keep_sandboxes: bool = typer.Option(
         False, "--keep-sandboxes", help="Leave the disposable sandboxes up for debugging."
+    ),
+    capture: bool = typer.Option(
+        False,
+        "--capture",
+        help="Record each permutation's agent<->backend wire traffic (Ollama + openai/NVIDIA) "
+        "as JSONL under <out>/captures/. Unlocks the token-split and context telemetry.",
+    ),
+    capture_dir: Path = typer.Option(
+        None, "--capture-dir", help="Where to write capture JSONL (default <out>/captures/)."
+    ),
+    sample: bool = typer.Option(
+        False,
+        "--sample",
+        help="Sample host CPU/memory + GPU (nvidia-smi) + model VRAM (Ollama /api/ps) on an "
+        "interval during each permutation, writing a time series under <out>/samples/.",
+    ),
+    sample_interval: float = typer.Option(
+        0.5, "--sample-interval", help="Resource sampler interval in seconds (with --sample)."
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print the plan and exit without provisioning or running."
@@ -292,7 +312,8 @@ def bench(
 
     These run real benchmark task *content* via danno's own execution model — NOT the
     official Docker-per-task harness, so the pass counts are not official benchmark
-    scores. `--agent claurst` benchmarks the Rust Claude-Code clone on local models.
+    scores. `--agent claurst` benchmarks the Rust Claude-Code clone on local models;
+    `--agent claude` adds the cloud reference row (needs a host token; ignores `-m`).
     """
     from danno_validator.suites.bench import BenchOptions, run_bench
     from danno_validator.suites.config import DEFAULT_BENCHMARKS_FILE, load_benchmarks
@@ -319,6 +340,10 @@ def bench(
         out_dir=out,
         keep_sandboxes=keep_sandboxes,
         dry_run=dry_run,
+        capture=capture or capture_dir is not None,
+        capture_dir=capture_dir,
+        sample=sample,
+        sample_interval=sample_interval,
     )
     try:
         run_bench(cfg, bench_cfg, opts, Runner(apply=True, verbose=verbose))
@@ -431,15 +456,15 @@ def benchmark(
 _AGENT_OPT = typer.Option(
     sandbox_cmd.DEFAULT_AGENT,
     "--agent",
-    help="Agent: opencode, claude, or claurst; non-default agents get a separate sandbox.",
+    help="Agent: opencode, claude, claurst, or occ; non-default agents get a separate sandbox.",
 )
 _MODEL_OPT = typer.Option(
     None,
     "--model",
     "-m",
-    help="Model for --agent claurst (a danno.toml models entry, e.g. gemma4 or an "
-    "NVIDIA NIM model). claurst-only; a backend danno can't wire, or a raw non-Ollama "
-    "ref, is rejected loud.",
+    help="Model for --agent claurst or occ (a danno.toml models entry, e.g. gemma4 or an "
+    "OpenAI-compatible cloud model). clone-agents only; a backend danno can't wire, or a "
+    "raw non-Ollama ref, is rejected loud.",
 )
 
 
@@ -464,13 +489,13 @@ def _resolve_model(abs_target: Path, agent: str, model: str | None) -> tuple[str
     """Resolve `--model` for `sandbox start`. Returns `(ref, cloud_env_lines)` — `ref`
     is None when no `--model` is given; `cloud_env_lines` carries a cloud model's provider
     key (`["<VAR>=<value>"]`, injected into the chmod-600 env-file) and is empty for local
-    Ollama. Maps a danno [models] name to claurst's `-m <provider>/<tag>`, failing loud on
-    a malformed config (exit 2) or an unreachable model, missing cloud key, or a non-claurst
+    Ollama. Maps a danno [models] name to the clone agent's `-m` ref, failing loud on a
+    malformed config (exit 2) or an unreachable model, missing cloud key, or a non-clone
     agent (exit 4)."""
     if model is None:
         return None, []
     try:
-        return sandbox_cmd.resolve_claurst_start(abs_target, agent, model)
+        return sandbox_cmd.resolve_start(abs_target, agent, model)
     except DannoConfigError as exc:
         log_err(str(exc))
         raise typer.Exit(code=2) from exc

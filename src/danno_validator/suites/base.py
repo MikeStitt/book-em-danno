@@ -11,14 +11,29 @@ calls + latency).
 
 from __future__ import annotations
 
+import contextlib
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from book_em_danno.capture.proxy import read_captures
+from book_em_danno.capture.wiring import CaptureBinding
 from book_em_danno.core.exec import Runner
 from danno_validator.driver import Turn, TurnFn, opencode_run
 from danno_validator.oracle import FailureClass, TurnVerdict, classify_turn
+from danno_validator.telemetry.sampler import (
+    ResourceSummary,
+    SampleBinding,
+    read_samples,
+    summarize,
+)
+from danno_validator.telemetry.wire_metrics import (
+    TurnWireMetrics,
+    metrics_from_files,
+    write_metrics,
+    write_transcript,
+)
 
 
 @runtime_checkable
@@ -60,6 +75,9 @@ class BenchVerdict:
     cost: float
     latency_s: float
     error_summary: str | None = None
+    model: str | None = None  # the model ref this row ran (the permutation axis)
+    resource: ResourceSummary | None = None  # §5 peak/mean rollups (with --sample)
+    wire: TurnWireMetrics | None = None  # §1/§2/§6 derived wire metrics (with --capture)
 
 
 def error_verdict(task_id: str, suite: str, detail: str) -> BenchVerdict:
@@ -96,6 +114,8 @@ def run_bench_task(
     model: str | None = None,
     agent: str | None = None,
     run_turn: TurnFn | None = None,
+    capture: CaptureBinding | None = None,
+    sampler: SampleBinding | None = None,
 ) -> BenchVerdict:
     """Run one benchmark `task` against one agent in `sandbox`, returning a verdict.
 
@@ -104,20 +124,37 @@ def run_bench_task(
     and classifies the turn with the shared oracle (`side_effect = tests passed`).
     `run_turn` is the agent-under-test's turn producer (`opencode_run` by default,
     resolved at call time so a monkeypatched `base.opencode_run` still applies).
+    `capture`, when set (`danno bench --capture`), records this permutation's wire
+    traffic to its own `<suite>/<task>/<model>.<backend>.jsonl` for the turn's duration.
+    `sampler`, when set (`danno bench --sample`), profiles host CPU/GPU/mem/VRAM over
+    the turn window and its peak/mean rollups (§5.5) land on `BenchVerdict.resource`.
     """
     turn_fn = run_turn or opencode_run
     task.reset(runner, sandbox, workspace)
+    resource: ResourceSummary | None = None
+    wire: TurnWireMetrics | None = None
     start = time.monotonic()
-    turn: Turn = turn_fn(
-        runner,
-        sandbox,
-        task.prompt,
-        agent=agent,
-        model=model,
-        skip_permissions=True,
-        workspace=workspace,
-    )
+    with contextlib.ExitStack() as stack:
+        if capture is not None:
+            stack.enter_context(capture.permutation(suite=suite, task_id=task.id, model=model))
+        if sampler is not None:
+            stack.enter_context(sampler.permutation(suite=suite, task_id=task.id, model=model))
+        turn: Turn = turn_fn(
+            runner,
+            sandbox,
+            task.prompt,
+            agent=agent,
+            model=model,
+            skip_permissions=True,
+            workspace=workspace,
+        )
     latency = time.monotonic() - start
+    if sampler is not None:
+        resource = summarize(
+            read_samples(sampler.permutation_path(suite=suite, task_id=task.id, model=model))
+        )
+    if capture is not None:
+        wire = _derive_wire(capture, suite=suite, task_id=task.id, model=model)
     passed = task.grade(runner, sandbox, workspace)
     verdict = classify_turn(turn, side_effect=passed, expects_action=True)
     return BenchVerdict(
@@ -130,4 +167,23 @@ def run_bench_task(
         cost=turn.cost,
         latency_s=latency,
         error_summary=turn.error_summary,
+        model=model,
+        resource=resource,
+        wire=wire,
     )
+
+
+def _derive_wire(
+    capture: CaptureBinding, *, suite: str, task_id: str, model: str | None
+) -> TurnWireMetrics:
+    """Parse this permutation's just-written capture JSONL into derived wire metrics and
+    write the `metrics/` + `transcripts/` sidecars (§1/§2/§6/§3.4)."""
+    cap_files = [
+        t.capture_file
+        for t in capture.permutation_targets(suite=suite, task_id=task_id, model=model)
+    ]
+    wire = metrics_from_files(cap_files)
+    write_metrics(capture.metrics_path(suite=suite, task_id=task_id, model=model), wire)
+    records = [rec for f in cap_files for rec in read_captures(f)]
+    write_transcript(capture.transcript_path(suite=suite, task_id=task_id, model=model), records)
+    return wire

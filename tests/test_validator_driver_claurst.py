@@ -127,7 +127,7 @@ def test_claurst_run_default_relay_upstream_is_real_ollama(
     # Without --capture the relay forwards to real host Ollama (port 11434).
     calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
     driver.claurst_run(Runner(), "box", "go")
-    assert "DANNO_RELAY_UPSTREAM_PORT=11434 python3" in _script(calls)
+    assert "DANNO_RELAY_UPSTREAM_PORT=11434 " in _script(calls)
 
 
 def test_claurst_run_capture_port_redirects_relay_upstream(
@@ -137,7 +137,7 @@ def test_claurst_run_capture_port_redirects_relay_upstream(
     calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
     driver.claurst_run(Runner(), "box", "go", capture_port=54321)
     script = _script(calls)
-    assert "DANNO_RELAY_UPSTREAM_PORT=54321 python3" in script
+    assert "DANNO_RELAY_UPSTREAM_PORT=54321 " in script
     assert 'python3 "$RELAY_PY" 11434' in script  # relay still LISTENS on 11434
 
 

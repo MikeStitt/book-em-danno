@@ -12,10 +12,11 @@ back into this module without an import cycle.
 from __future__ import annotations
 
 import contextlib
+import re
 import socket
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
-from dataclasses import dataclass
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -118,6 +119,88 @@ def capture_allow_hosts(targets: Sequence[CaptureTarget], base: Sequence[str]) -
     """The sandbox egress allow-list: the caller's `base` plus a `localhost:<port>`
     hole per proxy (the egress rewrites `host.docker.internal`→`localhost`)."""
     return tuple(base) + tuple(f"localhost:{t.proxy_port}" for t in targets)
+
+
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _slug(text: str) -> str:
+    """A filesystem-safe slug for a path segment (kept local so this lower-layer
+    module doesn't import `danno_validator.report.slug`)."""
+    return _SLUG_RE.sub("-", text.lower()).strip("-") or "x"
+
+
+def perm_segment(suite: str, task_id: str, model: str | None) -> Path:
+    """The `<suite>/<task>/<model-slug>` sub-path shared by every per-permutation
+    sidecar family (captures/metrics/transcripts/samples) so they line up across their
+    sibling dirs. `None` model (the claude reference row) → the `default` segment."""
+    name = _slug(model) if model else "default"
+    return Path(_slug(suite)) / _slug(task_id) / name
+
+
+@dataclass(frozen=True)
+class CaptureBinding:
+    """The fixed-port capture targets plus the root dir, ready to mint a
+    per-permutation capture context for `danno bench`.
+
+    `plan_capture` runs ONCE per bench run (stable proxy ports baked into the agent's
+    provisioning), then `permutation()` is called per `(suite, task, model)` turn to
+    write that turn's wire traffic to its own JSONL. Because bench turns run
+    sequentially and `http.server.HTTPServer` sets `allow_reuse_address`, standing a
+    fresh proxy up on the same port each turn is race-free and needs no proxy changes.
+    """
+
+    targets: tuple[CaptureTarget, ...]
+    capture_dir: Path
+
+    def permutation_targets(
+        self, *, suite: str, task_id: str, model: str | None
+    ) -> list[CaptureTarget]:
+        """This permutation's targets, each rewritten to its own namespaced JSONL:
+        `<capture_dir>/<suite>/<task>/<model-slug>.<backend>.jsonl`."""
+        seg = self._perm_segment(suite=suite, task_id=task_id, model=model)
+        return [
+            replace(
+                t,
+                capture_file=self.capture_dir
+                / seg.parent
+                / f"{seg.name}.{_slug(t.backend_name)}.jsonl",
+            )
+            for t in self.targets
+        ]
+
+    def permutation(
+        self, *, suite: str, task_id: str, model: str | None
+    ) -> AbstractContextManager[None]:
+        """A `captures_running` context whose files are namespaced by this permutation."""
+        return captures_running(self.permutation_targets(suite=suite, task_id=task_id, model=model))
+
+    def _perm_segment(self, *, suite: str, task_id: str, model: str | None) -> Path:
+        """The `<suite>/<task>/<model-slug>` sub-path shared by every per-permutation
+        sidecar (capture/metrics/transcript), so they line up across the sibling dirs."""
+        return perm_segment(suite, task_id, model)
+
+    def metrics_path(self, *, suite: str, task_id: str, model: str | None) -> Path:
+        """Where this permutation's derived wire metrics land — a `metrics/` sibling of
+        `capture_dir` (so `<out>/captures` → `<out>/metrics`)."""
+        seg = self._perm_segment(suite=suite, task_id=task_id, model=model)
+        return self.capture_dir.parent / "metrics" / seg.with_suffix(".json")
+
+    def transcript_path(self, *, suite: str, task_id: str, model: str | None) -> Path:
+        """Where this permutation's readable transcript lands — a `transcripts/` sibling
+        of `capture_dir` (§3.4)."""
+        seg = self._perm_segment(suite=suite, task_id=task_id, model=model)
+        return self.capture_dir.parent / "transcripts" / seg.with_suffix(".md")
+
+    def ollama_port(self, config: DannoConfig) -> int | None:
+        """The proxy port for the first Ollama backend, or None — this is the relay
+        upstream (`capture_port`) for occ/claurst local turns, which forward their
+        in-VM Ollama traffic through the capture proxy instead of straight to the host."""
+        for target in self.targets:
+            backend = config.backends.get(target.backend_name)
+            if isinstance(backend, OllamaBackend):
+                return target.proxy_port
+        return None
 
 
 def uncaptured_cloud_refs(config: DannoConfig) -> list[str]:

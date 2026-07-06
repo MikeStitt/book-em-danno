@@ -37,6 +37,75 @@ def installed_tags(host_url: str = DEFAULT_HOST_URL, *, timeout: float = 2.0) ->
     return {m["name"] for m in body.get("models", []) if "name" in m}
 
 
+def running_models(host_url: str = DEFAULT_HOST_URL, *, timeout: float = 2.0) -> list[dict]:
+    """Models currently resident in Ollama, from /api/ps (best-effort).
+
+    Each entry carries at least `name`, `size_vram` (bytes attributed to this model
+    on the GPU), and `expires_at` (when Ollama will evict it). Used by the bench
+    resource sampler for model-attributed VRAM (§5.4) and model-load detection
+    (§2.5). Returns `[]` when Ollama is unreachable or the body is unparseable —
+    the sampler degrades to no `model_ps` rows rather than failing the bench.
+    """
+    try:
+        with urllib.request.urlopen(f"{host_url}/api/ps", timeout=timeout) as resp:
+            body = json.loads(resp.read())
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        return []
+    return [m for m in body.get("models", []) if isinstance(m, dict)]
+
+
+def model_digest(tag: str, host_url: str = DEFAULT_HOST_URL, *, timeout: float = 2.0) -> str | None:
+    """The exact model bytes' digest (`sha256:…`) for `tag` from /api/tags (§7.1), or
+    None if Ollama is unreachable or the tag isn't present. Provenance: two runs of the
+    "same" tag can differ if the model was re-pulled — the digest pins what actually ran."""
+    try:
+        with urllib.request.urlopen(f"{host_url}/api/tags", timeout=timeout) as resp:
+            body = json.loads(resp.read())
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        return None
+    for model in body.get("models", []):
+        if model.get("name") == tag:
+            digest = model.get("digest")
+            return str(digest) if digest else None
+    return None
+
+
+def model_params(tag: str, host_url: str = DEFAULT_HOST_URL, *, timeout: float = 5.0) -> dict:
+    """Static model facts for `tag` from /api/show (§7.2): quantization, parameter
+    count, and the architecture's context length (the real ceiling for §6.3 headroom,
+    NOT opencode's client-side `context_budget`). Returns `{}` best-effort on any
+    failure. Keys present only when Ollama reports them: `quantization`, `param_size`,
+    `context_length`, `architecture`."""
+    payload = json.dumps({"model": tag}).encode()
+    try:
+        req = urllib.request.Request(
+            f"{host_url}/api/show", data=payload, headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read())
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        return {}
+    return _parse_model_show(body)
+
+
+def _parse_model_show(body: dict) -> dict:
+    """Extract the provenance fields from an /api/show body (pure, for tests)."""
+    out: dict = {}
+    details = body.get("details") or {}
+    if details.get("quantization_level"):
+        out["quantization"] = details["quantization_level"]
+    if details.get("parameter_size"):
+        out["param_size"] = details["parameter_size"]
+    info = body.get("model_info") or {}
+    arch = info.get("general.architecture")
+    if arch:
+        out["architecture"] = arch
+        ctx = info.get(f"{arch}.context_length")
+        if isinstance(ctx, int):
+            out["context_length"] = ctx
+    return out
+
+
 def ensure_model(runner: Runner, tag: str, *, host_url: str = DEFAULT_HOST_URL) -> list[str]:
     """Advise (and under --apply, run) `ollama pull <tag>`. `ollama pull` is itself
     idempotent — an already-present model is a fast no-op."""

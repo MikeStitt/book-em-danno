@@ -10,33 +10,62 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import Runner
-from danno_validator import claurst
+from danno_validator import baseline, claurst, occ
 from danno_validator.driver import Turn, TurnFn, opencode_run
 from danno_validator.sweep import DEFAULT_AGENT
 
 CLAURST = "claurst"
+OCC = "occ"
+CLAUDE = "claude"
 
 
 def resolve_image(agent: str) -> str:
     """The prebuilt sandbox image to `docker sandbox create` for this AUT."""
-    return claurst.CLAURST_SANDBOX_IMAGE if agent == CLAURST else agent
+    if agent == CLAURST:
+        return claurst.CLAURST_SANDBOX_IMAGE
+    if agent == OCC:
+        return occ.OCC_SANDBOX_IMAGE
+    if agent == CLAUDE:
+        return CLAUDE  # prebuilt `docker sandbox create claude` image
+    return agent
 
 
-def install_aut(runner: Runner, sandbox: str, agent: str) -> None:
-    """Post-provision install for AUTs that aren't a prebuilt image (claurst)."""
+def install_aut(
+    runner: Runner, sandbox: str, agent: str, config: DannoConfig | None = None
+) -> None:
+    """Post-provision install for AUTs that aren't a prebuilt image (claurst, occ).
+
+    `config` carries the `[env]` pins (occ's OCC_REPO/OCC_REF) through to the
+    installer; claurst has a fixed install-time version and ignores it. opencode and
+    claude are prebuilt images with nothing to install post-provision (no-op).
+    """
     if agent == CLAURST:
         claurst.install_claurst(runner, sandbox)
+    elif agent == OCC:
+        occ.install_occ(runner, sandbox, config)
 
 
-def run_turn_for(agent: str, env_file: Path | None) -> TurnFn:
+def run_turn_for(agent: str, env_file: Path | None, capture_port: int | None = None) -> TurnFn:
     """The `TurnFn` driving one turn for this AUT, with `env_file` bound.
 
     claurst sets up its Ollama relay per turn; opencode is pinned to its read-write
-    run-agent (`DEFAULT_AGENT`, "build") so benchmark edits actually land.
+    run-agent (`DEFAULT_AGENT`, "build") so benchmark edits actually land. claude is
+    the cloud *reference* AUT — its `env_file` carries auth (never None; built loud
+    from a host token) and it ignores the per-variant `-m` (fixed default model).
+    `capture_port` (from `--capture`) points occ/claurst's in-VM Ollama relay at the
+    recording proxy so their local wire traffic is captured; opencode captures via its
+    rewritten backend `base_url` instead and ignores it, as does the cloud claude row.
     """
     if agent == CLAURST:
-        return claurst.authed_claurst_run(env_file)
+        return claurst.authed_claurst_run(env_file, capture_port=capture_port)
+    if agent == OCC:
+        return occ.authed_occ_run(env_file, capture_port=capture_port)
+    if agent == CLAUDE:
+        if env_file is None:  # defensive: bench builds the auth file before dispatch
+            raise ValueError("claude AUT requires an auth env-file (host token)")
+        return baseline._authed_claude_run(env_file, None)
 
     def run(
         runner: Runner,
