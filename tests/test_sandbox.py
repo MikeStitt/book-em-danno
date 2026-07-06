@@ -301,6 +301,21 @@ def test_claurst_cloud_env_lines_missing_key_fails_loud(monkeypatch: pytest.Monk
         sandbox.claurst_cloud_env_lines(_claurst_cfg(), "nemotron")
 
 
+def test_cloud_api_key_env_lines_injects_raw_provider_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The generic raw-key form (opencode/claurst read {env:<api_key_env>}); no OPENAI_* mapping.
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-secret")
+    lines = sandbox.cloud_api_key_env_lines(_claurst_cfg(), "nemotron")
+    assert lines == ["NVIDIA_API_KEY=nvapi-secret"]
+    assert sandbox.cloud_api_key_env_lines(_claurst_cfg(), "gemma4") == []  # local: no injection
+    assert sandbox.cloud_api_key_env_lines(_claurst_cfg(), "ollama/foo:1b") == []  # raw ollama ref
+
+
+def test_cloud_api_key_env_lines_missing_key_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    with pytest.raises(CommandFailedError, match="NVIDIA_API_KEY"):
+        sandbox.cloud_api_key_env_lines(_claurst_cfg(), "nemotron")
+
+
 def test_resolve_model_for_agent_rejects_non_claurst(tmp_path: Path) -> None:
     # -m on claude/opencode must fail loud rather than be silently ignored. The agent
     # check precedes any config load, so no danno.toml is needed here.

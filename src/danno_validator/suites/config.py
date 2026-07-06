@@ -50,6 +50,11 @@ class BenchmarksConfig(BaseModel):
     """The whole `benchmarks.toml`: one optional table per suite."""
 
     model_config = ConfigDict(extra="forbid")
+    # Agents-under-test to sweep in one `danno bench` run (each gets its own bench.json +
+    # sidecars under <out>/<agent>/, with a combined comparison report at the root). Empty
+    # (the default) means the single opencode default; `--agent` on the CLI overrides this.
+    # An unknown name fails loud at load (Working Rule 8).
+    agents: list[Literal["opencode", "claurst", "occ", "claude"]] = []
     aider_polyglot: AiderPolyglotConfig = AiderPolyglotConfig()
     swebench: SwebenchConfig = SwebenchConfig()
 

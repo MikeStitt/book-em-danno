@@ -10,9 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from book_em_danno.config.schema import DannoConfig, Model, OllamaBackend
+from book_em_danno.config.schema import DannoConfig, Model, OllamaBackend, OpenAIBackend
 from book_em_danno.core import exec as exec_mod
-from book_em_danno.core.exec import Runner
+from book_em_danno.core.exec import CommandFailedError, Runner
+from danno_validator import baseline
+from danno_validator.matrix import model_variants
 from danno_validator.suites import aut, bench
 from danno_validator.suites.config import BenchmarksConfig
 
@@ -23,6 +25,30 @@ def _config() -> DannoConfig:
         models={"qwen": Model(backend="ollama", tag="qwen3:latest")},
         agents={"build": "qwen"},
     )
+
+
+def _cloud_config() -> DannoConfig:
+    """A mixed local + NVIDIA-NIM cloud matrix: `qwen` (Ollama) and `nemo` (openai)."""
+    return DannoConfig(
+        backends={
+            "ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1"),
+            "nv": OpenAIBackend(
+                kind="openai",
+                base_url="https://integrate.api.nvidia.com/v1",
+                api_key_env="NVIDIA_API_KEY",
+            ),
+        },
+        models={
+            "qwen": Model(backend="ollama", tag="qwen3:latest"),
+            "nemo": Model(backend="nv", tag="nvidia/nemotron-super-49b"),
+        },
+        agents={"build": "qwen"},
+    )
+
+
+def _cleanup_env_files(files: dict[str, Path | None]) -> None:
+    for p in {p for p in files.values() if p is not None}:
+        p.unlink(missing_ok=True)
 
 
 def test_resolve_image_maps_claurst_to_shell() -> None:
@@ -43,20 +69,73 @@ def test_run_turn_for_claude_requires_env_file() -> None:
     assert callable(aut.run_turn_for("claude", Path("/tmp/danno-claude-auth")))
 
 
-def test_build_bench_env_file_occ_carries_knob_defaults_overridable(tmp_path: Path) -> None:
+def test_build_bench_env_files_occ_carries_knob_defaults_overridable(tmp_path: Path) -> None:
     # occ's level-4 loop-ceiling knobs seed the file; danno.toml [env] composes on top.
     cfg = DannoConfig(
         backends={"ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1")},
         models={"qwen": Model(backend="ollama", tag="qwen3:latest")},
         env={"CLAUDE_CODE_MAX_RECURSION_DEPTH": "5"},  # [env] lowers the generous default
     )
-    path = bench._build_bench_env_file(cfg, "occ")
+    opts = bench.BenchOptions(target=tmp_path, agent="occ")
+    variants = model_variants(cfg)
+    files = bench._build_bench_env_files(cfg, opts, variants)
+    path = files[variants[0].model_ref]
     assert path is not None
     body = path.read_text(encoding="utf-8")
-    path.unlink(missing_ok=True)
+    _cleanup_env_files(files)
     assert "CLAUDE_CODE_API_TIMEOUT=" in body  # the level-4 default survives
     assert "CLAUDE_CODE_MAX_RECURSION_DEPTH=5" in body  # [env] beat the default
     assert "CLAUDE_CODE_MAX_RECURSION_DEPTH=500" not in body
+
+
+def test_build_bench_env_files_occ_cloud_variant_injects_openai_base_and_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A cloud (openai) variant carries occ's OPENAI_BASE_URL + OPENAI_API_KEY mapping; the
+    # local variant does NOT. Distinct env-files per row is what fixed the cloud 404 (occ
+    # fell back to api.anthropic.com when no per-variant auth was injected).
+    monkeypatch.setenv("NVIDIA_API_KEY", "nv-secret")
+    cfg = _cloud_config()
+    opts = bench.BenchOptions(target=tmp_path, agent="occ")
+    variants = model_variants(cfg)  # sorted: nemo (cloud), qwen (local)
+    files = bench._build_bench_env_files(cfg, opts, variants)
+    by_name = {v.model_name: files[v.model_ref] for v in variants}
+    cloud_body = by_name["nemo"].read_text(encoding="utf-8")  # type: ignore[union-attr]
+    local_body = by_name["qwen"].read_text(encoding="utf-8")  # type: ignore[union-attr]
+    _cleanup_env_files(files)
+    assert "OPENAI_BASE_URL=https://integrate.api.nvidia.com/v1" in cloud_body
+    assert "OPENAI_API_KEY=nv-secret" in cloud_body
+    assert "OPENAI_API_KEY=" not in local_body  # local Ollama needs no cloud auth
+
+
+def test_build_bench_env_files_opencode_cloud_variant_injects_raw_provider_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # opencode/claurst read the provider key under its OWN var (the generated provider block
+    # references {env:NVIDIA_API_KEY}), not occ's OPENAI_* mapping.
+    monkeypatch.setenv("NVIDIA_API_KEY", "nv-secret")
+    cfg = _cloud_config()
+    for agent in ("opencode", "claurst"):
+        opts = bench.BenchOptions(target=tmp_path, agent=agent)
+        variants = model_variants(cfg)
+        files = bench._build_bench_env_files(cfg, opts, variants)
+        by_name = {v.model_name: files[v.model_ref] for v in variants}
+        cloud_body = by_name["nemo"].read_text(encoding="utf-8")  # type: ignore[union-attr]
+        _cleanup_env_files(files)
+        assert "NVIDIA_API_KEY=nv-secret" in cloud_body, agent
+        assert "OPENAI_API_KEY=" not in cloud_body, agent
+
+
+def test_build_bench_env_files_cloud_variant_fails_loud_without_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A cloud row with its provider key unset fails loud HERE (before any sandbox is
+    # provisioned), naming the missing var — not mid-session at an auth failure.
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    cfg = _cloud_config()
+    opts = bench.BenchOptions(target=tmp_path, agent="occ")
+    with pytest.raises(CommandFailedError, match="NVIDIA_API_KEY"):
+        bench._build_bench_env_files(cfg, opts, model_variants(cfg))
 
 
 def test_seed_opencode_config_writes_provider_and_models(tmp_path: Path) -> None:
@@ -77,30 +156,32 @@ def test_seed_opencode_config_noop_for_non_opencode_agents(tmp_path: Path) -> No
         assert not (tmp_path / ".opencode" / "opencode.jsonc").exists()
 
 
-def test_build_bench_env_file_claude_uses_host_token(
+def test_build_bench_env_files_claude_uses_host_token(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # claude does NOT flow through assemble_agent_env: its file is the auth file, built
-    # from a host token (fail-loud without one).
+    # claude does NOT flow through assemble_agent_env: every variant maps to the single auth
+    # file, built from a host token (fail-loud without one).
     for var in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-abc")
-    path = bench._build_bench_env_file(_config(), "claude")
+    opts = bench.BenchOptions(target=tmp_path, agent="claude")
+    variants = [baseline.baseline_variant(None)]
+    files = bench._build_bench_env_files(_config(), opts, variants)
+    path = files[variants[0].model_ref]
     assert path is not None
     body = path.read_text(encoding="utf-8")
     path.unlink(missing_ok=True)
     assert "CLAUDE_CODE_OAUTH_TOKEN=tok-abc" in body
 
 
-def test_build_bench_env_file_claude_fails_loud_without_token(
-    monkeypatch: pytest.MonkeyPatch,
+def test_build_bench_env_files_claude_fails_loud_without_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from book_em_danno.core.exec import CommandFailedError
-
     for var in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(var, raising=False)
+    opts = bench.BenchOptions(target=tmp_path, agent="claude")
     with pytest.raises(CommandFailedError):
-        bench._build_bench_env_file(_config(), "claude")
+        bench._build_bench_env_files(_config(), opts, [baseline.baseline_variant(None)])
 
 
 def test_run_bench_claude_collapses_matrix_to_reference_row(
@@ -227,3 +308,46 @@ def test_run_bench_dry_run_does_not_provision(tmp_path: pytest.TempPathFactory) 
     assert report.dry_run is True
     assert report.verdicts == []
     assert report.results_json is None
+
+
+def test_resolve_bench_agents_defaults_to_single_opencode() -> None:
+    # No CLI agents, no [agents] in benchmarks.toml → the single opencode default.
+    assert bench.resolve_bench_agents(None, BenchmarksConfig()) == ["opencode"]
+
+
+def test_resolve_bench_agents_reads_benchmarks_toml_list() -> None:
+    cfg = BenchmarksConfig(agents=["occ", "claurst"])
+    assert bench.resolve_bench_agents(None, cfg) == ["occ", "claurst"]
+
+
+def test_resolve_bench_agents_cli_overrides_toml_and_dedupes() -> None:
+    # --agent wins over [agents]; repeats collapse but order is preserved.
+    cfg = BenchmarksConfig(agents=["occ"])
+    assert bench.resolve_bench_agents(["claude", "occ", "claude"], cfg) == ["claude", "occ"]
+
+
+def test_resolve_bench_agents_unknown_fails_loud() -> None:
+    with pytest.raises(ValueError, match="unknown --agent 'gpt5'"):
+        bench.resolve_bench_agents(["gpt5"], BenchmarksConfig())
+
+
+def test_run_bench_agents_single_agent_runs_in_place(tmp_path: Path) -> None:
+    # One agent → straight through run_bench into opts.out_dir, no comparison layer.
+    opts = bench.BenchOptions(
+        target=Path("."), agent="opencode", out_dir=tmp_path / "out", dry_run=True
+    )
+    reports = bench.run_bench_agents(_config(), BenchmarksConfig(), opts, Runner(), ["opencode"])
+    assert len(reports) == 1
+    assert reports[0].out_dir == tmp_path / "out"  # no per-agent subdir for the single case
+
+
+def test_run_bench_agents_multi_agent_uses_per_agent_subdirs(tmp_path: Path) -> None:
+    # Several agents → each into <root>/<agent>/; dry-run skips the comparison report.
+    opts = bench.BenchOptions(
+        target=Path("."), agent="opencode", out_dir=tmp_path / "root", dry_run=True
+    )
+    reports = bench.run_bench_agents(
+        _config(), BenchmarksConfig(), opts, Runner(), ["occ", "claurst"]
+    )
+    root = tmp_path / "root"
+    assert [r.out_dir for r in reports] == [root / "occ", root / "claurst"]

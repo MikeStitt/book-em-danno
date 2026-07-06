@@ -556,6 +556,28 @@ def claurst_cloud_env_lines(config: DannoConfig, value: str) -> list[str]:
     return [f"{var}={val}"]
 
 
+def cloud_api_key_env_lines(config: DannoConfig, value: str) -> list[str]:
+    """Env-file lines injecting a cloud model's provider key under its OWN var name
+    (`<api_key_env>=<hostval>`), or [] for a local Ollama model.
+
+    This is the form an AUT needs when it reads the provider key under the backend's own
+    env var: opencode's generated provider block references `{env:<api_key_env>}`, and
+    claurst reads the same var. (occ instead needs the `OPENAI_BASE_URL`/`OPENAI_API_KEY`
+    mapping — see `occ_cloud_env_lines`.) The value lands only in the chmod-600 env-file,
+    never on a command line. Fails loud (Working Rule 8) when the var is unset/empty,
+    naming it, rather than launching to a mid-session auth failure."""
+    var = claurst_cloud_key_env(config, value)
+    if var is None:
+        return []
+    val = os.environ.get(var)
+    if not val:
+        raise CommandFailedError(
+            f"model '{value}' needs the cloud provider key '{var}', but it is unset in danno's "
+            f"environment. Export {var} (e.g. in your shell profile) and re-run."
+        )
+    return [f"{var}={val}"]
+
+
 def resolve_occ_model(config: DannoConfig, value: str) -> str:
     """Resolve a `-m` value to occ's `<backend>/<tag>` ref (parsed by `driver.occ_model_target`).
 

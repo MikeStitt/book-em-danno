@@ -257,11 +257,12 @@ def bench(
     target: Path = typer.Option(
         Path("."), "--target", "-C", help="Project whose danno.toml models are the matrix."
     ),
-    agent: str = typer.Option(
-        sandbox_cmd.DEFAULT_AGENT,
+    agent: list[str] = typer.Option(
+        None,
         "--agent",
-        help="Agent-under-test: opencode (default), claurst, occ, or claude "
-        "(the cloud reference row — one `claude-code` result, ignores the local model matrix).",
+        help="Agent-under-test (repeatable): opencode (default), claurst, occ, or claude "
+        "(the cloud reference row — one `claude-code` result, ignores the local model matrix). "
+        "Overrides benchmarks.toml [agents]; several agents produce a comparison report.",
     ),
     only: list[str] = typer.Option(
         None,
@@ -297,6 +298,15 @@ def bench(
     sample_interval: float = typer.Option(
         0.5, "--sample-interval", help="Resource sampler interval in seconds (with --sample)."
     ),
+    env: list[str] = typer.Option(
+        None,
+        "--env",
+        help="KEY=VAL credential to inject into every bench turn (repeatable). Cloud keys are "
+        "read from danno's host env automatically; use this to override or supply one inline.",
+    ),
+    env_file: list[str] = typer.Option(
+        None, "--env-file", help="File of KEY=VAL credentials to inject (repeatable)."
+    ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print the plan and exit without provisioning or running."
     ),
@@ -315,7 +325,11 @@ def bench(
     scores. `--agent claurst` benchmarks the Rust Claude-Code clone on local models;
     `--agent claude` adds the cloud reference row (needs a host token; ignores `-m`).
     """
-    from danno_validator.suites.bench import BenchOptions, run_bench
+    from danno_validator.suites.bench import (
+        BenchOptions,
+        resolve_bench_agents,
+        run_bench_agents,
+    )
     from danno_validator.suites.config import DEFAULT_BENCHMARKS_FILE, load_benchmarks
 
     cfg = _load(target / "danno.toml")
@@ -331,9 +345,14 @@ def bench(
             "[aider_polyglot] or [swebench] and list `select` ids."
         )
         raise typer.Exit(code=2)
+    try:
+        agents = resolve_bench_agents(agent or None, bench_cfg)
+    except ValueError as exc:  # unknown --agent / [agents] name (fail loud)
+        log_err(str(exc))
+        raise typer.Exit(code=2) from exc
     opts = BenchOptions(
         target=target,
-        agent=agent,
+        agent=agents[0],
         only=only or None,
         benchmarks_path=bench_path,
         workspace=workspace,
@@ -344,9 +363,11 @@ def bench(
         capture_dir=capture_dir,
         sample=sample,
         sample_interval=sample_interval,
+        env=env or [],
+        env_file=env_file or [],
     )
     try:
-        run_bench(cfg, bench_cfg, opts, Runner(apply=True, verbose=verbose))
+        run_bench_agents(cfg, bench_cfg, opts, Runner(apply=True, verbose=verbose), agents)
     except ValueError as exc:  # bad --only / unknown swebench id (fail loud)
         log_err(str(exc))
         raise typer.Exit(code=3) from exc

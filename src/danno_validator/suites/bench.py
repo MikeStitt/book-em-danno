@@ -14,7 +14,7 @@ import hashlib
 import json
 import re
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -32,7 +32,14 @@ from book_em_danno.core.exec import CommandFailedError, Runner, log_info, log_wa
 from danno_validator import baseline
 from danno_validator.driver import seed_workspace
 from danno_validator.matrix import ConfigVariant, model_variants
-from danno_validator.suites.aut import CLAUDE, install_aut, resolve_image, run_turn_for
+from danno_validator.suites.aut import (
+    CLAUDE,
+    CLAURST,
+    OCC,
+    install_aut,
+    resolve_image,
+    run_turn_for,
+)
 from danno_validator.suites.base import BenchVerdict, error_verdict, run_bench_task
 from danno_validator.suites.config import BenchmarksConfig
 from danno_validator.suites.run import (
@@ -44,7 +51,14 @@ from danno_validator.suites.run import (
 )
 from danno_validator.suites.swebench import load_swebench_tasks
 from danno_validator.telemetry.provenance import collect_provenance, write_provenance
-from danno_validator.telemetry.report import write_report
+from danno_validator.telemetry.report import (
+    load as load_reports,
+)
+from danno_validator.telemetry.report import (
+    merge_html,
+    merge_markdown,
+    write_report,
+)
 from danno_validator.telemetry.sampler import SampleBinding, summary_to_dict
 from danno_validator.telemetry.wire_metrics import TurnWireMetrics, headroom_pct
 
@@ -63,6 +77,8 @@ class BenchOptions:
     capture_dir: Path | None = None
     sample: bool = False
     sample_interval: float = 0.5
+    env: list[str] = field(default_factory=list)
+    env_file: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -71,6 +87,26 @@ class BenchReport:
     verdicts: list[BenchVerdict] = field(default_factory=list)
     dry_run: bool = False
     results_json: Path | None = None
+
+
+# The agents-under-test `danno bench` can drive (occ/claurst/opencode on the local +
+# cloud matrix; claude the single cloud reference row). Ordered for a stable report layout.
+BENCH_AGENTS: tuple[str, ...] = (sb.DEFAULT_AGENT, CLAURST, OCC, CLAUDE)
+
+
+def resolve_bench_agents(cli_agents: list[str] | None, bench_cfg: BenchmarksConfig) -> list[str]:
+    """The de-duplicated, order-preserving list of agents to benchmark, with precedence
+    `--agent` (CLI) > `benchmarks.toml [agents]` > the single opencode default.
+
+    Fails loud (Working Rule 8) on an unknown agent name from either source, naming the
+    valid set, rather than provisioning a sandbox for a typo."""
+    chosen: list[str] = list(cli_agents or bench_cfg.agents) or [sb.DEFAULT_AGENT]
+    seen: dict[str, None] = {}
+    for name in chosen:
+        if name not in BENCH_AGENTS:
+            raise ValueError(f"unknown --agent '{name}'. Valid agents: {', '.join(BENCH_AGENTS)}.")
+        seen.setdefault(name, None)
+    return list(seen)
 
 
 def _sandbox_name(target: Path, suffix: str) -> str:
@@ -94,27 +130,68 @@ def _teardown(runner: Runner, name: str, *, keep: bool) -> None:
     runner.advise(["docker", "sandbox", "rm", name], why=f"remove bench sandbox '{name}'")
 
 
-def _build_bench_env_file(config: DannoConfig, agent: str) -> Path | None:
-    """The chmod-600 env-file bound into every bench exec for `agent`, or `None`.
+def _variant_cloud_env_lines(agent: str, config: DannoConfig, model_name: str) -> list[str]:
+    """The cloud-provider auth env-file lines for one bench variant, or [] for a local model.
 
-    This is what carries occ's tunable loop ceilings (`CLAUDE_CODE_API_TIMEOUT`,
-    `CLAUDE_CODE_MAX_RECURSION_DEPTH`) and any cloud-provider keys declared via
-    `danno.toml [env]` (`{env:VAR}` indirection) into bench turns — previously bench
-    passed `None`, so `[env]` never reached the AUT (only interactive + validate did).
+    Reuses the exact builders `danno sandbox start` uses, so bench authenticates a cloud
+    model identically per agent: occ needs the `OPENAI_BASE_URL`/`OPENAI_API_KEY` mapping;
+    claurst and opencode read the provider key under its own `{api_key_env}` name (opencode's
+    generated provider block references `{env:<api_key_env>}`). Fails loud (Working Rule 8)
+    when the key var is unset. `model_name` is the danno.toml `[models]` key (a raw
+    `<provider>/<tag>` ref, which the matrix never yields for a cloud row, resolves to [])."""
+    if agent == OCC:
+        return sb.occ_cloud_env_lines(config, model_name)
+    if agent == CLAURST:
+        return sb.claurst_cloud_env_lines(config, model_name)
+    if agent == sb.DEFAULT_AGENT:  # opencode
+        return sb.cloud_api_key_env_lines(config, model_name)
+    return []  # claude: the cloud reference AUT carries its own auth (never a [models] key)
 
-    claude is special: it does NOT flow through `assemble_agent_env` (its auth stays
-    in `agent_env`), so its file is built exactly like the baseline's — failing loud
-    (Working Rule 8) when no host `CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY` is set.
-    For the other agents the AUT's own level-4 defaults (e.g. occ's knobs, opencode's
-    `OLLAMA_BASE_URL`) seed the file and `danno.toml [env]` composes on top; `None`
-    only when there is genuinely nothing to inject."""
-    if agent == CLAUDE:
-        return baseline._build_claude_auth_env_file()  # fails loud without a host token
-    defaults = sb.agent_env(agent, sb.DEFAULT_OLLAMA_URL)
-    lines = sb.assemble_agent_env(config, agent_defaults=defaults, env_pairs=[], env_files=[])
-    if not lines:
-        return None
-    return sb._build_env_file(lines, [], [])
+
+def _merge_env_lines(base: list[str], extra: list[str]) -> list[str]:
+    """`KEY=VAL` lines with `extra` (per-variant cloud auth) overriding `base` on collision."""
+    merged: dict[str, str] = {}
+    for line in (*base, *extra):
+        if "=" in line:
+            key, val = line.split("=", 1)
+            merged[key] = val
+    return [f"{key}={val}" for key, val in merged.items()]
+
+
+def _build_bench_env_files(
+    config: DannoConfig, opts: BenchOptions, variants: list[ConfigVariant]
+) -> dict[str, Path | None]:
+    """One chmod-600 env-file per model variant (keyed by `model_ref`), bound into that
+    variant's bench turns.
+
+    A single base set of lines is shared by every variant — the AUT's level-4 defaults
+    (occ's loop ceilings, opencode's `OLLAMA_BASE_URL`) plus `danno.toml [env]` and any
+    `--env`/`--env-file`. A CLOUD variant additionally injects its provider auth for the
+    AUT (`_variant_cloud_env_lines`), so a mixed local+cloud matrix authenticates each row
+    correctly — the previous single agent-scoped file left cloud rows unauthenticated, so
+    occ fell back to api.anthropic.com and 404'd. Cloud-key resolution fails loud HERE,
+    before any sandbox is provisioned. Files are de-duplicated by content, so local variants
+    share one file and all variants on the same cloud backend share another. `config` is the
+    (capture-rewritten) config the run drives from, so occ cloud's `OPENAI_BASE_URL` points
+    at the `--capture` proxy when capture is on. claude is special: a single model-independent
+    auth file (fails loud without a host token, exactly like the baseline)."""
+    if opts.agent == CLAUDE:
+        auth = baseline._build_claude_auth_env_file()  # fails loud without a host token
+        return {v.model_ref: auth for v in variants}
+    defaults = sb.agent_env(opts.agent, sb.DEFAULT_OLLAMA_URL)
+    base = sb.assemble_agent_env(
+        config, agent_defaults=defaults, env_pairs=opts.env, env_files=opts.env_file
+    )
+    files: dict[str, Path | None] = {}
+    by_content: dict[tuple[str, ...], Path | None] = {}
+    for v in variants:
+        cloud = _variant_cloud_env_lines(opts.agent, config, v.model_name)
+        lines = _merge_env_lines(base, cloud) if cloud else base
+        content = tuple(lines)
+        if content not in by_content:
+            by_content[content] = sb._build_env_file(lines, [], []) if lines else None
+        files[v.model_ref] = by_content[content]
+    return files
 
 
 def _setup_bench_capture(
@@ -185,7 +262,7 @@ def _run_aider(
     workspace: Path,
     variants: list[ConfigVariant],
     config: DannoConfig,
-    env_file: Path | None,
+    env_files: dict[str, Path | None],
     capture: CaptureBinding | None,
     sampler: SampleBinding | None,
     allow_hosts: tuple[str, ...],
@@ -210,7 +287,7 @@ def _run_aider(
                 checkout=checkout,
                 select=ap.select,
                 workspace=workspace,
-                run_turn=run_turn_for(opts.agent, env_file, capture_port),
+                run_turn=run_turn_for(opts.agent, env_files[variant.model_ref], capture_port),
                 model=variant.model_ref,
                 capture=capture,
                 sampler=sampler,
@@ -229,7 +306,7 @@ def _run_swebench(
     workspace: Path,
     variants: list[ConfigVariant],
     config: DannoConfig,
-    env_file: Path | None,
+    env_files: dict[str, Path | None],
     capture: CaptureBinding | None,
     sampler: SampleBinding | None,
     allow_hosts: tuple[str, ...],
@@ -270,7 +347,7 @@ def _run_swebench(
                         workspace=workspace,
                         model=variant.model_ref,
                         run_turn=cwd_bound(
-                            run_turn_for(opts.agent, env_file, capture_port),
+                            run_turn_for(opts.agent, env_files[variant.model_ref], capture_port),
                             task.workspace_dir(workspace),
                         ),
                         capture=capture,
@@ -470,10 +547,12 @@ def run_bench(
     sampler = _setup_bench_sampler(opts, out_dir)
     _seed_opencode_config(cfg_for_run, opts.agent, workspace)
 
-    # One agent-scoped, model-independent env-file for the whole run: it carries occ's
-    # loop-ceiling knobs + cloud keys ([env]) — or claude's auth — into every turn. Built
-    # up front so a missing claude token fails loud before any sandbox is provisioned.
-    env_file = _build_bench_env_file(config, opts.agent)
+    # One chmod-600 env-file PER model variant: shared base lines (the AUT's loop-ceiling
+    # knobs, opencode's OLLAMA_BASE_URL, danno.toml [env], --env/--env-file) plus each cloud
+    # variant's provider auth (occ: OPENAI_BASE_URL/OPENAI_API_KEY; claurst/opencode: the raw
+    # {api_key_env}). Built from the capture-rewritten config so occ cloud dials the --capture
+    # proxy, and up front so a missing cloud key / claude token fails loud before provisioning.
+    env_files = _build_bench_env_files(cfg_for_run, opts, variants)
     try:
         report.verdicts += _run_aider(
             runner,
@@ -482,7 +561,7 @@ def run_bench(
             workspace=workspace,
             variants=variants,
             config=cfg_for_run,
-            env_file=env_file,
+            env_files=env_files,
             capture=capture,
             sampler=sampler,
             allow_hosts=allow_hosts,
@@ -495,14 +574,14 @@ def run_bench(
             workspace=workspace,
             variants=variants,
             config=cfg_for_run,
-            env_file=env_file,
+            env_files=env_files,
             capture=capture,
             sampler=sampler,
             allow_hosts=allow_hosts,
             capture_port=capture_port,
         )
     finally:
-        if env_file is not None:
+        for env_file in {p for p in env_files.values() if p is not None}:
             env_file.unlink(missing_ok=True)
 
     # §7 provenance is always written (a separate file, so bench.json's schema is stable):
@@ -532,3 +611,45 @@ def run_bench(
     log_info(f"\n  results  {report.results_json}")
     log_info(f"  report   {md_path}  ·  {html_path}")
     return report
+
+
+def run_bench_agents(
+    config: DannoConfig,
+    bench_cfg: BenchmarksConfig,
+    opts: BenchOptions,
+    runner: Runner,
+    agents: list[str],
+    *,
+    now: datetime | None = None,
+) -> list[BenchReport]:
+    """Run the matrix for each agent in `agents`, then (for >1 agent) emit a cross-agent
+    comparison report.
+
+    A single agent runs exactly as before — `run_bench` straight into `opts.out_dir`. For
+    several agents, each runs into its own `<root>/<agent>/` subdir (isolated bench.json +
+    sidecars + provenance), sharing one timestamped `root` so the run is one artifact tree;
+    a combined `report.md`/`report.html` grid (one column per agent, via the existing
+    `report.merge_*`) lands at the root. Per-row fail-loud accounting is unchanged."""
+    now = now or datetime.now(UTC)
+    if len(agents) == 1:
+        return [run_bench(config, bench_cfg, replace(opts, agent=agents[0]), runner, now=now)]
+
+    root = opts.out_dir or Path(".danno-bench") / now.strftime("%Y-%m-%dT%H-%M-%S")
+    log_info(f"danno bench — {len(agents)} agents [{', '.join(agents)}] → {root}")
+    reports = [
+        run_bench(config, bench_cfg, replace(opts, agent=ag, out_dir=root / ag), runner, now=now)
+        for ag in agents
+    ]
+    if opts.dry_run:
+        return reports
+
+    jsons = [r.results_json for r in reports if r.results_json is not None]
+    if jsons:
+        payloads = load_reports(jsons)
+        root.mkdir(parents=True, exist_ok=True)
+        md = root / "report.md"
+        html = root / "report.html"
+        md.write_text(merge_markdown(payloads), encoding="utf-8")
+        html.write_text(merge_html(payloads), encoding="utf-8")
+        log_info(f"\n  comparison  {md}  ·  {html}")
+    return reports

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Sequence
@@ -66,8 +67,18 @@ def fetch_instances(select: Sequence[str], *, dataset: str) -> dict[str, dict]:
             f"{_ROWS_API}?dataset={urllib.parse.quote(dataset)}"
             f"&config=default&split=test&offset={offset}&length={_PAGE}"
         )
-        with urllib.request.urlopen(url, timeout=60) as resp:  # noqa: S310 (trusted host)
-            payload = json.load(resp)
+        try:
+            with urllib.request.urlopen(url, timeout=60) as resp:  # noqa: S310 (trusted host)
+                payload = json.load(resp)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+            # The HF datasets-server is a live upstream (transient 500s, rate limits,
+            # timeouts). Fail loud with a clean message (Working Rule 8) instead of a raw
+            # traceback; the caller reports it as a bench error, not a danno crash.
+            raise ValueError(
+                f"swebench: could not fetch instances from the HF datasets-server for "
+                f"'{dataset}' (offset {offset}): {exc}. This is usually a transient upstream "
+                f"error — retry in a moment."
+            ) from exc
         rows = payload.get("rows", [])
         if not rows:
             break
