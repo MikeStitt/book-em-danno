@@ -125,7 +125,7 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setattr(bm, "run_baseline", fake_baseline)
     monkeypatch.setattr(bm, "write_sweep_report", lambda results, out: ([], out / "index.md"))
     monkeypatch.setattr(bm, "write_results_json", lambda record, path: path)
-    monkeypatch.setattr(sb, "agent_env", lambda *a, **k: ["TOKEN=x"])
+    monkeypatch.setattr(sb, "harness_env", lambda *a, **k: ["TOKEN=x"])
     return calls
 
 
@@ -139,14 +139,14 @@ def _run(opts: bm.BenchmarkOptions) -> bm.BenchmarkResult:
     return bm.run_benchmark(_config(), opts, Runner(apply=True), now=NOW, version="0.3.0")
 
 
-def test_benchmark_rejects_non_opencode_agent(tmp_path: Path) -> None:
+def test_benchmark_rejects_non_opencode_harness(tmp_path: Path) -> None:
     # benchmark compares .opencode/ trees and drives via opencode, so a non-opencode
-    # AUT (e.g. claurst) is rejected loud before provisioning anything — it has no
-    # candidate-config analog. `danno bench --agent claurst` is the right tool instead.
+    # HUT (e.g. claurst) is rejected loud before provisioning anything — it has no
+    # candidate-config analog. `danno bench --harness claurst` is the right tool instead.
     configs = tmp_path / "configs"
     _make_candidate(configs, "a")
-    with pytest.raises(ValueError, match="only supports --agent opencode"):
-        _run(_opts(tmp_path, configs, agent="claurst"))
+    with pytest.raises(ValueError, match="only supports --harness opencode"):
+        _run(_opts(tmp_path, configs, harness="claurst"))
 
 
 def test_runs_tiers_per_candidate_no_baseline(patched: dict, tmp_path: Path) -> None:

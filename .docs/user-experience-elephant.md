@@ -141,21 +141,21 @@ from `danno.toml`, so you edit `danno.toml`, not the generated file.
 
 ## 4. Use case B — Claude Code (cloud models)
 
-Same sandbox, same repo mount, same network model — but the agent is **Claude Code**
+Same sandbox, same repo mount, same network model — but the harness is **Claude Code**
 using **its own cast of Anthropic models**. `claude` is one of the prebuilt
-`docker sandbox` agent images, so this is a one-flag change: `--agent claude`.
+`docker sandbox` agent images, so this is a one-flag change: `--harness claude`.
 
 ```bash
 cd ~/projects/elephant
 danno install --apply                          # provision the sandbox (writes opencode cfg too)
-danno sandbox start --agent claude             # launch Claude Code in the mounted repo
+danno sandbox start --harness claude           # launch Claude Code in the mounted repo
 ```
 
-A non-default agent gets its **own** sandbox (`danno-<parent>-<dir>-claude`) so it
+A non-default harness gets its **own** sandbox (`danno-<parent>-<dir>-claude`) so it
 coexists with the opencode one. Claude reads `CLAUDE.md` and `.claude/` straight from
 your mounted repo (you author those; danno doesn't generate them). Auth comes from
 your host env (the token set in §2) and is injected per launch; if neither token is
-set, `--agent claude` **fails loud** with the `claude setup-token` hint rather than
+set, `--harness claude` **fails loud** with the `claude setup-token` hint rather than
 launching unauthenticated.
 
 Anything after `--` is forwarded **verbatim** to the `claude` binary, so its own
@@ -163,8 +163,8 @@ flags work — e.g. resuming a prior session (its history lives in the persisten
 home):
 
 ```bash
-danno sandbox start --agent claude -- --resume <session-id>
-danno sandbox start --agent claude -- --continue        # most recent session
+danno sandbox start --harness claude -- --resume <session-id>
+danno sandbox start --harness claude -- --continue        # most recent session
 ```
 
 **Note on local models:** Claude Code talks to fixed Anthropic endpoints; danno does
@@ -175,15 +175,15 @@ Claude-Code-shaped UX on **local** models is exactly what use case C is for.
 
 ## 5. Use case C — claurst on local Ollama
 
-> **Status: ships today.** `danno sandbox start --agent claurst` launches claurst as
+> **Status: ships today.** `danno sandbox start --harness claurst` launches claurst as
 > an interactive coding tool; claurst is also wired as a **headless benchmark
-> agent-under-test** (`danno validate --agent claurst`, `danno benchmark`). How the
+> harness-under-test** (`danno validate --harness claurst`, `danno benchmark`). How the
 > launch path is built (and the one model-config feature still deferred) is in
 > [§7](#7-how-claurst-as-a-coding-tool-is-wired).
 
 **The pitch:** [claurst](https://github.com/Kuberwastaken/claurst) is a pure-Rust
 Claude-Code clone whose CLI is deliberately Claude-Code-faithful. Run it as a danno
-agent and you get a **Claude-Code-shaped coding experience driven entirely by your
+harness and you get a **Claude-Code-shaped coding experience driven entirely by your
 local Ollama models** — no cloud, no per-token billing, no provider keys. It's the
 local-first counterpart to use case B.
 
@@ -192,12 +192,12 @@ local-first counterpart to use case B.
 ```bash
 cd ~/projects/elephant
 danno install --apply                          # provision (and, for claurst, curl-install it)
-danno sandbox start --agent claurst            # launch the claurst TUI in the mounted repo
-danno sandbox start --agent claurst -m gemma4  # pick which local model it drives
+danno sandbox start --harness claurst          # launch the claurst TUI in the mounted repo
+danno sandbox start --harness claurst -m gemma4 # pick which local model it drives
 ```
 
-- `--agent claurst` gets its **own** sandbox (`danno-<parent>-<dir>-claurst`), so it
-  coexists with the opencode and claude ones — same naming rule as every other agent.
+- `--harness claurst` gets its **own** sandbox (`danno-<parent>-<dir>-claurst`), so it
+  coexists with the opencode and claude ones — same naming rule as every other harness.
 - `-m <name>` selects the local model (a `[models]` entry such as `gemma4`); danno
   maps it to claurst's `-m ollama/<tag>` form (e.g. `ollama/gemma4:26b`). The model
   **must be tool-capable** — every coding agent uses tools.
@@ -223,18 +223,18 @@ configure claurst is a separate, larger feature — see §7.
 
 **The one deliberate limitation — local only, and it fails loud.** claurst's Rust
 HTTP client ignores `HTTP(S)_PROXY`, and the sandbox blocks direct egress, so claurst
-**cannot reach cloud providers** from inside the VM. `--agent claurst` is therefore
+**cannot reach cloud providers** from inside the VM. `--harness claurst` is therefore
 restricted to local-Ollama models; pointing it at a cloud model **errors in the open**
 (naming the unreachable provider) rather than silently degrading.
 
 ## 6. What all three share (the sandbox model)
 
-Whichever agent you launch, the isolation and wiring are identical:
+Whichever harness you launch, the isolation and wiring are identical:
 
 ```text
                   ┌──────────────────── your Mac (host) ────────────────────┐
   internet  ◀─allow─▶                                   Ollama :11434 (0.0.0.0)
-  cloud API ◀─allow─▶   Docker microVM ── allow ───────▶ (agent dials
+  cloud API ◀─allow─▶   Docker microVM ── allow ───────▶ (harness dials
                     │     agent + your repo (rw mount)     host.docker.internal,
   your LAN  ──DENY──│        │                             proxy rewrites→localhost)
   other host ports ─DENY     └─ agent home (relocated to a host folder)       │
@@ -263,10 +263,10 @@ on the host, auth is re-injected each launch, and the agent home is a host folde
 
 Use case C was a small lift because the hard parts already existed in the validator
 (`src/danno_validator/claurst.py`, `src/danno_validator/driver.py`). The interactive
-`--agent claurst` path reuses them in three pieces:
+`--harness claurst` path reuses them in three pieces:
 
 1. **Host claurst in a `shell` sandbox, then curl-install it.** claurst is **not** a
-   prebuilt `docker sandbox` agent image, so `--agent claurst` can't pass straight to
+   prebuilt `docker sandbox` agent image, so `--harness claurst` can't pass straight to
    `docker sandbox create` the way `claude` does. `provision()` creates the `shell`
    image (the label stays `claurst` for the sandbox name + registry) and, after the
    egress policy is armed, runs the validator's idempotent `install_claurst()` — it
@@ -285,7 +285,7 @@ Use case C was a small lift because the hard parts already existed in the valida
    on exit. `claurst.interactive_launch_script` wraps the headless bracket around a TTY
    claurst run (no `-p`); the headless path is untouched.
 
-3. **CLI surface.** `--agent claurst` is accepted; `-m <name>` resolves a danno.toml
+3. **CLI surface.** `--harness claurst` is accepted; `-m <name>` resolves a danno.toml
    `[models]` entry to claurst's `-m ollama/<tag>` and **rejects cloud/non-Ollama
    models loudly** (claurst can't reach them). `-m` is claurst-only on `sandbox start`
    (claude uses its own `--model`; opencode's model comes from danno.toml).

@@ -40,7 +40,7 @@ from pathlib import Path
 from book_em_danno.core.exec import CommandFailedError, Runner
 from danno_validator.driver import Turn, TurnFn, capture_exec, opencode_run
 from danno_validator.judge import DevWork, JudgeFn, Judgement
-from danno_validator.level0 import DEFAULT_AGENT
+from danno_validator.level0 import DEFAULT_RUN_AGENT
 from danno_validator.oracle import FailureClass, TurnVerdict, classify_turn
 
 # `bash -lc` returns 127 when the command itself can't be found — i.e. the test
@@ -248,7 +248,7 @@ def run_level2(
     model: str | None,
     workspace_root: Path,
     task: Level2Task = DEFAULT_TASK,
-    agent: str = DEFAULT_AGENT,
+    agent: str = DEFAULT_RUN_AGENT,
     run_turn: TurnFn | None = None,
     judge: JudgeFn | None = None,
 ) -> DevTaskResult:

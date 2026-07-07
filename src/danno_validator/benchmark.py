@@ -56,7 +56,7 @@ class BenchmarkOptions:
     baseline_model: str | None = None
     judge: bool = False
     judge_model: str | None = None
-    agent: str = sb.DEFAULT_AGENT
+    harness: str = sb.DEFAULT_HARNESS
     env: list[str] = field(default_factory=list)
     env_file: list[str] = field(default_factory=list)
     workspace: Path | None = None
@@ -78,7 +78,7 @@ class BenchmarkPlan:
     baseline_model: str | None
     judge: bool
     judge_model: str | None
-    agent: str
+    harness: str
     workspace: Path
     out_dir: Path
     sweep_sandbox: str
@@ -123,7 +123,7 @@ def apply_config(workspace_root: Path, candidate_dir: Path) -> None:
 
 
 def _benchmark_names(target: Path) -> tuple[str, str]:
-    base = sb.default_name(target.resolve(), sb.DEFAULT_AGENT)
+    base = sb.default_name(target.resolve(), sb.DEFAULT_HARNESS)
     return f"{base}-benchmark", f"{base}-benchmark-claude"
 
 
@@ -149,7 +149,7 @@ def _resolve_plan(
         baseline_model=opts.baseline_model,
         judge=opts.judge,
         judge_model=opts.judge_model,
-        agent=opts.agent,
+        harness=opts.harness,
         workspace=workspace,
         out_dir=out_dir,
         sweep_sandbox=sweep_name,
@@ -167,7 +167,7 @@ def _run_meta(plan: BenchmarkPlan, opts: BenchmarkOptions) -> dict[str, object]:
         "baseline_model": plan.baseline_model,
         "judge": plan.judge,
         "judge_model": plan.judge_model,
-        "agent": plan.agent,
+        "harness": plan.harness,
         "reset": opts.reset,
     }
 
@@ -188,16 +188,16 @@ def run_benchmark(
 
     `benchmark` is opencode-only by construction: a candidate is a `.opencode/` tree
     (`apply_config`) and every tier is driven by `_authed_opencode_run`. claurst has no
-    candidate-config analog, so `--agent claurst` (or any non-opencode AUT) is rejected
-    loud here rather than provisioning that agent and then silently driving it as
-    opencode. claurst remains a first-class AUT in `validate` and `bench`, which sweep
+    candidate-config analog, so `--harness claurst` (or any non-opencode HUT) is rejected
+    loud here rather than provisioning that harness and then silently driving it as
+    opencode. claurst remains a first-class HUT in `validate` and `bench`, which sweep
     danno.toml's models (not config trees).
     """
-    if opts.agent != sb.DEFAULT_AGENT:
+    if opts.harness != sb.DEFAULT_HARNESS:
         raise ValueError(
             f"`danno benchmark` compares opencode config trees and only supports "
-            f"--agent {sb.DEFAULT_AGENT}, not {opts.agent!r}. To benchmark {opts.agent} "
-            f"across your danno.toml models, use `danno bench --agent {opts.agent}`."
+            f"--harness {sb.DEFAULT_HARNESS}, not {opts.harness!r}. To benchmark {opts.harness} "
+            f"across your danno.toml models, use `danno bench --harness {opts.harness}`."
         )
     now = now or datetime.now(UTC)
     version = version or _danno_version()
@@ -210,7 +210,7 @@ def run_benchmark(
         f"→ L0–L{plan.max_level}{' + baseline' if plan.baseline else ''} → {plan.out_dir}"
     )
     if opts.baseline:
-        sb.agent_env("claude", sb.DEFAULT_OLLAMA_URL)  # fail loud on missing claude auth
+        sb.harness_env("claude", sb.DEFAULT_OLLAMA_URL)  # fail loud on missing claude auth
     judge = _build_judge(opts.judge, opts.judge_model)  # fail loud on missing key/SDK
     if opts.dry_run:
         return BenchmarkResult(plan=plan, dry_run=True)
@@ -219,8 +219,10 @@ def run_benchmark(
 
     log_info(f"prepare workspace  {plan.workspace}")
     prepare_workspace(runner, plan.workspace, config)
-    log_info(f"provision {opts.agent} sandbox  {plan.sweep_sandbox}")
-    sb.provision(runner, plan.sweep_sandbox, plan.workspace, agent=opts.agent, registry_path=None)
+    log_info(f"provision {opts.harness} sandbox  {plan.sweep_sandbox}")
+    sb.provision(
+        runner, plan.sweep_sandbox, plan.workspace, harness=opts.harness, registry_path=None
+    )
 
     env_file = (
         sb._build_env_file([], opts.env, opts.env_file) if (opts.env or opts.env_file) else None
@@ -252,7 +254,7 @@ def run_benchmark(
     if opts.baseline and plan.baseline_sandbox is not None:
         log_info(f"provision claude sandbox  {plan.baseline_sandbox}")
         sb.provision(
-            runner, plan.baseline_sandbox, plan.workspace, agent="claude", registry_path=None
+            runner, plan.baseline_sandbox, plan.workspace, harness="claude", registry_path=None
         )
         results.append(
             run_baseline(

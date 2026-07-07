@@ -112,7 +112,7 @@ def test_capture_ok_property_on_success(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_capture_check_false_does_not_raise_on_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The agent-under-test exiting non-zero is data to inspect, not a danno error.
+    # The harness-under-test exiting non-zero is data to inspect, not a danno error.
     _patch_capture(monkeypatch, returncode=1)
     assert Runner().capture(["opencode", "run"]).returncode == 1  # returned, did not raise
 

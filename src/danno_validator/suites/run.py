@@ -1,9 +1,9 @@
-"""Run a benchmark suite against one agent-under-test in a provisioned sandbox.
+"""Run a benchmark suite against one harness-under-test in a provisioned sandbox.
 
 The sandbox-level driver the CLI composes: clone the suite's source (Aider Polyglot
 is a git repo), then run each selected task through `seed -> run -> grade`, pointing
 the agent's cwd at the task's seeded subdir. Returns the per-task `BenchVerdict`s.
-Provisioning the sandbox + installing the AUT + iterating the model matrix is the
+Provisioning the sandbox + installing the HUT + iterating the model matrix is the
 caller's job (it reuses the validator's provision/teardown), so this stays a small,
 testable loop over already-prepared inputs.
 """
@@ -54,11 +54,11 @@ def run_aider_suite(
     capture: CaptureBinding | None = None,
     sampler: SampleBinding | None = None,
 ) -> list[BenchVerdict]:
-    """Run the selected Aider Polyglot exercises against one AUT, in `select` order.
+    """Run the selected Aider Polyglot exercises against one HUT, in `select` order.
 
     Each exercise is seeded into its own workspace subdir (`task.provision`), the
     agent is driven with its cwd set to that subdir, and the exercise's own tests
-    grade it. `run_turn` is the AUT's turn producer (e.g. `claurst_run` or an authed
+    grade it. `run_turn` is the HUT's turn producer (e.g. `claurst_run` or an authed
     variant); `model` is the model ref passed through to it (the permutation axis).
     `capture` (from `--capture`) and `sampler` (from `--sample`) are threaded to
     `run_bench_task` for per-permutation wire recording and resource profiling.

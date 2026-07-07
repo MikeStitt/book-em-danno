@@ -33,7 +33,7 @@ SCHEMA_VERSION = 1
 
 
 def _tool_calls(turn: Turn) -> list[dict[str, Any]]:
-    """Normalize a turn's tool calls to `[{tool, status}]` across agents, so a
+    """Normalize a turn's tool calls to `[{tool, status}]` across harnesses, so a
     consumer never branches on opencode-vs-claude transcript shape."""
     return [
         {"tool": c.get("tool"), "status": c.get("state", {}).get("status")} for c in turn.tool_calls

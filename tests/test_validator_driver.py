@@ -1,6 +1,6 @@
 """M0 unit tests for danno_validator.driver — command construction, lenient JSON
 parsing, and the destructive-reset marker guard. All subprocess calls are stubbed,
-so these run without a Docker daemon (the AUT itself only ever runs in the VM)."""
+so these run without a Docker daemon (the HUT itself only ever runs in the VM)."""
 
 from __future__ import annotations
 

@@ -29,7 +29,7 @@ from pathlib import Path
 
 from book_em_danno.core.exec import Runner
 from danno_validator.driver import Turn, TurnFn, opencode_run
-from danno_validator.level0 import DEFAULT_AGENT
+from danno_validator.level0 import DEFAULT_RUN_AGENT
 from danno_validator.oracle import FailureClass, TurnVerdict, classify_turn
 
 
@@ -131,7 +131,7 @@ def run_level1(
     model: str | None,
     workspace_root: Path,
     task: Level1Task = DEFAULT_TASK,
-    agent: str = DEFAULT_AGENT,
+    agent: str = DEFAULT_RUN_AGENT,
     run_turn: TurnFn | None = None,
 ) -> TaskResult:
     """Run one Level-1 task against `model` in `sandbox`, returning the result.

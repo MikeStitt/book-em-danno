@@ -1,5 +1,5 @@
 """Unit tests for `telemetry.report`: rendering a bench run (bench.json rows carrying
-`wire`/`resource`/`sidecars`) into report.md + report.html, and the multi-agent merge."""
+`wire`/`resource`/`sidecars`) into report.md + report.html, and the multi-harness merge."""
 
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ def _row(**over: object) -> dict:
 def _payload(*rows: dict) -> dict:
     return {
         "generated_at": "2026-07-06T00:00:00Z",
-        "agent": "opencode",
+        "harness": "opencode",
         "models": ["ollama/qwen3:latest"],
         "results": list(rows),
     }
@@ -126,11 +126,11 @@ def test_provenance_header_rendered(tmp_path: Path) -> None:
     assert "sampler interval: 0.5s" in md
 
 
-def test_merge_grid_across_agents() -> None:
+def test_merge_grid_across_harnesses() -> None:
     a = _payload(_row())
-    a["agent"] = "opencode"
+    a["harness"] = "opencode"
     b = _payload(_row(passed=False, verdict="FailureClass.STALL"))
-    b["agent"] = "occ"
+    b["harness"] = "occ"
     md = report.merge_markdown([a, b])
     assert "aider/python/grade-school" in md
     assert "✓" in md and "✗" in md

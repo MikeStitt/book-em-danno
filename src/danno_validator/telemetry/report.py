@@ -8,8 +8,8 @@ run-level `provenance.json`. Two shapes:
 * **single-run** (`render_markdown`/`render_html`) — one section per permutation with
   the token split, tokens/sec, context-growth curve (§6.2), per-request RTT profile
   (§2.3), resource peaks (§5), and links to the raw sidecars (captures/transcripts).
-* **merge** (`merge_markdown`/`merge_html`) — the cross-agent comparison grid that was
-  `scratch/bench_merge.py`, kept so 4-agent runs still diff on one page.
+* **merge** (`merge_markdown`/`merge_html`) — the cross-harness comparison grid that was
+  `scratch/bench_merge.py`, kept so 4-harness runs still diff on one page.
 
 `report.html` is intentionally self-contained (inline CSS, no external assets) so it
 doubles as the published Artifact summary — a utilitarian data-dashboard treatment.
@@ -115,7 +115,7 @@ def render_markdown(payload: dict, provenance: dict | None = None) -> str:
     rows = payload.get("results", [])
     passed = sum(1 for r in rows if r.get("passed"))
     lines: list[str] = [
-        f"# danno bench — {payload.get('agent', '?')}",
+        f"# danno bench — {payload.get('harness', '?')}",
         "",
         f"- generated: {payload.get('generated_at', '?')}",
         f"- models: {', '.join(payload.get('models') or []) or '—'}",
@@ -368,7 +368,7 @@ def _detail_html(row: dict) -> str:
 def render_html(payload: dict, provenance: dict | None = None) -> str:
     rows = payload.get("results", [])
     passed = sum(1 for r in rows if r.get("passed"))
-    agent = html.escape(str(payload.get("agent", "?")))
+    harness = html.escape(str(payload.get("harness", "?")))
     header = "".join(f"<th>{html.escape(c)}</th>" for c in _SUMMARY_COLS)
     summary = "".join(_summary_html_row(r) for r in rows)
     detail = "".join(_detail_html(r) for r in rows)
@@ -385,7 +385,7 @@ def render_html(payload: dict, provenance: dict | None = None) -> str:
     return (
         f"<style>{_CSS}</style>"
         f'<div class="wrap">'
-        f"<h1>danno bench · {agent}</h1>"
+        f"<h1>danno bench · {harness}</h1>"
         f"{''.join(meta)}"
         f"<h2>Summary</h2>"
         f'<div class="tablewrap"><table><thead><tr>{header}</tr></thead>'
@@ -409,17 +409,17 @@ def write_report(
     return md_path, html_path
 
 
-# --- multi-agent merge (promoted from scratch/bench_merge.py) ------------------
+# --- multi-harness merge (promoted from scratch/bench_merge.py) ------------------
 
 
 def _col_label(payload: dict) -> str:
-    agent = payload.get("agent", "?")
+    harness = payload.get("harness", "?")
     models = payload.get("models") or []
-    if agent == "claude":
+    if harness == "claude":
         return "claude (ref)"
     model = models[0] if len(models) == 1 else ",".join(models) or "?"
     model = model.removeprefix("ollama/").removesuffix(":latest")
-    return f"{agent}\n{model}" if model else agent
+    return f"{harness}\n{model}" if model else harness
 
 
 def _merge_cell(row: dict | None) -> str:

@@ -48,7 +48,7 @@ from danno_validator.report import write_sweep_report
 from danno_validator.serialize import run_record, write_results_json
 from danno_validator.sweep import SweepResult, prepare_workspace, run_sweep
 
-DEFAULT_AGENT = sb.DEFAULT_AGENT
+DEFAULT_HARNESS = sb.DEFAULT_HARNESS
 
 
 @dataclass
@@ -62,7 +62,7 @@ class ValidateOptions:
     baseline_model: str | None = None
     judge: bool = False
     judge_model: str | None = None
-    agent: str = DEFAULT_AGENT
+    harness: str = DEFAULT_HARNESS
     env: list[str] = field(default_factory=list)
     env_file: list[str] = field(default_factory=list)
     workspace: Path | None = None
@@ -90,7 +90,7 @@ class ValidatePlan:
     baseline_model: str | None
     judge: bool
     judge_model: str | None
-    agent: str
+    harness: str
     workspace: Path
     out_dir: Path
     sweep_sandbox: str
@@ -134,7 +134,7 @@ def _validate_names(target: Path) -> tuple[str, str]:
     Derived from the project's normal sandbox base with a `-validate` infix, so they
     never collide with the user's real `danno-<parent>-<dir>` sandboxes.
     """
-    base = sb.default_name(target.resolve(), sb.DEFAULT_AGENT)
+    base = sb.default_name(target.resolve(), sb.DEFAULT_HARNESS)
     return f"{base}-validate", f"{base}-validate-claude"
 
 
@@ -166,7 +166,7 @@ def _resolve_plan(config: DannoConfig, opts: ValidateOptions, *, timestamp: str)
         baseline_model=opts.baseline_model,
         judge=opts.judge,
         judge_model=opts.judge_model,
-        agent=opts.agent,
+        harness=opts.harness,
         workspace=workspace,
         out_dir=out_dir,
         sweep_sandbox=sweep_name,
@@ -195,8 +195,8 @@ def _build_sweep_env_file(
     # Fold danno.toml [env] into the sweep credentials file. The opencode.jsonc
     # {env:} refs (augmented) + --env-file ride the CLI tier (highest, as before);
     # [env] composes underneath. None only when truly nothing needs injecting.
-    lines = sb.assemble_agent_env(
-        config, agent_defaults=[], env_pairs=augmented, env_files=opts.env_file
+    lines = sb.assemble_harness_env(
+        config, harness_defaults=[], env_pairs=augmented, env_files=opts.env_file
     )
     if not lines:
         return None
@@ -291,7 +291,7 @@ def run_validate(
     reporter.plan(plan, dry_run=opts.dry_run)
     if opts.baseline:
         # Fail loud *before* provisioning anything if claude auth is missing.
-        sb.agent_env("claude", sb.DEFAULT_OLLAMA_URL)
+        sb.harness_env("claude", sb.DEFAULT_OLLAMA_URL)
     # Same discipline for the judge: validate its auth/SDK up front (also on a dry run,
     # so the preview surfaces a misconfigured --judge before an expensive real run).
     judge = _build_judge(opts.judge, opts.judge_model)
@@ -307,29 +307,29 @@ def run_validate(
     reporter.phase(f"prepare workspace  {plan.workspace}")
     prepare_workspace(runner, plan.workspace, cfg_for_run)
 
-    # The proxies must be up for every agent request; start them before provisioning
+    # The proxies must be up for every harness request; start them before provisioning
     # and tear them down after the last turn (a no-op context when capture is off).
     with captures_running(capture_targets):
-        # `opts.agent` selects the agent-under-test for the sweep. For the default
+        # `opts.harness` selects the harness-under-test for the sweep. For the default
         # "opencode" it is also the prebuilt Docker image; the sweep drives opencode
         # with its own read-write run-agent ("build", run_sweep's default). "claurst"
         # is NOT a prebuilt image: it is hosted in a `shell` VM and installed post-
         # provision, then driven by `claurst.authed_claurst_run` (which relays Ollama
         # per turn). Other values pass through as a Docker image name unchanged.
-        is_claurst = opts.agent == "claurst"
-        is_occ = opts.agent == "occ"
+        is_claurst = opts.harness == "claurst"
+        is_occ = opts.harness == "occ"
         if is_claurst:
             image = claurst.CLAURST_SANDBOX_IMAGE
         elif is_occ:
             image = occ.OCC_SANDBOX_IMAGE
         else:
-            image = opts.agent
-        reporter.phase(f"provision {opts.agent} sandbox  {plan.sweep_sandbox}")
+            image = opts.harness
+        reporter.phase(f"provision {opts.harness} sandbox  {plan.sweep_sandbox}")
         sb.provision(
             runner,
             plan.sweep_sandbox,
             plan.workspace,
-            agent=image,
+            harness=image,
             allow_hosts=allow_hosts,
             registry_path=None,
         )
@@ -339,7 +339,7 @@ def run_validate(
         elif is_occ:
             reporter.phase(f"install occ  {plan.sweep_sandbox}")
             occ.install_occ(runner, plan.sweep_sandbox, config)
-        # Credentials for swept cloud configs: bound into every agent exec via
+        # Credentials for swept cloud configs: bound into every harness exec via
         # --env-file, removed after the sweep (the secret never lingers on disk).
         sweep_env_file = _build_sweep_env_file(config, opts, plan.workspace)
         if is_occ:
@@ -373,7 +373,7 @@ def run_validate(
                 runner,
                 plan.baseline_sandbox,
                 plan.workspace,
-                agent="claude",
+                harness="claude",
                 allow_hosts=allow_hosts,
                 registry_path=None,
             )
@@ -439,7 +439,7 @@ def _run_meta(plan: ValidatePlan, opts: ValidateOptions) -> dict[str, object]:
         "max_level": opts.max_level,
         "trials": 1,
         "reset": opts.reset,
-        "agent": opts.agent,
+        "harness": opts.harness,
         "workspace": str(plan.workspace),
         "out_dir": str(plan.out_dir),
         "sandboxes": {"sweep": plan.sweep_sandbox, "baseline": plan.baseline_sandbox},
