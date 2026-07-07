@@ -22,8 +22,8 @@ def test_default_name() -> None:
     assert sandbox.default_name(Path("/tmp/my-proj")) == "danno-tmp-my-proj"
 
 
-def test_default_name_per_agent_suffix() -> None:
-    # Default opencode keeps the bare name; other agents get a suffix so they coexist.
+def test_default_name_per_harness_suffix() -> None:
+    # Default opencode keeps the bare name; other harnesses get a suffix so they coexist.
     assert sandbox.default_name(Path("/tmp/my-proj"), "opencode") == "danno-tmp-my-proj"
     assert sandbox.default_name(Path("/tmp/my-proj"), "claude") == "danno-tmp-my-proj-claude"
 
@@ -41,44 +41,44 @@ def test_create_claude_agent(tmp_path: Path) -> None:
     assert r.joined() == [f"docker sandbox create --name danno-x-claude claude {tmp_path}"]
 
 
-def _assert_launch_cmd(cmd: list[str], name: str, agent: str, repo: str = "/repo") -> None:
+def _assert_launch_cmd(cmd: list[str], name: str, harness: str, repo: str = "/repo") -> None:
     """Assert a launch exec command, tolerating the generated env-file temp path."""
     assert cmd[:7] == ["docker", "sandbox", "exec", "-it", "-w", repo, "--env-file"]
     assert cmd[7]  # a real env-file path (created then unlinked); value is dynamic
-    assert cmd[8:] == [name, agent]
+    assert cmd[8:] == [name, harness]
 
 
 def test_launch_claude_uses_agent_binary(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
     r = RecordingRunner()
-    sandbox.launch(r, "danno-x-claude", Path("/repo"), agent="claude")
+    sandbox.launch(r, "danno-x-claude", Path("/repo"), harness="claude")
     assert len(r.commands) == 1
     _assert_launch_cmd(r.commands[0], "danno-x-claude", "claude")
 
 
-def test_agent_env_opencode_injects_ollama() -> None:
-    assert sandbox.agent_env("opencode", "http://h:11434/v1") == [
+def test_harness_env_opencode_injects_ollama() -> None:
+    assert sandbox.harness_env("opencode", "http://h:11434/v1") == [
         "OLLAMA_BASE_URL=http://h:11434/v1"
     ]
 
 
-def test_agent_env_claude_prefers_oauth_token(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_harness_env_claude_prefers_oauth_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
-    assert sandbox.agent_env("claude", "u") == ["CLAUDE_CODE_OAUTH_TOKEN=tok"]
+    assert sandbox.harness_env("claude", "u") == ["CLAUDE_CODE_OAUTH_TOKEN=tok"]
 
 
-def test_agent_env_claude_falls_back_to_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_harness_env_claude_falls_back_to_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
-    assert sandbox.agent_env("claude", "u") == ["ANTHROPIC_API_KEY=key"]
+    assert sandbox.harness_env("claude", "u") == ["ANTHROPIC_API_KEY=key"]
 
 
-def test_agent_env_claude_no_auth_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_harness_env_claude_no_auth_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(CommandFailedError, match="claude setup-token"):
-        sandbox.agent_env("claude", "u")
+        sandbox.harness_env("claude", "u")
 
 
 def test_create_command(tmp_path: Path) -> None:
@@ -132,10 +132,12 @@ def test_launch_builds_exec_command() -> None:
     _assert_launch_cmd(r.commands[0], "probe", "opencode")
 
 
-def test_launch_forwards_agent_args() -> None:
-    # `--` passthrough: extra args land verbatim after the agent name.
+def test_launch_forwards_harness_args() -> None:
+    # `--` passthrough: extra args land verbatim after the harness name.
     r = RecordingRunner()
-    sandbox.launch(r, "probe", Path("/repo"), agent="opencode", agent_args=["--resume", "abc123"])
+    sandbox.launch(
+        r, "probe", Path("/repo"), harness="opencode", harness_args=["--resume", "abc123"]
+    )
     assert r.commands[0][8:] == ["probe", "opencode", "--resume", "abc123"]
 
 
@@ -161,7 +163,7 @@ def test_provision_claurst_installs_after_stop(
     # placed after `stop` so it auto-starts the VM with the egress allow-policy armed.
     monkeypatch.setattr(ollama, "loopback_warning", lambda **kw: None)
     r = RecordingRunner()
-    sandbox.provision(r, "probe", tmp_path, agent="claurst")
+    sandbox.provision(r, "probe", tmp_path, harness="claurst")
     joined = r.joined()
     assert joined[:3] == [
         f"docker sandbox create --name probe shell {tmp_path}",
@@ -183,7 +185,7 @@ def test_provision_opencode_does_not_install_claurst(
 
 def test_launch_claurst_wraps_relay_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
     r = RecordingRunner()
-    sandbox.launch(r, "probe", Path("/repo"), agent="claurst", model="ollama/gemma4:26b")
+    sandbox.launch(r, "probe", Path("/repo"), harness="claurst", model="ollama/gemma4:26b")
     cmd = r.commands[0]
     assert cmd[8:11] == ["probe", "bash", "-lc"]
     script = cmd[11]
@@ -200,9 +202,9 @@ def test_launch_claurst_forwards_passthru(monkeypatch: pytest.MonkeyPatch) -> No
         r,
         "probe",
         Path("/repo"),
-        agent="claurst",
+        harness="claurst",
         model="ollama/g:1b",
-        agent_args=["--resume", "x"],
+        harness_args=["--resume", "x"],
     )
     script = r.commands[0][11]
     assert "claurst -m ollama/g:1b --resume x" in script
@@ -212,18 +214,18 @@ def test_launch_claurst_cloud_runs_direct_no_relay(monkeypatch: pytest.MonkeyPat
     # Layer 2: a cloud ref runs claurst directly (it dials the provider via HTTPS_PROXY),
     # so the command is a plain claurst argv — no bash -lc relay bracket, no OLLAMA_HOST.
     r = RecordingRunner()
-    sandbox.launch(r, "probe", Path("/repo"), agent="claurst", model="nvidia/nvidia/nemotron")
+    sandbox.launch(r, "probe", Path("/repo"), harness="claurst", model="nvidia/nvidia/nemotron")
     cmd = r.commands[0]
     assert cmd[-3:] == ["claurst", "-m", "nvidia/nvidia/nemotron"]
     assert "bash" not in cmd[8:]  # no relay wrapper
     assert not any("OLLAMA_HOST" in c or "RELAY_PY" in c for c in cmd)
 
 
-def test_agent_env_claurst_relocates_home() -> None:
-    assert sandbox.agent_env("claurst", "u") == []
+def test_harness_env_claurst_relocates_home() -> None:
+    assert sandbox.harness_env("claurst", "u") == []
     # With a home, HOME is relocated AND claurst is pointed at the danno-generated
     # registry overlay under {home}/.claurst (Bug 4/7 fix for the local Ollama path).
-    assert sandbox.agent_env("claurst", "u", home=Path("/h")) == [
+    assert sandbox.harness_env("claurst", "u", home=Path("/h")) == [
         "HOME=/h",
         "CLAURST_MODELS_PATH=/h/.claurst/models.json",
     ]
@@ -301,20 +303,35 @@ def test_claurst_cloud_env_lines_missing_key_fails_loud(monkeypatch: pytest.Monk
         sandbox.claurst_cloud_env_lines(_claurst_cfg(), "nemotron")
 
 
-def test_resolve_model_for_agent_rejects_non_claurst(tmp_path: Path) -> None:
+def test_cloud_api_key_env_lines_injects_raw_provider_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The generic raw-key form (opencode/claurst read {env:<api_key_env>}); no OPENAI_* mapping.
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-secret")
+    lines = sandbox.cloud_api_key_env_lines(_claurst_cfg(), "nemotron")
+    assert lines == ["NVIDIA_API_KEY=nvapi-secret"]
+    assert sandbox.cloud_api_key_env_lines(_claurst_cfg(), "gemma4") == []  # local: no injection
+    assert sandbox.cloud_api_key_env_lines(_claurst_cfg(), "ollama/foo:1b") == []  # raw ollama ref
+
+
+def test_cloud_api_key_env_lines_missing_key_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    with pytest.raises(CommandFailedError, match="NVIDIA_API_KEY"):
+        sandbox.cloud_api_key_env_lines(_claurst_cfg(), "nemotron")
+
+
+def test_resolve_model_for_harness_rejects_non_claurst(tmp_path: Path) -> None:
     # -m on claude/opencode must fail loud rather than be silently ignored. The agent
     # check precedes any config load, so no danno.toml is needed here.
     with pytest.raises(CommandFailedError, match="only supported with"):
-        sandbox.resolve_model_for_agent(tmp_path, "opencode", "gemma4")
+        sandbox.resolve_model_for_harness(tmp_path, "opencode", "gemma4")
 
 
-def test_resolve_model_for_agent_claurst_loads_and_resolves(tmp_path: Path) -> None:
+def test_resolve_model_for_harness_claurst_loads_and_resolves(tmp_path: Path) -> None:
     (tmp_path / "danno.toml").write_text(
         '[backends.ollama]\nkind = "ollama"\nbase_url = "http://h:11434/v1"\n'
         '[models.gemma4]\nbackend = "ollama"\ntag = "gemma4:26b"\n',
         encoding="utf-8",
     )
-    assert sandbox.resolve_model_for_agent(tmp_path, "claurst", "gemma4") == "ollama/gemma4:26b"
+    assert sandbox.resolve_model_for_harness(tmp_path, "claurst", "gemma4") == "ollama/gemma4:26b"
 
 
 def test_resolve_claurst_start_local_returns_ref_no_env(tmp_path: Path) -> None:
@@ -396,7 +413,7 @@ def test_provision_occ_installs_after_stop(tmp_path: Path, monkeypatch: pytest.M
     # Same create(shell)/proxy/stop order as claurst, plus a trailing clone/patch exec.
     monkeypatch.setattr(ollama, "loopback_warning", lambda **kw: None)
     r = RecordingRunner()
-    sandbox.provision(r, "probe", tmp_path, agent="occ")
+    sandbox.provision(r, "probe", tmp_path, harness="occ")
     joined = r.joined()
     assert joined[:3] == [
         f"docker sandbox create --name probe shell {tmp_path}",
@@ -416,15 +433,15 @@ def test_provision_opencode_does_not_install_occ(
     assert not any("git clone" in c for c in r.joined())
 
 
-def test_agent_env_occ_supplies_tunable_loop_defaults() -> None:
-    # occ's *mandatory* OpenAI env is set inline in the launch command; agent_env supplies
+def test_harness_env_occ_supplies_tunable_loop_defaults() -> None:
+    # occ's *mandatory* OpenAI env is set inline in the launch command; harness_env supplies
     # the *tunable* agentic-loop ceilings as level-4 defaults (overridable via [env]), plus
     # HOME when relocated. See the fork's ADR-004.
-    assert sandbox.agent_env("occ", "u") == [
+    assert sandbox.harness_env("occ", "u") == [
         f"CLAUDE_CODE_API_TIMEOUT={sandbox.OCC_API_TIMEOUT_DEFAULT_MS}",
         f"CLAUDE_CODE_MAX_RECURSION_DEPTH={sandbox.OCC_MAX_RECURSION_DEPTH_DEFAULT}",
     ]
-    assert sandbox.agent_env("occ", "u", home=Path("/h")) == [
+    assert sandbox.harness_env("occ", "u", home=Path("/h")) == [
         f"CLAUDE_CODE_API_TIMEOUT={sandbox.OCC_API_TIMEOUT_DEFAULT_MS}",
         f"CLAUDE_CODE_MAX_RECURSION_DEPTH={sandbox.OCC_MAX_RECURSION_DEPTH_DEFAULT}",
         "HOME=/h",
@@ -433,7 +450,7 @@ def test_agent_env_occ_supplies_tunable_loop_defaults() -> None:
 
 def test_launch_occ_wraps_relay_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
     r = RecordingRunner()
-    sandbox.launch(r, "probe", Path("/repo"), agent="occ", model="ollama/gemma4:26b")
+    sandbox.launch(r, "probe", Path("/repo"), harness="occ", model="ollama/gemma4:26b")
     cmd = r.commands[0]
     assert cmd[8:11] == ["probe", "bash", "-lc"]
     script = cmd[11]
@@ -447,7 +464,7 @@ def test_launch_occ_wraps_relay_and_model(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_launch_occ_cloud_no_shim_no_relay(monkeypatch: pytest.MonkeyPatch) -> None:
     r = RecordingRunner()
-    sandbox.launch(r, "probe", Path("/repo"), agent="occ", model="nvidia/qwen/q3")
+    sandbox.launch(r, "probe", Path("/repo"), harness="occ", model="nvidia/qwen/q3")
     script = r.commands[0][11]
     # The fork's global dispatcher reads HTTPS_PROXY from the env-file — no NODE_OPTIONS shim.
     assert "NODE_OPTIONS" not in script
@@ -522,13 +539,13 @@ def test_resolve_start_dispatches_occ_cloud(
     ]
 
 
-def test_resolve_model_for_agent_accepts_occ(tmp_path: Path) -> None:
+def test_resolve_model_for_harness_accepts_occ(tmp_path: Path) -> None:
     (tmp_path / "danno.toml").write_text(
         '[backends.ollama]\nkind = "ollama"\nbase_url = "http://h:11434/v1"\n'
         '[models.gemma4]\nbackend = "ollama"\ntag = "gemma4:26b"\n',
         encoding="utf-8",
     )
-    assert sandbox.resolve_model_for_agent(tmp_path, "occ", "gemma4") == "ollama/gemma4:26b"
+    assert sandbox.resolve_model_for_harness(tmp_path, "occ", "gemma4") == "ollama/gemma4:26b"
 
 
 def _write_opencode_cfg(target: Path, body: str) -> None:
@@ -676,18 +693,18 @@ def test_create_is_idempotent_under_apply(tmp_path: Path, monkeypatch: pytest.Mo
 # --- agent-home: env relocation -------------------------------------------------
 
 
-def test_agent_env_claude_relocates_config_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_harness_env_claude_relocates_config_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
-    assert sandbox.agent_env("claude", "u", Path("/h")) == [
+    assert sandbox.harness_env("claude", "u", Path("/h")) == [
         "CLAUDE_CODE_OAUTH_TOKEN=tok",
         "CLAUDE_CONFIG_DIR=/h",
     ]
 
 
-def test_agent_env_opencode_relocates_config_not_data() -> None:
+def test_harness_env_opencode_relocates_config_not_data() -> None:
     # Config goes on the mounted home; the sqlite data dir is left VM-local so WAL
-    # works (the mounted home is virtiofs, which can't do WAL). See agent_env docs.
-    assert sandbox.agent_env("opencode", "http://h:11434/v1", Path("/h")) == [
+    # works (the mounted home is virtiofs, which can't do WAL). See harness_env docs.
+    assert sandbox.harness_env("opencode", "http://h:11434/v1", Path("/h")) == [
         "OLLAMA_BASE_URL=http://h:11434/v1",
         "XDG_CONFIG_HOME=/h/config",
     ]
@@ -728,7 +745,10 @@ def test_create_records_under_apply(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     r = RecordingRunner()
     r.apply = True
     sandbox.create(r, "probe", tmp_path / "proj", registry_path=reg)
-    assert registry.lookup(reg, "probe") == {"target": str(tmp_path / "proj"), "agent": "opencode"}
+    assert registry.lookup(reg, "probe") == {
+        "target": str(tmp_path / "proj"),
+        "harness": "opencode",
+    }
 
 
 def test_create_warns_on_name_collision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -938,7 +958,7 @@ def test_launch_opencode_env_file_includes_toml_env(tmp_path: Path) -> None:
     # of the agent default (OLLAMA_BASE_URL).
     (tmp_path / "danno.toml").write_text('[env]\nMY_FLAG = "on"\n', encoding="utf-8")
     r = _EnvCapturingRunner()
-    sandbox.launch(r, "probe", tmp_path, agent="opencode")
+    sandbox.launch(r, "probe", tmp_path, harness="opencode")
     assert r.env_snapshots, "no env-file was captured"
     env = dict(line.split("=", 1) for line in r.env_snapshots[0])
     assert env["MY_FLAG"] == "on"
@@ -948,7 +968,7 @@ def test_launch_opencode_env_file_includes_toml_env(tmp_path: Path) -> None:
 def test_launch_opencode_cli_env_overrides_toml_env(tmp_path: Path) -> None:
     (tmp_path / "danno.toml").write_text('[env]\nMY_FLAG = "on"\n', encoding="utf-8")
     r = _EnvCapturingRunner()
-    sandbox.launch(r, "probe", tmp_path, agent="opencode", env_pairs=["MY_FLAG=override"])
+    sandbox.launch(r, "probe", tmp_path, harness="opencode", env_pairs=["MY_FLAG=override"])
     env = dict(line.split("=", 1) for line in r.env_snapshots[0])
     assert env["MY_FLAG"] == "override"  # CLI wins over [env]
 
@@ -958,5 +978,5 @@ def test_launch_claude_ignores_toml_env(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
     (tmp_path / "danno.toml").write_text('[env]\nMY_FLAG = "on"\n', encoding="utf-8")
     r = _EnvCapturingRunner()
-    sandbox.launch(r, "probe", tmp_path, agent="claude")
+    sandbox.launch(r, "probe", tmp_path, harness="claude")
     assert r.env_snapshots[0] == ["CLAUDE_CODE_OAUTH_TOKEN=tok"]

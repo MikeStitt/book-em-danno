@@ -1,7 +1,7 @@
 """Run-level provenance for `danno bench` (§7) — always written, one-shot at run
 start, to `provenance.json`. Cheap, host-side metadata that makes a bench result
 reproducible and comparable: exact model bytes (digest) and static model facts
-(quant, param count, context length), the agent/fork pins that produced the run, the
+(quant, param count, context length), the harness/fork pins that produced the run, the
 danno version + commit, and a host descriptor (CPU/RAM/GPU). A separate file keeps
 `bench.json`'s schema stable/backward-compatible.
 
@@ -48,14 +48,14 @@ def _git_commit() -> str | None:
     return out or None
 
 
-def agent_provenance(agent: str, config: DannoConfig) -> dict:
-    """The danno-known version pins for the agent that ran (§7.3). opencode/claude are
+def harness_provenance(harness: str, config: DannoConfig) -> dict:
+    """The danno-known version pins for the harness that ran (§7.3). opencode/claude are
     image-provided (the prebuilt sandbox ships the binary), so danno pins no version —
     only claurst (release tag) and occ (repo + commit ref) are danno-owned."""
-    info: dict = {"agent": agent}
-    if agent == "claurst":
+    info: dict = {"harness": harness}
+    if harness == "claurst":
         info["claurst_version"] = CLAURST_VERSION
-    elif agent == "occ":
+    elif harness == "occ":
         repo, ref = occ.occ_repo_ref(config)
         info["occ_repo"] = repo
         info["occ_ref"] = ref
@@ -148,7 +148,7 @@ def collect_provenance(
     config: DannoConfig,
     variants: list[ConfigVariant],
     *,
-    agent: str,
+    harness: str,
     sample_interval_s: float | None,
     host_url: str = ollama.DEFAULT_HOST_URL,
 ) -> dict:
@@ -156,7 +156,7 @@ def collect_provenance(
     return {
         "danno": danno_version(),
         "host": host_descriptor(),
-        "agent_versions": agent_provenance(agent, config),
+        "harness_versions": harness_provenance(harness, config),
         "sample_interval_s": sample_interval_s,
         "models": {v.model_ref: model_provenance(v.model_ref, host_url) for v in variants},
     }

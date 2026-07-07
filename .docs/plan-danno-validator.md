@@ -24,7 +24,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] M4 — Level-2 software-dev oracle (1 small repo+tests task; hidden test suite run
   in-VM, L0→L1→L2 short-circuit, L2 column/section in the report; live-verified — see
   "M4 — DONE" below)
-- [x] M5 — Claude Code baseline + comparison row (agent-agnostic `Turn` seam,
+- [x] M5 — Claude Code baseline + comparison row (harness-agnostic `Turn` seam,
   in-sandbox `claude -p` driver, baseline row in the same matrix; live-verified —
   see "M5 — DONE" below)
 - [x] M6 — annotated "menu" danno.toml emitter (DONE — see "M6 — menu emitter DONE"
@@ -48,7 +48,7 @@ Given a *space* of danno.toml configurations — permutations of **model × prom
 
 This is the constitution's *Configuration-is-Code* rule mechanized: it doesn't just
 generate configs, it **exercises** them and reports what converges. The opencode-only-
-in-sandbox invariant is preserved — the **agent-under-test (AUT) runs only in the VM**;
+in-sandbox invariant is preserved — the **harness-under-test (HUT) runs only in the VM**;
 the harness and judge run on the host.
 
 ## Test tiers (default: 1 test per level)
@@ -98,7 +98,7 @@ loader/generator). Components:
 2. **Provisioner** — per permutation: generate `opencode.jsonc`, provision the sandbox
    (or reconfigure in place), inject model keys (the `{env:VAR}` fail-loud check),
    **reset the mounted workspace** (`git clean -fdx && git reset --hard`).
-3. **Driver** — run the battery against the AUT (see "Driving the AUT" below); capture
+3. **Driver** — run the battery against the HUT (see "Driving the HUT" below); capture
    per-turn **events**: messages, tool calls, finish reason, side effects, latency,
    tokens/cost.
 4. **Oracles** — per level: stall-detector (L0), side-effect checker (L1), test-suite
@@ -108,7 +108,7 @@ loader/generator). Components:
    backbone; the judge handles fuzzy grading and L0 appropriateness.
 6. **Reporter** — MyST pages + toctree matrix + the annotated "menu" danno.toml.
 
-## Driving the AUT (resolves the networking wrinkle)
+## Driving the HUT (resolves the networking wrinkle)
 
 `opencode serve` binds a port **inside the VM**, and `docker sandbox` has **no port
 publish** (`create` only takes workspace mounts). So host→serve isn't directly reachable.
@@ -152,7 +152,7 @@ Implemented on branch `danno-validator-m0` (stacked on `feat-openai-backend-and-
 
 - **`Runner.capture`** (`src/book_em_danno/core/exec.py`) — a third execution mode beside
   `advise`/`run`: always executes (apply-independent), captures stdout/stderr/exit into a
-  `CaptureResult`, `check=False` by default (a stalled/errored AUT turn is *data*, not a
+  `CaptureResult`, `check=False` by default (a stalled/errored HUT turn is *data*, not a
   danno failure). Verbose-only logging — machine-driven, no copy-paste line.
 - **`danno_validator.driver`** (new sibling package `src/danno_validator/`) — `capture_exec`,
   `opencode_run` (lenient JSON parse via `OpencodeTurn`; payload fields deliberately
@@ -179,7 +179,7 @@ Implemented on branch `danno-validator-m0` (stacked on `feat-openai-backend-and-
 Implemented on branch `danno-validator-m1` (stacked on `danno-validator-m0`). All flags
 and the payload schema were **verified live against opencode 1.17.7** in the running
 `danno-danno-trials-exp1` sandbox (the opencode-only-in-sandbox invariant held — only the
-AUT ran in the VM; the harness ran on the host).
+HUT ran in the VM; the harness ran on the host).
 
 - **Driver corrections vs the plan's assumptions.** The plan said `opencode run -f json`,
   but in 1.17.7 `-f` is `--file` (attach a file) — the structured-output flag is
@@ -247,7 +247,7 @@ unit-tested; the orchestration is thin and faked in tests.
   config across runs instead of deleting it as untracked. The seed commit carries an
   inline `-c user.name/email` so it never depends on host git config (CI-safe). This
   was **exercised for real host-side** (no Docker/opencode — invariant preserved):
-  prepare → simulate an AUT side effect → run the exact guarded reset → confirmed
+  prepare → simulate a HUT side effect → run the exact guarded reset → confirmed
   the committed opencode.jsonc survives and the probe file is cleaned.
 - **`sweep.run_sweep`** runs the L0 battery against each variant **sequentially**
   (local models are tens of GB resident — no concurrency to win), resetting the
@@ -383,7 +383,7 @@ hallucinated-tool class is reserved for *zero* tool calls.)
   file compare, the L2 oracle is the *test run itself* — and the repo lives in the
   mounted workspace with the VM's toolchain, so the suite runs in-VM via
   `driver.capture_exec` (the opencode-only-in-sandbox invariant covers the
-  agent-under-test; the test run is the oracle and belongs in the VM too). The host
+  harness-under-test; the test run is the oracle and belongs in the VM too). The host
   harness only writes the test in and reads the exit code. **Exit 0 = pass** is the
   one convention `test_command` must follow, so the same machinery works for
   `python3 t.py`, `node t.js`, or `pytest`.
@@ -435,7 +435,7 @@ Code baseline (pinned `--model opus`), combined into one report. Result matrix:
     gpt-oss-20b   ollama/gpt-oss:20b pass   pass   pass      2   19104    99.1s
     claude-code   claude-opus-4-8    pass   pass   pass      2    2029    9.7s    (baseline)
 
-This proves the agent-agnostic comparison: **the same oracles graded both agents**
+This proves the harness-agnostic comparison: **the same oracles graded both harnesses**
 (L0 probe file, L1 `line_count.txt == "7"`, L2 hidden fizzbuzz suite run in-VM →
 "ok — 12 cases passed", exit 0). Claude drove real tool use (L1 `Bash`+`Write`, L2
 `Read`+`Edit`) and the matrix surfaces a real datapoint the harness exists to
@@ -446,7 +446,7 @@ notably it differs from the *default* (an earlier unpinned run resolved to
 `claude-opus-4-8[1m]`, the 1M-context variant), exactly the cost/behaviour variance
 that makes pinning-and-recording the model necessary, not optional.
 
-- **One agent-agnostic seam, two transcript formats.** A structural `Turn`
+- **One harness-agnostic seam, two transcript formats.** A structural `Turn`
   protocol (`driver.py`) captures exactly the read surface the oracle, the level
   runners, and the reporter consume (`assistant_text`, `tool_calls`,
   `tool_call_count`, `session_id`, `tokens`, `cost`, `errors`, `error_summary`);
@@ -472,7 +472,7 @@ that makes pinning-and-recording the model necessary, not optional.
   records the model claude **actually resolved** — `ClaudeTurn.model` reads it from
   the `system` init event, so the matrix shows the real model (e.g.
   `claude-opus-4-8[1m]`) even when unpinned (track). The bound model rides the same
-  `TurnFn` wrapper as the auth file, kept out of the agent-agnostic runner API.
+  `TurnFn` wrapper as the auth file, kept out of the harness-agnostic runner API.
 - **The baseline is just another `SweepResult` row.** `baseline.run_baseline`
   returns one `SweepResult` carrying a synthetic `claude-code` variant
   (`BASELINE_MODEL`), so appending it to a sweep renders it as a matrix row + page
@@ -484,9 +484,9 @@ that makes pinning-and-recording the model necessary, not optional.
   auth via `--env-file` only on interactive `launch`; a bare `docker sandbox exec`
   inherits none, so the first live run scored every claude turn `error`
   ("Not logged in"). Fix: `claude_run` accepts `env_file` → `--env-file`, and
-  `run_baseline` builds a chmod-600 auth env-file (reusing danno's `agent_env`
+  `run_baseline` builds a chmod-600 auth env-file (reusing danno's `harness_env`
   fail-loud + `_build_env_file`), binds it via a `TurnFn` wrapper kept out of the
-  agent-agnostic runner API, and removes it after. opencode is unaffected (it
+  harness-agnostic runner API, and removes it after. opencode is unaffected (it
   reads Ollama from `opencode.jsonc`, not env) — exactly why the gap hid until the
   claude path ran live. The host token is supplied out-of-band (`claude
   setup-token` → exported), never committed.
@@ -681,9 +681,9 @@ the judge tag a class; the report aggregates counts.
 
 ## Claude Code baseline (M5)
 
-Same battery vs the `claude` agent headless (`claude -p --output-format json` / Agent
+Same battery vs the `claude` harness headless (`claude -p --output-format json` / Agent
 SDK), normalized into the **same result record** (final answer, tool calls, files
-changed, tests passed, latency, tokens, class). Comparison is on **agent-agnostic oracle
+changed, tests passed, latency, tokens, class). Comparison is on **harness-agnostic oracle
 outcomes** (workspace side effects + tests), sidestepping transcript-format differences.
 
 ## Risks / open questions

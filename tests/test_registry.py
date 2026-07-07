@@ -12,7 +12,7 @@ def test_load_missing_is_empty(tmp_path: Path) -> None:
 def test_record_then_lookup_round_trips(tmp_path: Path) -> None:
     reg = tmp_path / "sandboxes.json"
     registry.record(reg, "danno-work-acme", "/work/acme", "claude")
-    assert registry.lookup(reg, "danno-work-acme") == {"target": "/work/acme", "agent": "claude"}
+    assert registry.lookup(reg, "danno-work-acme") == {"target": "/work/acme", "harness": "claude"}
     assert registry.lookup(reg, "absent") is None
 
 

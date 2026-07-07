@@ -137,6 +137,25 @@ def test_load_benchmarks_parses_both_suites(tmp_path: Path) -> None:
     assert cfg.swebench.deps == "offline-wheel-cache"  # default
 
 
+def test_load_benchmarks_parses_harnesses_list(tmp_path: Path) -> None:
+    p = tmp_path / "benchmarks.toml"
+    p.write_text("harnesses = ['occ', 'claurst', 'claude']\n[swebench]\nenabled = true\n")
+    cfg = load_benchmarks(p)
+    assert cfg.harnesses == ["occ", "claurst", "claude"]
+
+
+def test_load_benchmarks_default_harnesses_is_empty(tmp_path: Path) -> None:
+    # Empty (the default) means the single opencode default — resolved by the bench CLI.
+    assert load_benchmarks(tmp_path / "nope.toml").harnesses == []
+
+
+def test_load_benchmarks_unknown_harness_fails_loud(tmp_path: Path) -> None:
+    p = tmp_path / "benchmarks.toml"
+    p.write_text("harnesses = ['occ', 'gpt5']\n")
+    with pytest.raises(ValueError, match="invalid benchmarks config"):
+        load_benchmarks(p)
+
+
 def test_load_benchmarks_unknown_key_fails_loud(tmp_path: Path) -> None:
     p = tmp_path / "benchmarks.toml"
     p.write_text("[swebench]\nenabled = true\nbogus = 1\n")

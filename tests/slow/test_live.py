@@ -80,7 +80,7 @@ def test_opencode_only_runs_in_container() -> None:
 
 @pytest.mark.skipif(docker_down, reason="Docker daemon down")
 def test_claudecode_runs_in_container() -> None:
-    # Claude Code is a Docker prebuilt agent like opencode; prove it runs
+    # Claude Code is a Docker prebuilt harness like opencode; prove it runs
     # in-container. Auth-free (`--version` only) so it's green on a cold host.
     name = "danno-claudetest"
     _teardown_sandbox(name)

@@ -4,7 +4,7 @@ Kept OUT of the core `danno.toml` schema (a validator concern, not a provisionin
 one): a separate `benchmarks.toml`, loaded only by `danno validate --benchmark`.
 `extra="forbid"` so a typo fails loud at load (Working Rule 8). Each suite is
 independently `enabled`, with a `select` list naming exactly which instances run —
-the throttle on a matrix that is AUT x suite x tests x models.
+the throttle on a matrix that is HUT x suite x tests x models.
 """
 
 from __future__ import annotations
@@ -50,6 +50,11 @@ class BenchmarksConfig(BaseModel):
     """The whole `benchmarks.toml`: one optional table per suite."""
 
     model_config = ConfigDict(extra="forbid")
+    # Harnesses-under-test to sweep in one `danno bench` run (each gets its own bench.json +
+    # sidecars under <out>/<harness>/, with a combined comparison report at the root). Empty
+    # (the default) means the single opencode default; `--harness` on the CLI overrides this.
+    # An unknown name fails loud at load (Working Rule 8).
+    harnesses: list[Literal["opencode", "claurst", "occ", "claude"]] = []
     aider_polyglot: AiderPolyglotConfig = AiderPolyglotConfig()
     swebench: SwebenchConfig = SwebenchConfig()
 

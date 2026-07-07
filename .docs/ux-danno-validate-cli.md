@@ -52,14 +52,14 @@ operation with progress reporting and stable outputs.
    agent-home, working tree, and `danno.toml` are untouched. The annotated menu is
    written to the run directory only; adopting it is a manual copy the user makes.
    This is the constitution's non-destructive rule (Working Rule 6) made visible.
-3. **Reuse the shared flags.** `--target`/`-C`, `--agent`, `-v/--verbose` carry their
+3. **Reuse the shared flags.** `--target`/`-C`, `--harness`, `-v/--verbose` carry their
    existing danno meanings. Sandbox names derive the same way (`danno-<parent>-<dir>`)
    with a `validate` infix so they never collide with the user's real sandboxes.
 4. **Fail loud (Working Rule 8), up front.** A missing `danno.toml`, an unreachable
    Ollama, an `--only` model the config doesn't declare, or (for `--baseline`) a
    missing `CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY` aborts *before* any sandbox
    is created — never a silent skip or a half-run sweep ten minutes in.
-5. **The opencode-only invariant holds.** The agent-under-test runs *only* in the
+5. **The opencode-only invariant holds.** The harness-under-test runs *only* in the
    VM; the CLI, the oracles, and the report render on the host.
 
 ## Command surface
@@ -76,14 +76,14 @@ battery), `danno bench` answers *"how does it do on real SWE benchmark tasks"*. 
 runs the **suites** declared in `benchmarks.toml` — **Aider Polyglot** (Exercism
 exercises) and a **SWE-bench Verified subset** (real GitHub issues, fetched from
 HuggingFace) — for **every model variant** of `danno.toml` (the *permutations*),
-against the chosen agent-under-test (`--agent claurst` for the Rust clone on local
+against the chosen harness-under-test (`--harness claurst` for the Rust clone on local
 models). It reuses the benchmark-task abstraction (`suites/`): each task seeds an
-instance, the agent takes one headless turn, and the instance's own tests grade it
+instance, the harness takes one headless turn, and the instance's own tests grade it
 (the shared oracle classifies the turn). Aider shares one disposable sandbox
 (per-exercise reset); SWE-bench uses a fresh sandbox per instance. Output is
 `bench.json` + a console summary.
 
-Key flags: `-C DIR` (project), `--agent {opencode,claurst}`, `--only MODEL` (subset
+Key flags: `-C DIR` (project), `--harness {opencode,claurst}`, `--only MODEL` (subset
 the matrix), `--benchmarks FILE` (default `benchmarks.toml` next to `danno.toml`),
 `--workspace`, `--out`, `--keep-sandboxes`, `--dry-run`. See `benchmarks.toml.example`.
 
@@ -122,10 +122,10 @@ flag, not a new verb.)
 | `--keep-sandboxes` | off (tear down) | skip `stop`/`rm` | Leave the disposable sandboxes running for debugging instead of removing them. |
 | `--no-reset` | reset on | `run_sweep(reset=False)` | Skip the guarded per-config workspace reset (debugging only; configs can then leak into each other). |
 | `--strict` | off | exit code | Exit non-zero if any *swept* config fails its top tier (the baseline never affects the exit code). For CI gating. Default exit 0 — it's a reporting tool. |
-| `--agent NAME` | `opencode` | `provision(agent=…)`, `run_sweep(agent=…)` | The AUT for the *sweep* (the local models). The baseline is always `claude`. |
+| `--harness NAME` | `opencode` | `provision(harness=…)`, `run_sweep(make_run_turn=…)` | The HUT for the *sweep* (the local models). The baseline is always `claude`. |
 | `--env KEY=VAL` (repeatable) | — | `run_sweep(env_file=…)` | Inject a credential into the sweep's opencode exec for cloud configs (e.g. `--env ANTHROPIC_API_KEY=sk-…`). Overrides the host-exported value. Lands only in a chmod-600 env-file, removed after the sweep. |
 | `--env-file FILE` (repeatable) | — | `run_sweep(env_file=…)` | Same, from a file of `KEY=VAL` lines. |
-| `--verbose`, `-v` | off | `Runner(verbose=True)` | Stream the agent transcripts live under each tier line. |
+| `--verbose`, `-v` | off | `Runner(verbose=True)` | Stream the harness transcripts live under each tier line. |
 
 **Cloud-config credentials.** A swept `cloud`/`openai`-backed model (anthropic,
 NVIDIA NIM, …) needs an API key inside the disposable sandbox or it errors at L0
@@ -317,7 +317,7 @@ breaking change.
     "max_level": 2,
     "trials": 1,
     "reset": true,
-    "agent": "opencode",
+    "harness": "opencode",
     "workspace": "/tmp/danno-validate-my-project",
     "out_dir": ".danno-validator/2026-06-18T14-30",
     "sandboxes": { "sweep": "danno-validate-projects-my-project",

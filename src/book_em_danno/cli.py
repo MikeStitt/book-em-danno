@@ -29,7 +29,7 @@ app = typer.Typer(
 sandbox_app = typer.Typer(no_args_is_help=True, help="Operate the provisioned Docker sandbox.")
 app.add_typer(sandbox_app, name="sandbox")
 
-# Per-command options shared across the side-effecting commands (mirrors _AGENT_OPT).
+# Per-command options shared across the side-effecting commands (mirrors _HARNESS_OPT).
 _APPLY_OPT = typer.Option(
     False, "--apply", help="Execute host/Docker/Ollama commands instead of only printing them."
 )
@@ -139,10 +139,10 @@ def validate(
     judge_model: str = typer.Option(
         None, "--judge-model", help="Pin the judge model (opus/sonnet/haiku or a full id)."
     ),
-    agent: str = typer.Option(
-        sandbox_cmd.DEFAULT_AGENT,
-        "--agent",
-        help="Agent-under-test for the sweep: opencode (default), claurst, or occ.",
+    harness: str = typer.Option(
+        sandbox_cmd.DEFAULT_HARNESS,
+        "--harness",
+        help="Harness-under-test for the sweep: opencode (default), claurst, or occ.",
     ),
     env: list[str] = typer.Option(
         None, "--env", help="KEY=VAL credential to inject into cloud-config sweeps (repeatable)."
@@ -225,7 +225,7 @@ def validate(
         baseline_model=baseline_model,
         judge=judge,
         judge_model=judge_model,
-        agent=agent,
+        harness=harness,
         env=env or [],
         env_file=env_file or [],
         workspace=workspace,
@@ -257,17 +257,18 @@ def bench(
     target: Path = typer.Option(
         Path("."), "--target", "-C", help="Project whose danno.toml models are the matrix."
     ),
-    agent: str = typer.Option(
-        sandbox_cmd.DEFAULT_AGENT,
-        "--agent",
-        help="Agent-under-test: opencode (default), claurst, occ, or claude "
-        "(the cloud reference row — one `claude-code` result, ignores the local model matrix).",
+    harness: list[str] = typer.Option(
+        None,
+        "--harness",
+        help="Harness-under-test (repeatable): opencode (default), claurst, occ, or claude "
+        "(the cloud reference row — one `claude-code` result, ignores the local model matrix). "
+        "Overrides benchmarks.toml [harnesses]; several harnesses produce a comparison report.",
     ),
     only: list[str] = typer.Option(
         None,
         "--only",
         help="Restrict the model matrix to these danno.toml model keys (repeatable). "
-        "Ignored for --agent claude (single reference row).",
+        "Ignored for --harness claude (single reference row).",
     ),
     benchmarks: Path = typer.Option(
         None, "--benchmarks", help="benchmarks.toml path (default: next to danno.toml)."
@@ -282,7 +283,7 @@ def bench(
     capture: bool = typer.Option(
         False,
         "--capture",
-        help="Record each permutation's agent<->backend wire traffic (Ollama + openai/NVIDIA) "
+        help="Record each permutation's harness<->backend wire traffic (Ollama + openai/NVIDIA) "
         "as JSONL under <out>/captures/. Unlocks the token-split and context telemetry.",
     ),
     capture_dir: Path = typer.Option(
@@ -297,12 +298,21 @@ def bench(
     sample_interval: float = typer.Option(
         0.5, "--sample-interval", help="Resource sampler interval in seconds (with --sample)."
     ),
+    env: list[str] = typer.Option(
+        None,
+        "--env",
+        help="KEY=VAL credential to inject into every bench turn (repeatable). Cloud keys are "
+        "read from danno's host env automatically; use this to override or supply one inline.",
+    ),
+    env_file: list[str] = typer.Option(
+        None, "--env-file", help="File of KEY=VAL credentials to inject (repeatable)."
+    ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print the plan and exit without provisioning or running."
     ),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
-    """Run the enabled benchmark suites across danno.toml's models against an agent.
+    """Run the enabled benchmark suites across danno.toml's models against a harness.
 
     Suites + selection come from `benchmarks.toml` (Aider Polyglot + a SWE-bench Verified
     subset; each independently enabled with a `select` list). Provisions disposable,
@@ -312,10 +322,14 @@ def bench(
 
     These run real benchmark task *content* via danno's own execution model — NOT the
     official Docker-per-task harness, so the pass counts are not official benchmark
-    scores. `--agent claurst` benchmarks the Rust Claude-Code clone on local models;
-    `--agent claude` adds the cloud reference row (needs a host token; ignores `-m`).
+    scores. `--harness claurst` benchmarks the Rust Claude-Code clone on local models;
+    `--harness claude` adds the cloud reference row (needs a host token; ignores `-m`).
     """
-    from danno_validator.suites.bench import BenchOptions, run_bench
+    from danno_validator.suites.bench import (
+        BenchOptions,
+        resolve_bench_harnesses,
+        run_bench_harnesses,
+    )
     from danno_validator.suites.config import DEFAULT_BENCHMARKS_FILE, load_benchmarks
 
     cfg = _load(target / "danno.toml")
@@ -331,9 +345,14 @@ def bench(
             "[aider_polyglot] or [swebench] and list `select` ids."
         )
         raise typer.Exit(code=2)
+    try:
+        harnesses = resolve_bench_harnesses(harness or None, bench_cfg)
+    except ValueError as exc:  # unknown --harness / [harnesses] name (fail loud)
+        log_err(str(exc))
+        raise typer.Exit(code=2) from exc
     opts = BenchOptions(
         target=target,
-        agent=agent,
+        harness=harnesses[0],
         only=only or None,
         benchmarks_path=bench_path,
         workspace=workspace,
@@ -344,9 +363,11 @@ def bench(
         capture_dir=capture_dir,
         sample=sample,
         sample_interval=sample_interval,
+        env=env or [],
+        env_file=env_file or [],
     )
     try:
-        run_bench(cfg, bench_cfg, opts, Runner(apply=True, verbose=verbose))
+        run_bench_harnesses(cfg, bench_cfg, opts, Runner(apply=True, verbose=verbose), harnesses)
     except ValueError as exc:  # bad --only / unknown swebench id (fail loud)
         log_err(str(exc))
         raise typer.Exit(code=3) from exc
@@ -378,11 +399,11 @@ def benchmark(
     judge_model: str = typer.Option(
         None, "--judge-model", help="Pin the judge model (opus/sonnet/haiku or a full id)."
     ),
-    agent: str = typer.Option(
-        sandbox_cmd.DEFAULT_AGENT,
-        "--agent",
-        help="Agent-under-test. benchmark compares opencode config trees, so opencode "
-        "only; to benchmark claurst across danno.toml models use `danno bench --agent claurst`.",
+    harness: str = typer.Option(
+        sandbox_cmd.DEFAULT_HARNESS,
+        "--harness",
+        help="Harness-under-test. benchmark compares opencode config trees, so opencode "
+        "only; to benchmark claurst across danno.toml models use `danno bench --harness claurst`.",
     ),
     env: list[str] = typer.Option(
         None, "--env", help="KEY=VAL credential to inject into every config run (repeatable)."
@@ -431,7 +452,7 @@ def benchmark(
         baseline_model=baseline_model,
         judge=judge,
         judge_model=judge_model,
-        agent=agent,
+        harness=harness,
         env=env or [],
         env_file=env_file or [],
         workspace=workspace,
@@ -453,27 +474,27 @@ def benchmark(
         raise typer.Exit(code=1)
 
 
-_AGENT_OPT = typer.Option(
-    sandbox_cmd.DEFAULT_AGENT,
-    "--agent",
-    help="Agent: opencode, claude, claurst, or occ; non-default agents get a separate sandbox.",
+_HARNESS_OPT = typer.Option(
+    sandbox_cmd.DEFAULT_HARNESS,
+    "--harness",
+    help="Harness: opencode, claude, claurst, or occ; non-default harnesses get their own sandbox.",
 )
 _MODEL_OPT = typer.Option(
     None,
     "--model",
     "-m",
-    help="Model for --agent claurst or occ (a danno.toml models entry, e.g. gemma4 or an "
-    "OpenAI-compatible cloud model). clone-agents only; a backend danno can't wire, or a "
+    help="Model for --harness claurst or occ (a danno.toml models entry, e.g. gemma4 or an "
+    "OpenAI-compatible cloud model). clone-harnesses only; a backend danno can't wire, or a "
     "raw non-Ollama ref, is rejected loud.",
 )
 
 
-def _sandbox_target(target: Path, name: str | None, agent: str) -> tuple[Path, str]:
+def _sandbox_target(target: Path, name: str | None, harness: str) -> tuple[Path, str]:
     abs_target = Path(target).resolve()
     if not abs_target.is_dir():
         log_err(f"target directory not found: {target}")
         raise typer.Exit(code=3)
-    return abs_target, (name or sandbox_cmd.default_name(abs_target, agent))
+    return abs_target, (name or sandbox_cmd.default_name(abs_target, harness))
 
 
 def _resolve_home(abs_target: Path, sandbox_name: str) -> Path | None:
@@ -485,17 +506,19 @@ def _resolve_home(abs_target: Path, sandbox_name: str) -> Path | None:
         raise typer.Exit(code=2) from exc
 
 
-def _resolve_model(abs_target: Path, agent: str, model: str | None) -> tuple[str | None, list[str]]:
+def _resolve_model(
+    abs_target: Path, harness: str, model: str | None
+) -> tuple[str | None, list[str]]:
     """Resolve `--model` for `sandbox start`. Returns `(ref, cloud_env_lines)` — `ref`
     is None when no `--model` is given; `cloud_env_lines` carries a cloud model's provider
     key (`["<VAR>=<value>"]`, injected into the chmod-600 env-file) and is empty for local
-    Ollama. Maps a danno [models] name to the clone agent's `-m` ref, failing loud on a
+    Ollama. Maps a danno [models] name to the clone harness's `-m` ref, failing loud on a
     malformed config (exit 2) or an unreachable model, missing cloud key, or a non-clone
-    agent (exit 4)."""
+    harness (exit 4)."""
     if model is None:
         return None, []
     try:
-        return sandbox_cmd.resolve_start(abs_target, agent, model)
+        return sandbox_cmd.resolve_start(abs_target, harness, model)
     except DannoConfigError as exc:
         log_err(str(exc))
         raise typer.Exit(code=2) from exc
@@ -509,7 +532,7 @@ _NAME_OPT_HELP = "Sandbox name (default danno-<parent>-<dir>)."
 _CAPTURE_OPT = typer.Option(
     False,
     "--capture",
-    help="Record agent<->backend wire traffic (opencode<->Ollama/openai-NVIDIA, or "
+    help="Record harness<->backend wire traffic (opencode<->Ollama/openai-NVIDIA, or "
     "claurst<->Ollama); needs --apply.",
 )
 _CAPTURE_DIR_OPT = typer.Option(
@@ -537,7 +560,7 @@ def sandbox_start(
     ctx: typer.Context,
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
     name: str = typer.Option(None, "--name", help=_NAME_OPT_HELP),
-    agent: str = _AGENT_OPT,
+    harness: str = _HARNESS_OPT,
     model: str = _MODEL_OPT,
     env: list[str] = typer.Option(None, "--env", help="KEY=VAL to inject (repeatable)."),
     env_file: list[str] = typer.Option(None, "--env-file", help="File of KEY=VAL to inject."),
@@ -546,7 +569,7 @@ def sandbox_start(
     apply: bool = _APPLY_OPT,
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
-    """Launch the in-container agent (provisioning it first under `--apply`).
+    """Launch the in-container harness (provisioning it first under `--apply`).
 
     Launching is the command's purpose, so it runs without `--apply`; `--apply`
     additionally executes the provisioning side effects (create/proxy). On an
@@ -555,26 +578,26 @@ def sandbox_start(
     Tip: `cd <project> && danno sandbox start` (no --target/--name) recomputes the
     same name every time — stand in the sandbox's directory rather than naming it.
 
-    `--agent claurst` runs a pure-Rust Claude-Code clone on local Ollama or a cloud
+    `--harness claurst` runs a pure-Rust Claude-Code clone on local Ollama or a cloud
     provider danno can fully wire (today NVIDIA NIM); pick the model with `-m <name>`
     (a danno.toml models entry — its cloud key is injected from the backend's
-    `api_key_env`). Anything after `--` is forwarded verbatim to the agent, e.g.
-    `danno sandbox start --agent claude -- --resume <id>`.
+    `api_key_env`). Anything after `--` is forwarded verbatim to the harness, e.g.
+    `danno sandbox start --harness claude -- --resume <id>`.
     """
-    abs_target, sandbox_name = _sandbox_target(target, name, agent)
+    abs_target, sandbox_name = _sandbox_target(target, name, harness)
     home = _resolve_home(abs_target, sandbox_name)
-    resolved_model, cloud_env = _resolve_model(abs_target, agent, model)
+    resolved_model, cloud_env = _resolve_model(abs_target, harness, model)
     _guard(
         lambda: sandbox_cmd.start(
             Runner(apply=apply, verbose=verbose),
             sandbox_name,
             abs_target,
-            agent=agent,
+            harness=harness,
             env_pairs=(env or []) + cloud_env,
             env_files=env_file or [],
             home=home,
             registry_path=registry.default_path(),
-            agent_args=ctx.args,
+            harness_args=ctx.args,
             capture_dir=_resolve_capture_dir(capture, capture_dir),
             model=resolved_model,
         )
@@ -585,7 +608,7 @@ def sandbox_start(
 def sandbox_shell(
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
     name: str = typer.Option(None, "--name", help=_NAME_OPT_HELP),
-    agent: str = _AGENT_OPT,
+    harness: str = _HARNESS_OPT,
     env: list[str] = typer.Option(None, "--env", help="KEY=VAL to inject (repeatable)."),
     env_file: list[str] = typer.Option(None, "--env-file", help="File of KEY=VAL to inject."),
     capture: bool = _CAPTURE_OPT,
@@ -596,18 +619,18 @@ def sandbox_shell(
     """Open an interactive bash shell inside the sandbox VM.
 
     Identical to `sandbox start` except it drops you at a bash prompt instead of
-    launching the agent: same provisioning (under `--apply`), same `-w <project>`
-    working dir, and the same injected env (agent auth / Ollama URL / relocated
+    launching the harness: same provisioning (under `--apply`), same `-w <project>`
+    working dir, and the same injected env (harness auth / Ollama URL / relocated
     config home). So a tool you run by hand here is wired exactly as `start` wires
     it. On an unprovisioned sandbox without `--apply`, it fails loud with the fix."""
-    abs_target, sandbox_name = _sandbox_target(target, name, agent)
+    abs_target, sandbox_name = _sandbox_target(target, name, harness)
     home = _resolve_home(abs_target, sandbox_name)
     _guard(
         lambda: sandbox_cmd.shell(
             Runner(apply=apply, verbose=verbose),
             sandbox_name,
             abs_target,
-            agent=agent,
+            harness=harness,
             env_pairs=env or [],
             env_files=env_file or [],
             home=home,
@@ -621,12 +644,12 @@ def sandbox_shell(
 def sandbox_stop(
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
     name: str = typer.Option(None, "--name", help=_NAME_OPT_HELP),
-    agent: str = _AGENT_OPT,
+    harness: str = _HARNESS_OPT,
     apply: bool = _APPLY_OPT,
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Stop the sandbox VM."""
-    _, sandbox_name = _sandbox_target(target, name, agent)
+    _, sandbox_name = _sandbox_target(target, name, harness)
     _guard(lambda: sandbox_cmd.stop(Runner(apply=apply, verbose=verbose), sandbox_name))
 
 
@@ -634,19 +657,19 @@ def sandbox_stop(
 def sandbox_rebuild(
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
     name: str = typer.Option(None, "--name", help=_NAME_OPT_HELP),
-    agent: str = _AGENT_OPT,
+    harness: str = _HARNESS_OPT,
     apply: bool = _APPLY_OPT,
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
-    """Remove and re-provision the sandbox from scratch (the agent home survives)."""
-    abs_target, sandbox_name = _sandbox_target(target, name, agent)
+    """Remove and re-provision the sandbox from scratch (the harness home survives)."""
+    abs_target, sandbox_name = _sandbox_target(target, name, harness)
     home = _resolve_home(abs_target, sandbox_name)
     _guard(
         lambda: sandbox_cmd.rebuild(
             Runner(apply=apply, verbose=verbose),
             sandbox_name,
             abs_target,
-            agent=agent,
+            harness=harness,
             home=home,
             registry_path=registry.default_path(),
         )
@@ -657,13 +680,13 @@ def sandbox_rebuild(
 def sandbox_update(
     target: Path = typer.Option(Path("."), "--target", help="Target project."),
     name: str = typer.Option(None, "--name", help=_NAME_OPT_HELP),
-    agent: str = _AGENT_OPT,
+    harness: str = _HARNESS_OPT,
     apply: bool = _APPLY_OPT,
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
-    """Advise how to update the agent inside the sandbox."""
-    _, sandbox_name = _sandbox_target(target, name, agent)
-    _guard(lambda: sandbox_cmd.update(Runner(apply=apply, verbose=verbose), sandbox_name, agent))
+    """Advise how to update the harness inside the sandbox."""
+    _, sandbox_name = _sandbox_target(target, name, harness)
+    _guard(lambda: sandbox_cmd.update(Runner(apply=apply, verbose=verbose), sandbox_name, harness))
 
 
 @sandbox_app.command("ls")

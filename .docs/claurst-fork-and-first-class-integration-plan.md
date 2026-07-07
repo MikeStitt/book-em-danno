@@ -137,7 +137,7 @@ loop_log diagnostic doesn't conflict with the configurable-timeout hunk.
 | Backends | `[backends]` → opencode provider blocks / catalog | implicit (OLLAMA_HOST); cloud assumed impossible |
 | Agents | `[agents]` → marker-region model assignment (+ rich `AgentSpec`) | not mapped |
 | Install | `danno install` provisions + generates config | binary download only (`claurst.py`) |
-| Commands | install / validate / bench / benchmark / sandbox | sandbox (+ validate as local-Ollama AUT) |
+| Commands | install / validate / bench / benchmark / sandbox | sandbox (+ validate as local-Ollama HUT) |
 
 **Key correction to bake in:** `danno_validator/claurst.py:12-13` asserts claurst "ignores the
 proxy, so cloud-backed variants cannot reach their providers." **The spike disproved this** —
@@ -147,7 +147,7 @@ task of Part 3 is to **re-verify proxy honoring** and lift the local-only restri
 
 ### Target
 `danno.toml` drives claurst exactly as it drives opencode: the same `[backends]`/`[models]`/
-`[agents]` produce a generated claurst configuration, and `--agent claurst` works across
+`[agents]` produce a generated claurst configuration, and `--harness claurst` works across
 install / validate / bench / benchmark / sandbox.
 
 ### Config-generation design (`danno.toml` → claurst artifacts)
@@ -167,12 +167,12 @@ claurst HOME (`~/.claurst`) / `CLAURST_MODELS_PATH`:
 ### Per-command integration
 - **install**: install the (forked) binary **and** run `generate_claurst_config()` from
   `danno.toml` (today install ignores claurst). Advise-by-default / `--apply` like everything else.
-- **sandbox**: extend the existing `--agent claurst` path to load the generated config + support
+- **sandbox**: extend the existing `--harness claurst` path to load the generated config + support
   cloud backends (post proxy re-verification); keep HOME relocation + relay + WAL handling.
-- **validate**: the validator already drives claurst as a local-Ollama AUT
+- **validate**: the validator already drives claurst as a local-Ollama HUT
   (`[[claurst-as-coding-tool]]`); extend the matrix to cloud models via the generated registry +
   proxy, so claurst sweeps the same L0/L1/L2 battery opencode does.
-- **bench / benchmark**: run claurst as the agent with the generated per-config `.claurst`
+- **bench / benchmark**: run claurst as the harness with the generated per-config `.claurst`
   context, mirroring how `benchmark` gives each opencode candidate its own `.opencode/`.
 
 ### Dependencies & sequencing

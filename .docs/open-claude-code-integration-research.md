@@ -52,10 +52,10 @@ JSON on stdout:
 A stream-json driver is the **per-agent adapter** that hides that difference. For
 its agent it: (1) builds the argv (`-p` prompt, model flag, skip-permissions,
 cwd/session); (2) spawns it in the sandbox, reading stdout line-by-line (one JSON
-event per line); (3) parses each line in *that agent's* schema; (4) **normalizes**
+event per line); (3) parses each line in *that harness's* schema; (4) **normalizes**
 those events onto danno's shared `Turn` protocol (`driver.py:188`) — a uniform
 object carrying assistant text, tools called + results, token usage, stop/result,
-errors; (5) returns a `Turn` the level runners consume agent-agnostically.
+errors; (5) returns a `Turn` the level runners consume harness-agnostically.
 
 So it is a **translation seam: agent-native stream → danno's uniform `Turn`**. The
 oracles grade workspace *side effects*, not transcripts — but the driver still must
@@ -216,18 +216,18 @@ Mirror the claurst seams, dropping config-gen and (hopefully) the relay/fork:
   as-is — required for local Ollama (§4 spike, verified). Always pass
   `CLAUDE_CODE_STREAMING=0` on the OpenAI path (§6.0).
 - **`src/book_em_danno/commands/sandbox.py`** — `_docker_image()` branch
-  (`sandbox.py:66`, `shell` image); `agent_env()` occ branch (`sandbox.py:392`,
+  (`sandbox.py:66`, `shell` image); `harness_env()` occ branch (`sandbox.py:392`,
   `HOME`/`OPENAI_BASE_URL`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`NODE_OPTIONS`
   shim); `provision()` install hook (`sandbox.py:379-388`); model resolution +
   `gpt-*` aliasing (`sandbox.py:447-544`), incl. multi-provider key injection.
 - **`danno_validator/suites/aut.py`** — add an `OCC` branch to `resolve_image`,
-  `install_aut`, `run_turn_for` (`aut.py:21-64`) → `danno bench --agent occ` works.
+  `install_harness`, `run_turn_for` (`aut.py:21-64`) → `danno bench --harness occ` works.
 - **`danno_validator/run.py:313-341`** — `is_occ` branch (image, install,
   `make_run_turn`) mirroring `is_claurst`.
 - **`danno_validator/benchmark.py:196-201`** — no edit; the non-opencode guard
-  rejects occ from `benchmark` for free (redirect to `danno bench --agent occ`).
-- **`src/book_em_danno/cli.py`** — extend `_AGENT_OPT` (`cli.py:431`), `validate`
-  /`bench` `--agent` help, `_MODEL_OPT` help.
+  rejects occ from `benchmark` for free (redirect to `danno bench --harness occ`).
+- **`src/book_em_danno/cli.py`** — extend `_HARNESS_OPT` (`cli.py:431`), `validate`
+  /`bench` `--harness` help, `_MODEL_OPT` help.
 - **Config generation** — skip almost entirely. Model via `-m`; optionally a thin
   `settings.json` `model` pin. None of the `generate_claurst_*` family is needed.
 
@@ -242,4 +242,4 @@ Mirror the claurst seams, dropping config-gen and (hopefully) the relay/fork:
 3. Version pin: which occ tag/commit does danno install (occ is a fast-moving
    `npx`/`main` project; the `stream-json` schema is not yet stable)?
 4. Is a second `--baseline`-style flag wanted (occ vs claude side-by-side), or is
-   occ just another `--agent occ` selection?
+   occ just another `--harness occ` selection?

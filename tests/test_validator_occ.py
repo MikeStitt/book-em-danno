@@ -1,4 +1,4 @@
-"""Unit tests for the Phase-2 occ AUT seam — `install_occ` command construction
+"""Unit tests for the Phase-2 occ HUT seam — `install_occ` command construction
 (clone/checkout/npm-install/stamp; no source patch or shim — the fork carries those
 natively), `interactive_launch_script` (local relay vs shimless cloud), `occ_repo_ref`
 pin precedence, and `authed_occ_run` forwarding. No Docker daemon: the install is asserted
@@ -163,3 +163,20 @@ def test_authed_occ_run_allows_none_env_file(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(occ, "occ_run", lambda r, n, p, **kw: captured.update(kw) or object())
     occ.authed_occ_run(None)(Runner(), "box", "hi")
     assert captured["env_file"] is None
+
+
+def test_authed_occ_run_model_override_replaces_dial_ref(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The reported matrix ref (a `danno-ollama/…` backend name) would be misread as cloud
+    # by occ_run's prefix check; model_override is what actually reaches occ_run's `-m`.
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(occ, "occ_run", lambda r, n, p, **kw: captured.update(kw) or object())
+    run = occ.authed_occ_run(None, model_override="ollama/qwen3-coder-next")
+    run(Runner(), "box", "go", model="danno-ollama/qwen3-coder-next")
+    assert captured["model"] == "ollama/qwen3-coder-next"
+
+
+def test_authed_occ_run_no_override_keeps_call_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(occ, "occ_run", lambda r, n, p, **kw: captured.update(kw) or object())
+    occ.authed_occ_run(None)(Runner(), "box", "go", model="ollama/gemma4")
+    assert captured["model"] == "ollama/gemma4"

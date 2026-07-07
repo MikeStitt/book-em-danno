@@ -72,7 +72,7 @@ def test_non_inference_calls_are_skipped() -> None:
 
 
 def test_occ_style_wire_yields_nonzero_totals() -> None:
-    # §1.3: occ's stream-json reports tokens==0, but the wire usage is agent-agnostic,
+    # §1.3: occ's stream-json reports tokens==0, but the wire usage is harness-agnostic,
     # so parsing the capture gives real totals regardless of which agent produced it.
     records = _pair(1, 0.0, 1.0, _resp_body(1234, 56))
     roll = wm.rollup(wm.parse_capture_records(records))

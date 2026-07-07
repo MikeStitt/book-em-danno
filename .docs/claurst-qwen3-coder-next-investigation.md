@@ -54,7 +54,7 @@ only **3B active parameters** is prone to. The leverage is therefore **higher-fi
 weights** (a better quant) plus a build that bundles the latest tool-call parsing
 fixes — not a config change.
 
-> Last unknown — now CAPTURED + CLOSED (2026-06-26). `--capture --agent claurst` now
+> Last unknown — now CAPTURED + CLOSED (2026-06-26). `--capture --harness claurst` now
 > records claurst↔Ollama traffic through the existing capture proxy (relay pointed at it
 > via `DANNO_RELAY_UPSTREAM_PORT`). A headless capture of the failing README-review
 > prompt (`scratch/capture_claurst_turn_only.py`) settled it:

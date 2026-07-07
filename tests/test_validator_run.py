@@ -137,7 +137,7 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setattr(run_mod, "prepare_workspace", lambda runner, ws, config: ws)
     monkeypatch.setattr(sb, "provision", lambda r, name, ws, **kw: calls["provision"].append(name))
     monkeypatch.setattr(run_mod, "_teardown", lambda r, name: calls["teardown"].append(name))
-    monkeypatch.setattr(sb, "agent_env", lambda *a, **k: ["TOKEN=x"])
+    monkeypatch.setattr(sb, "harness_env", lambda *a, **k: ["TOKEN=x"])
 
     def fake_sweep(
         runner,
@@ -211,12 +211,12 @@ def test_max_level_drives_tier_toggles(patched: dict, tmp_path: Path) -> None:
     assert patched["sweep_kwargs"]["level2"] is False
 
 
-def test_sweep_uses_the_opencode_run_agent_not_the_docker_agent(
+def test_sweep_uses_the_opencode_run_agent_not_the_docker_harness(
     patched: dict, tmp_path: Path
 ) -> None:
-    # The Docker sandbox agent (--agent opencode) must NOT leak in as the opencode
+    # The Docker sandbox harness (--harness opencode) must NOT leak in as the opencode
     # run-agent: the sweep drives `opencode run --agent build`, never `--agent opencode`.
-    _run(_opts(tmp_path, only=["gptoss"], agent="opencode"))
+    _run(_opts(tmp_path, only=["gptoss"], harness="opencode"))
     assert patched["sweep_kwargs"]["agent"] == "build"
 
 
@@ -266,7 +266,7 @@ def test_baseline_provisions_claude_and_appends_row(patched: dict, tmp_path: Pat
 def test_baseline_missing_token_fails_before_provisioning(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # agent_env raises (no token) — and it must raise before any provision call.
+    # harness_env raises (no token) — and it must raise before any provision call.
     monkeypatch.setattr(run_mod, "prepare_workspace", lambda *a, **k: None)
     provisioned: list = []
     monkeypatch.setattr(sb, "provision", lambda r, name, ws, **kw: provisioned.append(name))
@@ -274,7 +274,7 @@ def test_baseline_missing_token_fails_before_provisioning(
     def _no_token(*a: object, **k: object) -> list[str]:
         raise CommandFailedError("no token")
 
-    monkeypatch.setattr(sb, "agent_env", _no_token)
+    monkeypatch.setattr(sb, "harness_env", _no_token)
     with pytest.raises(CommandFailedError):
         _run(_opts(tmp_path, baseline=True))
     assert provisioned == []

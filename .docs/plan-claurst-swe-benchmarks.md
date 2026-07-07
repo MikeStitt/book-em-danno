@@ -1,4 +1,4 @@
-# Plan — Claurst as a first-class agent-under-test + SWE benchmark tiers
+# Plan — Claurst as a first-class harness-under-test + SWE benchmark tiers
 
 > **Status:** design of record. Written 2026-06-23. Not yet implemented.
 > **Branch base:** stack on `remove-tool-call` (or branch from `main` if that has merged).
@@ -14,25 +14,25 @@ live in the sandbox:
 - **M0** de-risk spikes — install (curl, not npm), claurst stream-json schema, the
   Ollama relay, in-sandbox pip.
 - **M1** `driver.claurst_run`/`ClaurstTurn` (relay-wrapped). **M2/M3** `danno validate
-  --agent claurst` (provision `shell` VM + curl-install claurst + libasound; drive L0→L2)
+  --harness claurst` (provision `shell` VM + curl-install claurst + libasound; drive L0→L2)
   — *L0 cleared live on ollama/qwen3-coder-next*.
 - **M4** `suites/` (`BenchTask`/`BenchVerdict` + `benchmarks.toml` config).
 - **M5** Aider Polyglot suite — *claurst+qwen solved python/grade-school, pytest passed*.
 - **M6** SWE-bench Verified suite (HuggingFace fetch, host-side; per-instance sandbox) —
   *HF fetch + task construction verified live*.
-- **M7** `danno bench` command (runs enabled suites across the model matrix vs the AUT,
+- **M7** `danno bench` command (runs enabled suites across the model matrix vs the HUT,
   writes `bench.json` + summary) + docs (`benchmarks.toml.example`, this doc, `--help`).
 
 ## Context — why
 
 danno's research (`claude-code-clones-research.md` §3–4) names **Claurst** (`Kuberwastaken/claurst`,
 pure-Rust, `claurst -p` headless, native Ollama) as the best local-first Claude-Code clone to wire
-into danno, and recommends benchmarking it by adding it as a **new agent-under-test in danno's own
+into danno, and recommends benchmarking it by adding it as a **new harness-under-test in danno's own
 L0→L1→L2 harness** rather than dragging in the heavyweight industry suites.
 
 Two things sharpen that recommendation:
 
-1. **"a row in the harness" only solves the *agent* axis.** It teaches the harness *how to invoke and
+1. **"a row in the harness" only solves the *harness* axis.** It teaches the harness *how to invoke and
    read* Claurst. It does **not** raise benchmark quality — danno's current L2 is a single FizzBuzz
    graded by one hidden test. High-quality SWE benchmarking is a separate *task* axis.
 2. **The egress/pip "blocker" was disproven by spike (2026-06-23).** In the proxy-only sandbox:
@@ -43,7 +43,7 @@ Two things sharpen that recommendation:
    --no-index --find-links` (offline). So a **SWE-bench Verified subset is viable in-sandbox**; its
    only real cost is the per-instance environment provisioning every SWE-bench runner faces.
 
-**Outcome:** Claurst becomes a selectable agent-under-test, and the validator gains **two benchmark
+**Outcome:** Claurst becomes a selectable harness-under-test, and the validator gains **two benchmark
 suites** — **Aider Polyglot** (self-contained exercises) and a **SWE-bench Verified subset** (real
 GitHub issues) — each **enabled/selected by config**, with **per-test sandbox isolation** for SWE-bench.
 We run *real benchmark task content via danno's execution model*; we never claim an official
@@ -52,25 +52,25 @@ Docker-per-task "SWE-bench Verified score."
 ## Architecture — two orthogonal axes
 
 ```
-            AGENT axis (Part A)                 TASK axis (Part B)
-        how we invoke + read an AUT          what problems + how graded
+            HARNESS axis (Part A)               TASK axis (Part B)
+        how we invoke + read a HUT           what problems + how graded
    ┌──────────────────────────────────┐  ┌────────────────────────────────────┐
    │ opencode_run  (exists)           │  │ L0 liveness / L1 tool / L2 dev (exist)│
    │ claude_run    (exists, baseline) │  │ AiderTask        (new)                │
    │ claurst_run   (NEW) ── TurnFn    │×│ SwebenchTask     (new)                │
    └──────────────────────────────────┘  └────────────────────────────────────┘
                     │                                   │
-                    └────── reused, agent-agnostic ─────┘
+                    └────── reused, harness-agnostic ───┘
                          oracle.classify_turn(side_effect=tests_passed)
 ```
 
-The existing `Turn`/`TurnFn` protocol in `driver.py` is the agent seam; the existing `Level2Task`
+The existing `Turn`/`TurnFn` protocol in `driver.py` is the harness seam; the existing `Level2Task`
 `seed → run → grade` contract is the task seam. Both benchmark suites map onto that contract. The
-oracle, `run_tiers`, and the level runners stay agent- and task-agnostic.
+oracle, `run_tiers`, and the level runners stay harness- and task-agnostic.
 
 ---
 
-## Part A — Claurst as an agent-under-test (the driver row)
+## Part A — Claurst as a harness-under-test (the driver row)
 
 ### A.1 Hard constraints (from [[sandbox-egress-and-process-lifetime]])
 - **Claurst's Rust HTTP client ignores `HTTPS_PROXY`**, and the sandbox blocks direct egress +
@@ -94,8 +94,8 @@ oracle, `run_tiers`, and the level runners stay agent- and task-agnostic.
 - **Install step** in `src/book_em_danno/commands/sandbox.py`: install Claurst into the sandbox via
   the S1-proven method (preferred: curl-fetch the prebuilt aarch64 binary — `curl` is proven through
   the proxy; fallbacks: `npm i -g claurst`, `install.sh`). Hooked post-provision like `run_npm_setup`.
-- **AUT selection**: generalize agent-under-test choice. Today `--agent` selects an *opencode*
-  subagent and `claude` is a hardcoded baseline path (`baseline.py`). Add an explicit AUT dispatch
+- **HUT selection**: generalize harness-under-test choice. Today `--harness` selects an *opencode*
+  subagent and `claude` is a hardcoded baseline path (`baseline.py`). Add an explicit HUT dispatch
   `{opencode, claude, claurst}` → `{opencode_run, claude_run, claurst_run}`, mirroring `baseline.py`
   with a new `claurst.py` run path (auth/env + relay setup, then `run_tiers(run_turn=claurst_run)`).
 
@@ -213,8 +213,8 @@ select     = ["django__django-11099", "sympy__sympy-20154"]   # curated subset i
 
 - `enabled` gates each suite; `select` identifies which tests run (the user's "which tests we
   enable"). `extra="forbid"` so a typo fails loud at load.
-- CLI: `danno validate --agent claurst --benchmark {aider,swebench,all}` plus the existing `--only`
-  model filter to bound the matrix. AUT × suite × selected-tests × models is large — config selection
+- CLI: `danno validate --harness claurst --benchmark {aider,swebench,all}` plus the existing `--only`
+  model filter to bound the matrix. HUT × suite × selected-tests × models is large — config selection
   is the throttle.
 
 ---
@@ -240,8 +240,8 @@ mocking `subprocess` (mirror `tests/test_validator_driver_claude.py`).
 **M2 — Claurst provision/install:** install step in `sandbox.py`; env/auth wiring; `claurst.py` run
 path (mirror `baseline.py`).
 
-**M3 — AUT selection:** generalize `{opencode, claude, claurst}` dispatch through `run_tiers` /
-`run.py`; `--agent claurst` end-to-end against the existing L0→L1→L2 tiers (host Ollama).
+**M3 — HUT selection:** generalize `{opencode, claude, claurst}` dispatch through `run_tiers` /
+`run.py`; `--harness claurst` end-to-end against the existing L0→L1→L2 tiers (host Ollama).
 
 **M4 — Benchmark abstraction + config:** `benchmarks/` package (`base.py`, `config.py`),
 `BenchTask`/`BenchVerdict`, `[benchmarks]` schema + loader; unit tests for seed/reset/grade with
@@ -260,18 +260,18 @@ is *real benchmark tasks via danno's execution model*, not the official Docker-p
 ## Critical files
 - `src/danno_validator/driver.py` — `ClaurstTurn`, `claurst_run`, relay helper.
 - `src/danno_validator/claurst.py` (NEW) — claurst run path (mirror `baseline.py`).
-- `src/danno_validator/sweep.py`, `run.py` — AUT dispatch; per-test sandbox loop; teardown.
+- `src/danno_validator/sweep.py`, `run.py` — HUT dispatch; per-test sandbox loop; teardown.
 - `src/danno_validator/benchmarks/{__init__,base,config,aider,swebench}.py` (NEW).
 - `src/book_em_danno/commands/sandbox.py` — install-claurst exec; relay launch.
 - `src/book_em_danno/config/schema.py` — `[benchmarks]` models.
-- `src/danno_validator/cli.py` — `--agent claurst`, `--benchmark {aider,swebench,all}`.
+- `src/danno_validator/cli.py` — `--harness claurst`, `--benchmark {aider,swebench,all}`.
 - `tests/test_validator_driver_claurst.py`, `tests/test_benchmarks_*.py` (NEW, mirror existing).
 - `danno.toml.example`, `.docs/ux-danno-validate-cli.md`, `CHANGELOG.md`.
 
 ## Verification (end-to-end)
 - **Unit:** mock `subprocess` for the Claurst parser; benchmark `seed`/`reset`/`grade` with injected
   fake turns (existing `run_turn=` injection pattern).
-- **Integration, staged for reliability:** (1) `--agent claurst` over L0→L1→L2 on host Ollama;
+- **Integration, staged for reliability:** (1) `--harness claurst` over L0→L1→L2 on host Ollama;
   (2) one Aider exercise against the claude baseline, then claurst; (3) one SWE-bench instance in a
   per-test sandbox against the claude baseline, then claurst+Ollama.
 - **`ninja check`** (ruff, ruff format --check, mypy, pytest) green at every milestone; the
@@ -279,11 +279,11 @@ is *real benchmark tasks via danno's execution model*, not the official Docker-p
 
 ## Risks
 - **Claurst output format (S2)** may lack structured tool events → side-effect-only grading for that
-  AUT.
+  HUT.
 - **Relay + child-reaping** fragility → readiness-wait inside the exec; one relay per turn.
 - **pip flakiness** → offline wheel cache (proven) is the default dep strategy.
 - **Claurst maturity** (v0.1.5 beta) → treat as experimental; isolate failures from the claude/
   opencode baselines.
 - **SWE-bench per-instance provisioning** is genuinely laborious → start with a tiny curated subset;
   scale only after the path is proven; never silently drop instances.
-- **Matrix blow-up** (AUT × suite × tests × models) → gate hard with `enabled`/`select`/`--only`.
+- **Matrix blow-up** (HUT × suite × tests × models) → gate hard with `enabled`/`select`/`--only`.

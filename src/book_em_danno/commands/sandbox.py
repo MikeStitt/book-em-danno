@@ -49,14 +49,14 @@ from . import ollama
 
 DEFAULT_OLLAMA_URL = "http://host.docker.internal:11434/v1"
 DEFAULT_ALLOW_HOSTS = ("localhost:11434",)
-DEFAULT_AGENT = "opencode"
+DEFAULT_HARNESS = "opencode"
 # Auth env vars Claude Code accepts, in preference order (subscription token first).
 CLAUDE_AUTH_VARS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 # claurst (a pure-Rust Claude-Code clone) is NOT a prebuilt `docker sandbox` image: it
 # is hosted in the `shell` image and the release binary is installed post-create (see
-# `danno_validator.claurst.install_claurst`). The logical agent label stays "claurst"
+# `danno_validator.claurst.install_claurst`). The logical harness label stays "claurst"
 # everywhere (naming/registry/env/launch); only the create-time Docker image differs.
-CLAURST_AGENT = "claurst"
+CLAURST_HARNESS = "claurst"
 # claurst's config dir inside its HOME (`~/.claurst`); danno writes its generated
 # registry overlay + settings.json here (see `_emit_claurst_config`). The models
 # filename is shared with the generator so the two cannot drift.
@@ -65,10 +65,10 @@ _CLAURST_DIR = ".claurst"
 # `docker sandbox` image: it is git-cloned into the `shell` image post-create (see
 # `danno_validator.occ.install_occ`). Like claurst, the logical label stays "occ"
 # everywhere; only the create-time Docker image differs.
-OCC_AGENT = "occ"
+OCC_HARNESS = "occ"
 # Generous level-4 agentic-loop ceilings for occ against slow local models. The fork reads
 # these from the environment (see its ADR-004); danno supplies them as env-file DEFAULTS so
-# `danno.toml [env]` (or an exported host var) can override them via `assemble_agent_env`.
+# `danno.toml [env]` (or an exported host var) can override them via `assemble_harness_env`.
 # 60-min API timeout matches the relay's DANNO_RELAY_TIMEOUT default; the deep tool-recursion
 # cap keeps long local loops from hitting occ's faithful default of 50. Max-turns is left to
 # occ's `--max-turns` flag (driver.OCC_DEFAULT_MAX_TURNS), so it is not defaulted here.
@@ -76,35 +76,35 @@ OCC_API_TIMEOUT_DEFAULT_MS = 3600000
 OCC_MAX_RECURSION_DEPTH_DEFAULT = 500
 
 
-def _docker_image(agent: str) -> str:
-    """The prebuilt `docker sandbox` image backing a logical agent label.
+def _docker_image(harness: str) -> str:
+    """The prebuilt `docker sandbox` image backing a logical harness label.
 
     Almost always the label itself (opencode/claude/… ARE images). claurst and occ are
     the exceptions — neither has a prebuilt image, so both ride the `shell` image and are
     installed afterwards; the label is preserved for the sandbox name and registry."""
-    if agent == CLAURST_AGENT:
+    if harness == CLAURST_HARNESS:
         from danno_validator.claurst import CLAURST_SANDBOX_IMAGE  # local: avoids import cycle
 
         return CLAURST_SANDBOX_IMAGE
-    if agent == OCC_AGENT:
+    if harness == OCC_HARNESS:
         from danno_validator.occ import OCC_SANDBOX_IMAGE  # local: avoids import cycle
 
         return OCC_SANDBOX_IMAGE
-    return agent
+    return harness
 
 
-def default_name(target_abs: Path, agent: str = DEFAULT_AGENT) -> str:
+def default_name(target_abs: Path, harness: str = DEFAULT_HARNESS) -> str:
     """Sandbox name derived from the project's *parent and own* dir names.
 
     `danno-<parent>-<base>` so same-basename projects in different parents
     (`~/work/acme` vs `~/clients/acme`) and worktree dirs (`…/main`, `…/login`)
-    stay distinct. The default opencode agent keeps the bare name; a per-agent
-    suffix otherwise so agents get separate sandboxes that can coexist.
+    stay distinct. The default opencode harness keeps the bare name; a per-harness
+    suffix otherwise so harnesses get separate sandboxes that can coexist.
     """
     parent = target_abs.parent.name
     stem = f"{parent}-{target_abs.name}" if parent else target_abs.name
     base = f"danno-{stem}"
-    return base if agent == DEFAULT_AGENT else f"{base}-{agent}"
+    return base if harness == DEFAULT_HARNESS else f"{base}-{harness}"
 
 
 def live_sandbox_names() -> set[str]:
@@ -253,7 +253,7 @@ def resolve_home(target_abs: Path, sandbox_name: str) -> Path | None:
 
     if home is not None and home.is_relative_to(target_abs):
         log_warn(
-            f"agent home {home} is inside the repo {target_abs} — chat history would "
+            f"harness home {home} is inside the repo {target_abs} — chat history would "
             f"land in your project (and could be committed). Add it to .gitignore or "
             "point agent_home at a path outside the repo."
         )
@@ -294,14 +294,14 @@ def create(
     runner: Runner,
     name: str,
     target_abs: Path,
-    agent: str = DEFAULT_AGENT,
+    harness: str = DEFAULT_HARNESS,
     *,
     home: Path | None = None,
     registry_path: Path | None = None,
 ) -> list[str]:
     """Create the sandbox, mounting the project at the same path inside the VM.
 
-    `agent` selects the Docker prebuilt agent baked into the VM (opencode, claude,
+    `harness` selects the Docker prebuilt harness baked into the VM (opencode, claude,
     …). When `home` is set, the host agent-home dir is mounted as a second
     workspace (and `mkdir -p`'d first so the mount has a source). With
     `registry_path`, the name→target mapping is recorded under --apply (advised
@@ -316,7 +316,7 @@ def create(
                 f"for {target_abs} would collide — pass --name to disambiguate."
             )
 
-    cmd = ["docker", "sandbox", "create", "--name", name, _docker_image(agent), str(target_abs)]
+    cmd = ["docker", "sandbox", "create", "--name", name, _docker_image(harness), str(target_abs)]
     if home is not None:
         cmd.append(str(home))
 
@@ -324,12 +324,12 @@ def create(
         log_info(f"sandbox '{name}' already exists — skipping create")
     else:
         if home is not None:
-            runner.advise(["mkdir", "-p", str(home)], why=f"ensure agent home {home} exists")
-        runner.advise(cmd, why=f"create the {agent} sandbox '{name}' for {target_abs}")
+            runner.advise(["mkdir", "-p", str(home)], why=f"ensure harness home {home} exists")
+        runner.advise(cmd, why=f"create the {harness} sandbox '{name}' for {target_abs}")
 
     if registry_path is not None:
         if _live(runner):
-            registry.record(registry_path, name, str(target_abs), agent)
+            registry.record(registry_path, name, str(target_abs), harness)
         else:
             log_info(f"would record '{name}' → {target_abs} in {registry_path}")
     return cmd
@@ -368,7 +368,7 @@ def provision(
     name: str,
     target_abs: Path,
     *,
-    agent: str = DEFAULT_AGENT,
+    harness: str = DEFAULT_HARNESS,
     allow_hosts: tuple[str, ...] = DEFAULT_ALLOW_HOSTS,
     home: Path | None = None,
     registry_path: Path | None = None,
@@ -376,7 +376,7 @@ def provision(
     """Get the sandbox to 'ready': create + egress hole + stop (so the policy applies
     on next start). Does NOT launch the TUI — that's `start`."""
     ollama.announce_loopback()
-    if agent == DEFAULT_AGENT and not (target_abs / ".opencode" / "opencode.jsonc").is_file():
+    if harness == DEFAULT_HARNESS and not (target_abs / ".opencode" / "opencode.jsonc").is_file():
         log_info(
             "[yellow]WARN[/yellow] target has no .opencode/opencode.jsonc — "
             "run `danno install` first so the sandbox has a config to load."
@@ -386,24 +386,24 @@ def provision(
     # provision ends with `stop`), and `network proxy` 400s against a stopped VM —
     # so bring it back up first when the sandbox already existed.
     preexisting = _live(runner) and sandbox_exists(name)
-    cmds = [create(runner, name, target_abs, agent, home=home, registry_path=registry_path)]
+    cmds = [create(runner, name, target_abs, harness, home=home, registry_path=registry_path)]
     if preexisting:
         cmds.append(ensure_running(runner, name))
     cmds.append(configure_proxy(runner, name, allow_hosts))
     # The network policy only takes on a fresh VM start; stop so the next `start`
     # applies the allow-rule.
     cmds.append(stop(runner, name))
-    if agent == CLAURST_AGENT:
+    if harness == CLAURST_HARNESS:
         # claurst has no prebuilt image: drop its binary into the `shell` VM. Done AFTER
         # the stop so the install exec auto-starts the VM with the allow-policy armed
         # (apt + the GitHub release fetch need egress). Idempotent (self-skips when
         # already installed). The binary stays VM-local; only ~/.claurst is persisted
-        # via the relocated HOME at launch (see agent_env). Local import: claurst.py
+        # via the relocated HOME at launch (see harness_env). Local import: claurst.py
         # imports back into this module.
         from danno_validator.claurst import install_claurst
 
         cmds.append(install_claurst(runner, name))
-    if agent == OCC_AGENT:
+    if harness == OCC_HARNESS:
         # occ has no prebuilt image either: git-clone + patch it into the `shell` VM.
         # Same placement rationale as claurst (after stop → auto-start with egress armed;
         # git clone + `npm install undici` need the proxy). Idempotent (stamp skip). The
@@ -415,15 +415,15 @@ def provision(
     return cmds
 
 
-def agent_env(agent: str, ollama_url: str, home: Path | None = None) -> list[str]:
-    """The agent-specific `KEY=VAL` env-file lines.
+def harness_env(harness: str, ollama_url: str, home: Path | None = None) -> list[str]:
+    """The harness-specific `KEY=VAL` env-file lines.
 
     opencode reaches host Ollama via OLLAMA_BASE_URL. claude needs auth: prefer the
     subscription token (CLAUDE_CODE_OAUTH_TOKEN), else ANTHROPIC_API_KEY, read from
     danno's host environment. Fail loud (Working Rule 8) when neither is set. The
     secret only ever lands in the chmod-600 env-file, never on the command line.
 
-    When `home` is set, the agent's global config is relocated onto the mounted
+    When `home` is set, the harness's global config is relocated onto the mounted
     host dir: claude via CLAUDE_CONFIG_DIR; opencode via XDG_CONFIG_HOME; claurst via
     HOME (it reads `~/.claurst` and honors no config-dir override — verified
     `scratch/claurst_home_probe.sh`, claurst 0.1.5). The claurst binary lives VM-local
@@ -440,14 +440,14 @@ def agent_env(agent: str, ollama_url: str, home: Path | None = None) -> list[str
     danno-generated registry overlay under `{home}/.claurst` (written by
     `_emit_claurst_config`) so its tool-gating + context window come from danno.toml.
     """
-    if agent == CLAURST_AGENT:
+    if harness == CLAURST_HARNESS:
         if home is None:
             return []
         # HOME relocation makes ~/.claurst == {home}/.claurst (mounted at the same path
         # in the VM). Point claurst at the danno-generated registry overlay there so its
         # tool-gating + context window come from danno.toml (Bug 4/7), not its catalog.
         return [f"HOME={home}", f"CLAURST_MODELS_PATH={home / _CLAURST_DIR / _CLAURST_MODELS_FILE}"]
-    if agent == OCC_AGENT:
+    if harness == OCC_HARNESS:
         # occ's *mandatory* OpenAI env (OPENAI_BASE_URL/KEY, CLAUDE_CODE_STREAMING) is set
         # INLINE in the launch/headless command (like claurst's OLLAMA_HOST), NOT here, so it
         # cannot be user-overridden. Here we supply the *tunable* agentic-loop ceilings as
@@ -461,7 +461,7 @@ def agent_env(agent: str, ollama_url: str, home: Path | None = None) -> list[str
         if home is not None:
             lines.append(f"HOME={home}")
         return lines
-    if agent == "claude":
+    if harness == "claude":
         lines = []
         for var in CLAUDE_AUTH_VARS:
             val = os.environ.get(var)
@@ -499,7 +499,7 @@ def resolve_claurst_model(config: DannoConfig, value: str) -> str:
         provider = value.split("/", 1)[0]
         if provider != "ollama":
             raise CommandFailedError(
-                f"--agent claurst: a raw '{provider}/…' ref can't be wired by danno (it can't "
+                f"--harness claurst: a raw '{provider}/…' ref can't be wired by danno (it can't "
                 f"derive the API key or vouch for reachability). Declare it as a [models] entry "
                 f"on a supported backend (Ollama, or NVIDIA NIM) and pass that name instead."
             )
@@ -507,13 +507,13 @@ def resolve_claurst_model(config: DannoConfig, value: str) -> str:
     if config.models.get(value) is None:
         raise CommandFailedError(
             f"model '{value}' is not defined in danno.toml [models]. "
-            f"Pass a [models] entry (Ollama or NVIDIA NIM) for --agent claurst."
+            f"Pass a [models] entry (Ollama or NVIDIA NIM) for --harness claurst."
         )
     try:
         return claurst_model_ref(config, value)
     except NotImplementedError as exc:
         raise CommandFailedError(
-            f"--agent claurst can't reach model '{value}': {exc} Pick an Ollama model or an "
+            f"--harness claurst can't reach model '{value}': {exc} Pick an Ollama model or an "
             f"NVIDIA NIM model."
         ) from exc
 
@@ -550,8 +550,30 @@ def claurst_cloud_env_lines(config: DannoConfig, value: str) -> list[str]:
     val = os.environ.get(var)
     if not val:
         raise CommandFailedError(
-            f"--agent claurst -m {value} needs the cloud provider key '{var}', but it is unset "
+            f"--harness claurst -m {value} needs the cloud provider key '{var}', but it is unset "
             f"in danno's environment. Export {var} (e.g. in your shell profile) and re-run."
+        )
+    return [f"{var}={val}"]
+
+
+def cloud_api_key_env_lines(config: DannoConfig, value: str) -> list[str]:
+    """Env-file lines injecting a cloud model's provider key under its OWN var name
+    (`<api_key_env>=<hostval>`), or [] for a local Ollama model.
+
+    This is the form a HUT needs when it reads the provider key under the backend's own
+    env var: opencode's generated provider block references `{env:<api_key_env>}`, and
+    claurst reads the same var. (occ instead needs the `OPENAI_BASE_URL`/`OPENAI_API_KEY`
+    mapping — see `occ_cloud_env_lines`.) The value lands only in the chmod-600 env-file,
+    never on a command line. Fails loud (Working Rule 8) when the var is unset/empty,
+    naming it, rather than launching to a mid-session auth failure."""
+    var = claurst_cloud_key_env(config, value)
+    if var is None:
+        return []
+    val = os.environ.get(var)
+    if not val:
+        raise CommandFailedError(
+            f"model '{value}' needs the cloud provider key '{var}', but it is unset in danno's "
+            f"environment. Export {var} (e.g. in your shell profile) and re-run."
         )
     return [f"{var}={val}"]
 
@@ -570,7 +592,7 @@ def resolve_occ_model(config: DannoConfig, value: str) -> str:
         provider = value.split("/", 1)[0]
         if provider != "ollama":
             raise CommandFailedError(
-                f"--agent occ: a raw '{provider}/…' ref can't be wired by danno (it can't "
+                f"--harness occ: a raw '{provider}/…' ref can't be wired by danno (it can't "
                 f"derive the OPENAI_BASE_URL/key). Declare it as a [models] entry on a "
                 f"supported backend (Ollama, or an OpenAI-compatible cloud) and pass that name."
             )
@@ -579,7 +601,7 @@ def resolve_occ_model(config: DannoConfig, value: str) -> str:
     if model is None:
         raise CommandFailedError(
             f"model '{value}' is not defined in danno.toml [models]. "
-            f"Pass a [models] entry (Ollama or an OpenAI-compatible cloud) for --agent occ."
+            f"Pass a [models] entry (Ollama or an OpenAI-compatible cloud) for --harness occ."
         )
     backend = config.backends[model.backend]
     if isinstance(backend, OllamaBackend):
@@ -587,7 +609,7 @@ def resolve_occ_model(config: DannoConfig, value: str) -> str:
     if isinstance(backend, OpenAIBackend):
         return f"{model.backend}/{model.tag}"
     raise CommandFailedError(
-        f"--agent occ can't reach model '{value}': backend kind '{backend.kind}' is not "
+        f"--harness occ can't reach model '{value}': backend kind '{backend.kind}' is not "
         f"supported (use an Ollama or OpenAI-compatible backend)."
     )
 
@@ -612,31 +634,31 @@ def occ_cloud_env_lines(config: DannoConfig, value: str) -> list[str]:
     key = os.environ.get(backend.api_key_env)
     if not key:
         raise CommandFailedError(
-            f"--agent occ -m {value} needs the cloud provider key '{backend.api_key_env}', but "
+            f"--harness occ -m {value} needs the cloud provider key '{backend.api_key_env}', but "
             f"it is unset in danno's environment. Export {backend.api_key_env} and re-run."
         )
     return [f"OPENAI_BASE_URL={backend.base_url}", f"OPENAI_API_KEY={key}"]
 
 
-def resolve_model_for_agent(target_abs: Path, agent: str, value: str) -> str:
+def resolve_model_for_harness(target_abs: Path, harness: str, value: str) -> str:
     """The `-m/--model` flow for `sandbox start`: load danno.toml and resolve `value`
-    for `agent`. Supported only for the danno-clone agents claurst and occ — claude has
+    for `harness`. Supported only for the danno-clone harnesses claurst and occ — claude has
     its own `--model` and opencode's model comes from the generated opencode.jsonc, so `-m`
     with either fails loud rather than being silently ignored. Raises `DannoConfigError`
     (bad toml) or `CommandFailedError`."""
-    if agent not in (CLAURST_AGENT, OCC_AGENT):
+    if harness not in (CLAURST_HARNESS, OCC_HARNESS):
         raise CommandFailedError(
-            "`-m/--model` on `danno sandbox start` is only supported with `--agent claurst` "
-            "or `--agent occ`. Claude Code uses its own `--model` (pass it after `--`); "
+            "`-m/--model` on `danno sandbox start` is only supported with `--harness claurst` "
+            "or `--harness occ`. Claude Code uses its own `--model` (pass it after `--`); "
             "opencode's model comes from danno.toml. Re-run without `-m`."
         )
     config = load_config(target_abs / "danno.toml")
-    if agent == OCC_AGENT:
+    if harness == OCC_HARNESS:
         return resolve_occ_model(config, value)
     return resolve_claurst_model(config, value)
 
 
-def resolve_claurst_start(target_abs: Path, agent: str, value: str) -> tuple[str, list[str]]:
+def resolve_claurst_start(target_abs: Path, harness: str, value: str) -> tuple[str, list[str]]:
     """`sandbox start -m <value>`: the claurst `-m` ref PLUS any cloud-key env-file lines.
 
     Loads danno.toml once and returns `(ref, env_lines)` — `env_lines` is empty for local
@@ -645,26 +667,26 @@ def resolve_claurst_start(target_abs: Path, agent: str, value: str) -> tuple[str
     return resolve_claurst_model(config, value), claurst_cloud_env_lines(config, value)
 
 
-def resolve_occ_start(target_abs: Path, agent: str, value: str) -> tuple[str, list[str]]:
+def resolve_occ_start(target_abs: Path, harness: str, value: str) -> tuple[str, list[str]]:
     """`sandbox start -m <value>` for occ: the occ `<backend>/<tag>` ref PLUS any cloud
     env-file lines (`OPENAI_BASE_URL` + `OPENAI_API_KEY`; empty for local Ollama)."""
     config = load_config(target_abs / "danno.toml")
     return resolve_occ_model(config, value), occ_cloud_env_lines(config, value)
 
 
-def resolve_start(target_abs: Path, agent: str, value: str) -> tuple[str, list[str]]:
-    """Dispatch `sandbox start -m` to the per-agent resolver. Non-clone agents fail loud
-    via `resolve_model_for_agent` (which rejects `-m` for claude/opencode)."""
-    if agent == OCC_AGENT:
-        return resolve_occ_start(target_abs, agent, value)
-    if agent == CLAURST_AGENT:
-        return resolve_claurst_start(target_abs, agent, value)
-    resolve_model_for_agent(target_abs, agent, value)  # raises the non-clone rejection
-    raise AssertionError("unreachable")  # resolve_model_for_agent always raises here
+def resolve_start(target_abs: Path, harness: str, value: str) -> tuple[str, list[str]]:
+    """Dispatch `sandbox start -m` to the per-harness resolver. Non-clone harnesses fail loud
+    via `resolve_model_for_harness` (which rejects `-m` for claude/opencode)."""
+    if harness == OCC_HARNESS:
+        return resolve_occ_start(target_abs, harness, value)
+    if harness == CLAURST_HARNESS:
+        return resolve_claurst_start(target_abs, harness, value)
+    resolve_model_for_harness(target_abs, harness, value)  # raises the non-clone rejection
+    raise AssertionError("unreachable")  # resolve_model_for_harness always raises here
 
 
-def _build_env_file(agent_lines: list[str], env_pairs: list[str], env_files: list[str]) -> Path:
-    """Combine --env-file(s), --env pairs, and the agent env lines into one 0600 temp file."""
+def _build_env_file(harness_lines: list[str], env_pairs: list[str], env_files: list[str]) -> Path:
+    """Combine --env-file(s), --env pairs, and the harness env lines into one 0600 temp file."""
     fd, path = tempfile.mkstemp(prefix="danno-env-")
     os.close(fd)
     p = Path(path)
@@ -673,7 +695,7 @@ def _build_env_file(agent_lines: list[str], env_pairs: list[str], env_files: lis
     for f in env_files:
         lines.append(Path(f).read_text(encoding="utf-8").rstrip("\n"))
     lines.extend(env_pairs)
-    lines.extend(agent_lines)
+    lines.extend(harness_lines)
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return p
 
@@ -767,7 +789,7 @@ def _maybe_load_config(target_abs: Path) -> DannoConfig | None:
     """Load `{target}/danno.toml` for env assembly, or None if it is absent.
 
     A config-less `danno sandbox shell`/`start` on a bare directory still works — it
-    simply gets no `[env]` overlay (only agent defaults + CLI env)."""
+    simply gets no `[env]` overlay (only harness defaults + CLI env)."""
     cfg = target_abs / "danno.toml"
     if not cfg.is_file():
         return None
@@ -792,28 +814,28 @@ def _resolve_env_indirection(value: str) -> tuple[str, list[str]]:
     return _ENV_REF.sub(sub, value), missing
 
 
-def assemble_agent_env(
+def assemble_harness_env(
     config: DannoConfig | None,
     *,
-    agent_defaults: list[str],
+    harness_defaults: list[str],
     env_pairs: list[str],
     env_files: list[str],
     strict: bool = False,
 ) -> list[str]:
-    """Final `KEY=VAL` env-file lines for a config-driven agent (opencode/claurst/occ),
+    """Final `KEY=VAL` env-file lines for a config-driven harness (opencode/claurst/occ),
     applying the locked precedence (highest wins):
 
-        CLI (--env / --env-file)  >  host os.environ  >  danno.toml [env]  >  agent default
+        CLI (--env / --env-file)  >  host os.environ  >  danno.toml [env]  >  harness default
 
     The host-env tier is deliberately scoped to keys the operator opted into managing
     (those named in `[env]` or on the CLI): a bare same-named host var does NOT clobber
-    a computed agent default (e.g. `OLLAMA_BASE_URL`), which would silently break the
+    a computed harness default (e.g. `OLLAMA_BASE_URL`), which would silently break the
     sandbox's Ollama networking. A `{env:VAR}` reference inside an `[env]` value resolves
     from `os.environ`; an unset reference raises in `strict` mode (Working Rule 8) or
     warns + drops the key otherwise. Claude does NOT flow through here — its auth stays
-    in `agent_env` exactly as-is."""
+    in `harness_env` exactly as-is."""
     merged: dict[str, str] = {}
-    for line in agent_defaults:  # level 4: code default
+    for line in harness_defaults:  # level 4: code default
         if "=" in line:
             key, val = line.split("=", 1)
             merged[key] = val
@@ -847,7 +869,7 @@ def _exec_session(
     name: str,
     target_abs: Path,
     *,
-    agent: str,
+    harness: str,
     ollama_url: str,
     env_pairs: list[str],
     env_files: list[str],
@@ -857,37 +879,37 @@ def _exec_session(
 ) -> list[str]:
     """Set up the in-container session and exec `container_argv` inside it.
 
-    SYNC REQUIREMENT: this is the single shared core of `launch` (runs the agent) and
+    SYNC REQUIREMENT: this is the single shared core of `launch` (runs the harness) and
     `shell` (runs bash). `danno sandbox shell` MUST stay environmentally identical to
     `danno sandbox start`: same mounted repo working dir (`-w <target>`), same
-    chmod-600 env-file (agent auth / Ollama URL / relocated config home / resolved
+    chmod-600 env-file (harness auth / Ollama URL / relocated config home / resolved
     `{env:VAR}` refs), same claude onboarding seeding — differing ONLY in
-    `container_argv` (the agent binary vs `bash`). Both callers route through here so
+    `container_argv` (the harness binary vs `bash`). Both callers route through here so
     the two paths cannot drift; never add env/`-w`/mount wiring to one path without
     the other.
 
-    With a persistent `home`, the agent's config is relocated onto it; for claude,
+    With a persistent `home`, the harness's config is relocated onto it; for claude,
     onboarding and workspace trust are pre-seeded so neither wizard nor the trust
     dialog blocks the session. The exec runs with `check=False`: quitting the TUI or
     exiting the shell is not a danno error."""
-    if agent == "claude" and home is not None:
+    if harness == "claude" and home is not None:
         seed_onboarding(home, target_abs)
-    if agent == "claude":
+    if harness == "claude":
         # claude's auth injection stays exactly as-is (it is NOT danno.toml-config
-        # driven); agent_env lines win over --env/--env-file via _build_env_file.
-        lines = agent_env(agent, ollama_url, home)
+        # driven); harness_env lines win over --env/--env-file via _build_env_file.
+        lines = harness_env(harness, ollama_url, home)
         env_path_lines, env_path_pairs, env_path_files = lines, env_pairs, env_files
     else:
-        if agent == DEFAULT_AGENT:
+        if harness == DEFAULT_HARNESS:
             # opencode reads opencode.jsonc; verify every {env:VAR} it references is
             # supplied (auto-injecting host-exported ones), else fail loud up front.
             env_pairs = reconcile_env_refs(target_abs, env_pairs, env_files)
-        # opencode/claurst/occ: fold agent defaults, danno.toml [env], host env and CLI
-        # into one precedence-ordered file. assemble_agent_env already applied
+        # opencode/claurst/occ: fold harness defaults, danno.toml [env], host env and CLI
+        # into one precedence-ordered file. assemble_harness_env already applied
         # env_pairs/env_files, so pass them empty to _build_env_file (avoid double-apply).
-        lines = assemble_agent_env(
+        lines = assemble_harness_env(
             _maybe_load_config(target_abs),
-            agent_defaults=agent_env(agent, ollama_url, home),
+            harness_defaults=harness_env(harness, ollama_url, home),
             env_pairs=env_pairs,
             env_files=env_files,
         )
@@ -918,20 +940,20 @@ def launch(
     name: str,
     target_abs: Path,
     *,
-    agent: str = DEFAULT_AGENT,
+    harness: str = DEFAULT_HARNESS,
     ollama_url: str = DEFAULT_OLLAMA_URL,
     env_pairs: list[str] | None = None,
     env_files: list[str] | None = None,
     home: Path | None = None,
-    agent_args: list[str] | None = None,
+    harness_args: list[str] | None = None,
     model: str | None = None,
     capture_relay_port: int | None = None,
 ) -> list[str]:
-    """Launch the in-container agent in the mounted repo, wired to host Ollama /
-    agent auth. Launching is the command's purpose, so it always executes (not gated
+    """Launch the in-container harness in the mounted repo, wired to host Ollama /
+    harness auth. Launching is the command's purpose, so it always executes (not gated
     by `--apply`). The session setup is shared with `shell` via `_exec_session` (see
     its SYNC REQUIREMENT); this path's only specialisation is the container command —
-    the agent binary plus `agent_args` forwarded verbatim (e.g. `["--resume", "<id>"]`
+    the harness binary plus `harness_args` forwarded verbatim (e.g. `["--resume", "<id>"]`
     for `claude`).
 
     claurst is the exception: it can't reach host Ollama directly (its Rust client
@@ -939,29 +961,31 @@ def launch(
     `bash -lc` script from `claurst.interactive_launch_script` (mirrors the headless
     path), with `model` resolved to its `-m ollama/<tag>`. `model` and
     `capture_relay_port` (the `--capture` recording-proxy port) are claurst-only."""
-    if agent == CLAURST_AGENT:
+    if harness == CLAURST_HARNESS:
         from danno_validator.claurst import interactive_launch_script  # local: import cycle
 
         container_argv = interactive_launch_script(
-            model, agent_args or [], capture_port=capture_relay_port
+            model, harness_args or [], capture_port=capture_relay_port
         )
-    elif agent == OCC_AGENT:
+    elif harness == OCC_HARNESS:
         from danno_validator.occ import interactive_launch_script as occ_launch_script
 
-        container_argv = occ_launch_script(model, agent_args or [], capture_port=capture_relay_port)
+        container_argv = occ_launch_script(
+            model, harness_args or [], capture_port=capture_relay_port
+        )
     else:
-        container_argv = [agent, *(agent_args or [])]
+        container_argv = [harness, *(harness_args or [])]
     return _exec_session(
         runner,
         name,
         target_abs,
-        agent=agent,
+        harness=harness,
         ollama_url=ollama_url,
         env_pairs=env_pairs or [],
         env_files=env_files or [],
         home=home,
         container_argv=container_argv,
-        why=f"launch {agent} in sandbox '{name}'",
+        why=f"launch {harness} in sandbox '{name}'",
     )
 
 
@@ -991,7 +1015,7 @@ def _ensure_provisioned(
     name: str,
     target_abs: Path,
     *,
-    agent: str,
+    harness: str,
     allow_hosts: tuple[str, ...],
     home: Path | None,
     registry_path: Path | None,
@@ -1005,7 +1029,7 @@ def _ensure_provisioned(
             runner,
             name,
             target_abs,
-            agent=agent,
+            harness=harness,
             allow_hosts=allow_hosts,
             home=home,
             registry_path=registry_path,
@@ -1019,7 +1043,7 @@ def _ensure_provisioned(
     # session so the launched (or hand-run) claurst sees the right models/agents. Both
     # start and shell pass through here, keeping them in sync (SYNC REQUIREMENT). Needs a
     # persistent agent_home (an ephemeral VM-local HOME has nowhere host-side to write).
-    if agent == CLAURST_AGENT and home is not None:
+    if harness == CLAURST_HARNESS and home is not None:
         _emit_claurst_config(runner, target_abs, home)
 
 
@@ -1045,13 +1069,13 @@ def _claurst_relay_capture_port(targets: Sequence[CaptureTarget]) -> int:
     matches = [t for t in targets if t.upstream == host_ollama]
     if not matches:
         raise CommandFailedError(
-            "--capture --agent claurst: no Ollama backend fronting host Ollama "
+            "--capture --harness claurst: no Ollama backend fronting host Ollama "
             "(host.docker.internal:11434) to record through; claurst's relay only reaches "
             "local Ollama. Point a danno.toml [backends.*] ollama backend at it."
         )
     if len(matches) > 1:
         raise CommandFailedError(
-            f"--capture --agent claurst: {len(matches)} Ollama backends front host Ollama; "
+            f"--capture --harness claurst: {len(matches)} Ollama backends front host Ollama; "
             "the relay can record through only one — disambiguate danno.toml [backends]."
         )
     return matches[0].proxy_port
@@ -1062,27 +1086,27 @@ def _capture_session(
     runner: Runner,
     target_abs: Path,
     *,
-    agent: str,
+    harness: str,
     capture_dir: Path | None,
     base_allow_hosts: tuple[str, ...],
 ) -> Iterator[_CaptureWiring]:
     """`--capture` for `start`/`shell`: run per-backend recording proxies and yield the
     `_CaptureWiring` to provision/launch with (egress allow-list + claurst relay port).
 
-    Two levers, by agent: opencode dials the proxies via its generated opencode.jsonc
+    Two levers, by harness: opencode dials the proxies via its generated opencode.jsonc
     `base_url`s (transiently rewritten here, restored byte-for-byte on exit); claurst
     ignores that config and the egress proxy, so instead its in-VM relay is pointed at
     the Ollama proxy (`relay_upstream_port`, wired into the launch). A no-op yielding
-    `base_allow_hosts` when capture is off; warns + no-ops for any other agent. Requires
+    `base_allow_hosts` when capture is off; warns + no-ops for any other harness. Requires
     `--apply`: the per-run proxy ports must be opened in the sandbox egress (a
     re-provision)."""
     if capture_dir is None:
         yield _CaptureWiring(base_allow_hosts)
         return
-    if agent not in (DEFAULT_AGENT, CLAURST_AGENT, OCC_AGENT):
+    if harness not in (DEFAULT_HARNESS, CLAURST_HARNESS, OCC_HARNESS):
         log_warn(
-            f"--capture supports the '{DEFAULT_AGENT}', '{CLAURST_AGENT}' and '{OCC_AGENT}' "
-            f"agents; not capturing '{agent}'."
+            f"--capture supports the '{DEFAULT_HARNESS}', '{CLAURST_HARNESS}' and '{OCC_HARNESS}' "
+            f"harnesses; not capturing '{harness}'."
         )
         yield _CaptureWiring(base_allow_hosts)
         return
@@ -1100,12 +1124,12 @@ def _capture_session(
             f"{', '.join(uncap)}"
         )
     allow = capture_allow_hosts(targets, base_allow_hosts)
-    if agent in (CLAURST_AGENT, OCC_AGENT):
+    if harness in (CLAURST_HARNESS, OCC_HARNESS):
         # claurst/occ read neither opencode.jsonc nor the egress proxy; both dial an in-VM
         # relay (occ reuses claurst's `_claurst_script` bracket). Point that relay at the
         # Ollama recording proxy (no opencode.jsonc rewrite).
         relay_port = _claurst_relay_capture_port(targets)
-        log_info(f"--capture: recording {agent}<->Ollama wire traffic to {capture_dir}")
+        log_info(f"--capture: recording {harness}<->Ollama wire traffic to {capture_dir}")
         with captures_running(targets):
             yield _CaptureWiring(allow, relay_port)
         return
@@ -1128,36 +1152,36 @@ def start(
     name: str,
     target_abs: Path,
     *,
-    agent: str = DEFAULT_AGENT,
+    harness: str = DEFAULT_HARNESS,
     ollama_url: str = DEFAULT_OLLAMA_URL,
     allow_hosts: tuple[str, ...] = DEFAULT_ALLOW_HOSTS,
     env_pairs: list[str] | None = None,
     env_files: list[str] | None = None,
     home: Path | None = None,
     registry_path: Path | None = None,
-    agent_args: list[str] | None = None,
+    harness_args: list[str] | None = None,
     capture_dir: Path | None = None,
     model: str | None = None,
 ) -> None:
     """Provision (under `--apply`, idempotent) then launch the in-container AGENT.
 
     SYNC REQUIREMENT: `start` and `shell` are deliberately the same command with a
-    different last step — `start` runs the agent, `shell` runs `bash`. Both gate via
+    different last step — `start` runs the harness, `shell` runs `bash`. Both gate via
     `_ensure_provisioned`, set up the session via `_exec_session`, and wrap the span in
     `_capture_session` (`--capture`); put any new provisioning/env/mount/capture
     behaviour in those shared helpers, not in one command only, so the two cannot drift.
 
-    `agent_args` are forwarded verbatim to the agent binary (e.g. `--resume <id>`).
+    `harness_args` are forwarded verbatim to the harness binary (e.g. `--resume <id>`).
     `model` is the resolved, locality-checked claurst `-m ollama/<tag>` (claurst-only;
-    see `resolve_model_for_agent`); it reaches the agent command via `launch`."""
+    see `resolve_model_for_harness`); it reaches the harness command via `launch`."""
     with _capture_session(
-        runner, target_abs, agent=agent, capture_dir=capture_dir, base_allow_hosts=allow_hosts
+        runner, target_abs, harness=harness, capture_dir=capture_dir, base_allow_hosts=allow_hosts
     ) as cap:
         _ensure_provisioned(
             runner,
             name,
             target_abs,
-            agent=agent,
+            harness=harness,
             allow_hosts=cap.allow_hosts,
             home=home,
             registry_path=registry_path,
@@ -1166,12 +1190,12 @@ def start(
             runner,
             name,
             target_abs,
-            agent=agent,
+            harness=harness,
             ollama_url=ollama_url,
             env_pairs=env_pairs,
             env_files=env_files,
             home=home,
-            agent_args=agent_args,
+            harness_args=harness_args,
             model=model,
             capture_relay_port=cap.relay_upstream_port,
         )
@@ -1209,7 +1233,7 @@ def shell(
     name: str,
     target_abs: Path,
     *,
-    agent: str = DEFAULT_AGENT,
+    harness: str = DEFAULT_HARNESS,
     ollama_url: str = DEFAULT_OLLAMA_URL,
     allow_hosts: tuple[str, ...] = DEFAULT_ALLOW_HOSTS,
     env_pairs: list[str] | None = None,
@@ -1218,24 +1242,24 @@ def shell(
     registry_path: Path | None = None,
     capture_dir: Path | None = None,
 ) -> list[str]:
-    """Open an interactive bash shell inside the sandbox VM — `start` minus the agent
+    """Open an interactive bash shell inside the sandbox VM — `start` minus the harness
     launch.
 
     SYNC REQUIREMENT: see `start`. `shell` MUST stay identical to `start` except for
     the final in-container command: same provisioning gate (`_ensure_provisioned`),
     same `--capture` wrap (`_capture_session`), and same session setup (`_exec_session`:
-    `-w <target>`, the env-file with agent auth / Ollama URL / relocated config home /
+    `-w <target>`, the env-file with harness auth / Ollama URL / relocated config home /
     resolved `{env:}` refs), so a tool you run by hand from this shell is wired exactly
-    as `start` would wire the agent. The ONLY difference is the container command —
-    `bash` instead of the agent binary."""
+    as `start` would wire the harness. The ONLY difference is the container command —
+    `bash` instead of the harness binary."""
     with _capture_session(
-        runner, target_abs, agent=agent, capture_dir=capture_dir, base_allow_hosts=allow_hosts
+        runner, target_abs, harness=harness, capture_dir=capture_dir, base_allow_hosts=allow_hosts
     ) as cap:
         _ensure_provisioned(
             runner,
             name,
             target_abs,
-            agent=agent,
+            harness=harness,
             allow_hosts=cap.allow_hosts,
             home=home,
             registry_path=registry_path,
@@ -1244,7 +1268,7 @@ def shell(
             runner,
             name,
             target_abs,
-            agent=agent,
+            harness=harness,
             ollama_url=ollama_url,
             env_pairs=env_pairs or [],
             env_files=env_files or [],
@@ -1255,7 +1279,7 @@ def shell(
 
 
 def ls(registry_path: Path | None = None) -> None:
-    """Read-only: print each recorded `name → target (agent)` and whether it is
+    """Read-only: print each recorded `name → target (harness)` and whether it is
     currently live per `docker sandbox ls`. Answers 'which container is this?'"""
     registry_path = registry_path or registry.default_path()
     entries = registry.load(registry_path)
@@ -1266,7 +1290,7 @@ def ls(registry_path: Path | None = None) -> None:
     for name in sorted(entries):
         info = entries[name]
         status = "live" if name in live else "not live"
-        log_info(f"{name} → {info.get('target')} ({info.get('agent')}) [{status}]")
+        log_info(f"{name} → {info.get('target')} ({info.get('harness')}) [{status}]")
 
 
 def rebuild(
@@ -1274,7 +1298,7 @@ def rebuild(
     name: str,
     target_abs: Path,
     *,
-    agent: str = DEFAULT_AGENT,
+    harness: str = DEFAULT_HARNESS,
     allow_hosts: tuple[str, ...] = DEFAULT_ALLOW_HOSTS,
     home: Path | None = None,
     registry_path: Path | None = None,
@@ -1282,7 +1306,7 @@ def rebuild(
     """Recycle the sandbox: remove it (if present), then re-provision from scratch.
 
     `docker sandbox rm` takes no force flag and errors on a missing sandbox, so
-    under --apply we stop-then-remove only when it actually exists. The agent home
+    under --apply we stop-then-remove only when it actually exists. The harness home
     (c) lives on the host, so it survives this recycle.
     """
     cmds: list[list[str]] = []
@@ -1296,7 +1320,7 @@ def rebuild(
         runner,
         name,
         target_abs,
-        agent=agent,
+        harness=harness,
         allow_hosts=allow_hosts,
         home=home,
         registry_path=registry_path,
@@ -1304,17 +1328,17 @@ def rebuild(
     return cmds
 
 
-def update(runner: Runner, name: str, agent: str = DEFAULT_AGENT) -> list[str]:
-    """Advise how to update the agent inside the container.
+def update(runner: Runner, name: str, harness: str = DEFAULT_HARNESS) -> list[str]:
+    """Advise how to update the harness inside the container.
 
-    The agent ships in Docker Desktop's prebuilt sandbox image, so the durable
+    The harness ships in Docker Desktop's prebuilt sandbox image, so the durable
     update path is recreating the sandbox on a newer image; this advises the
     in-container self-update as the quick path.
     """
-    if agent == "claude":
+    if harness == "claude":
         log_info(
             "Claude Code ships in Docker's prebuilt sandbox image; for a full update, "
-            "`danno sandbox rebuild --agent claude` after updating Docker Desktop."
+            "`danno sandbox rebuild --harness claude` after updating Docker Desktop."
         )
         return runner.advise(
             ["docker", "sandbox", "exec", name, "claude", "update"],

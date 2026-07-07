@@ -33,7 +33,7 @@ PROBE_CONTENT = "ready"
 
 # opencode's `build` agent has the edit/write tools; the default `run` agent is
 # read-only and will refuse the L0 task (a refusal, not a stall).
-DEFAULT_AGENT = "build"
+DEFAULT_RUN_AGENT = "build"
 
 
 @dataclass
@@ -67,7 +67,7 @@ NUDGE = ScriptedTurn(label="nudge", prompt="Please proceed.", expects_action=Tru
 
 @dataclass
 class TurnRecord:
-    """A scripted turn, the captured AUT turn, its verdict, and timing."""
+    """A scripted turn, the captured HUT turn, its verdict, and timing."""
 
     label: str
     prompt: str
@@ -167,7 +167,7 @@ def run_level0(
     *,
     model: str | None,
     workspace_root: Path,
-    agent: str = DEFAULT_AGENT,
+    agent: str = DEFAULT_RUN_AGENT,
     script: tuple[ScriptedTurn, ...] = DEFAULT_SCRIPT,
     run_turn: TurnFn | None = None,
 ) -> ConversationResult:
