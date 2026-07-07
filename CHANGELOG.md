@@ -3,17 +3,29 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.11.1] - 2026-07-07
+
+### Documentation
+
+- DoR for renaming outer coding-tool concept agent → harness
+
+### Refactor
+
+- Rename outer coding-tool concept `agent` → `harness`
+
 ## [0.11.0] - 2026-07-06
 
 ### Bug Fixes
 
 - *(bench)* Seed opencode.jsonc so opencode resolves local models
+- *(bench)* Route occ/claurst to local Ollama on non-`ollama` backend names
 
 ### Features
 
 - Unified [env] mechanism + occ as a first-class agent
 - *(occ)* Fork for long/slow local loops + 4-agent bench eval
 - *(bench)* Capture & report green+yellow telemetry
+- *(bench)* Per-model cloud auth + multi-agent sweeps
 
 ## [0.10.0] - 2026-06-28
 
