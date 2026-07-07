@@ -34,7 +34,12 @@ from danno_validator import level0
 from danno_validator.driver import Turn, TurnFn, opencode_run, reset_workspace, seed_workspace
 from danno_validator.events import ProgressFn, ValidateEvent
 from danno_validator.judge import JudgeFn
-from danno_validator.level0 import DEFAULT_AGENT, DEFAULT_SCRIPT, ConversationResult, ScriptedTurn
+from danno_validator.level0 import (
+    DEFAULT_RUN_AGENT,
+    DEFAULT_SCRIPT,
+    ConversationResult,
+    ScriptedTurn,
+)
 from danno_validator.level1 import DEFAULT_TASK as DEFAULT_L1_TASK
 from danno_validator.level1 import Level1Task, TaskResult, run_level1
 from danno_validator.level2 import DEFAULT_TASK as DEFAULT_L2_TASK
@@ -91,7 +96,7 @@ def _authed_opencode_run(env_file: Path) -> TurnFn:
     """A `TurnFn` that drives `opencode_run` with `env_file` bound.
 
     Mirrors the baseline's `_authed_claude_run`: it keeps the credentials env-file
-    out of the agent-agnostic level-runner / `run_tiers` API so the runners just
+    out of the harness-agnostic level-runner / `run_tiers` API so the runners just
     call a plain `TurnFn`. The sweep binds the file once (it carries every cloud
     config's keys) and every turn execs `opencode` with `--env-file` so anthropic /
     NVIDIA / … backends authenticate. Local Ollama models ignore it.
@@ -130,7 +135,7 @@ def run_sweep(
     config: DannoConfig,
     workspace_root: Path,
     only: Sequence[str] | None = None,
-    agent: str = DEFAULT_AGENT,
+    agent: str = DEFAULT_RUN_AGENT,
     reset: bool = True,
     script: tuple[ScriptedTurn, ...] = DEFAULT_SCRIPT,
     level1: bool = True,
@@ -160,9 +165,9 @@ def run_sweep(
     need none). When `None`, the runners resolve `opencode_run` at call time as
     before. Returns one `SweepResult` per variant, in matrix order.
 
-    `make_run_turn` selects the agent-under-test: given the env-file it returns the
+    `make_run_turn` selects the harness-under-test: given the env-file it returns the
     `TurnFn` that drives every turn (e.g. `claurst.authed_claurst_run`). When None,
-    the default opencode AUT is used — `_authed_opencode_run(env_file)` if there are
+    the default opencode HUT is used — `_authed_opencode_run(env_file)` if there are
     credentials, else None so the runners resolve `opencode_run` at call time (which
     keeps a monkeypatched `level0.opencode_run` effective in tests).
     """
@@ -201,7 +206,7 @@ def run_tiers(
     *,
     variant: ConfigVariant,
     workspace_root: Path,
-    agent: str = DEFAULT_AGENT,
+    agent: str = DEFAULT_RUN_AGENT,
     script: tuple[ScriptedTurn, ...] = DEFAULT_SCRIPT,
     level1: bool = True,
     level1_task: Level1Task = DEFAULT_L1_TASK,

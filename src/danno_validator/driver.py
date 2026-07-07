@@ -1,7 +1,7 @@
-"""Headless primitives for driving the sandboxed agent-under-test (AUT).
+"""Headless primitives for driving the sandboxed harness-under-test (HUT).
 
 `docker sandbox` publishes no port and mounts no volume, so the portable way to
-drive the AUT is captured `exec` of `opencode run --format json` (stdout read on
+drive the HUT is captured `exec` of `opencode run --format json` (stdout read on
 the host; side effects land in the mounted workspace). The primitives:
 
 - `capture_exec` — the captured counterpart of `book_em_danno`'s
@@ -228,11 +228,11 @@ if __name__ == "__main__":
 
 @runtime_checkable
 class Turn(Protocol):
-    """The agent-agnostic read surface a captured turn must expose.
+    """The harness-agnostic read surface a captured turn must expose.
 
     Both `OpencodeTurn` and `ClaudeTurn` satisfy this structurally (no
     inheritance), so the oracle, the level runners, and the reporter consume
-    either transcript format unchanged — the comparison is on agent-agnostic
+    either transcript format unchanged — the comparison is on harness-agnostic
     signals (text + tool calls + the caller's workspace side-effect probe), not on
     opencode-vs-claude event shapes. These are exactly the members read by
     `oracle.classify_turn`, the `*Result` dataclasses, and `report.py`.
@@ -345,7 +345,7 @@ class OpencodeTurn:
 
     @property
     def tool_calls(self) -> list[dict]:
-        """The ``part`` of every tool event — one per tool call the AUT made.
+        """The ``part`` of every tool event — one per tool call the HUT made.
 
         opencode emits a tool invocation as either a ``tool`` event (the completed
         part, with ``state.status``) or a ``tool_use`` event (the streamed call),
@@ -457,7 +457,7 @@ def opencode_run(
       file from `--env`/host-exported keys (see `sweep._authed_opencode_run`).
 
     Returns the parsed events alongside the raw capture — never raises on a
-    non-zero AUT exit, since a stalled/errored agent turn is the signal the battery
+    non-zero HUT exit, since a stalled/errored agent turn is the signal the battery
     is measuring.
     """
     cmd = ["docker", "sandbox", "exec"]

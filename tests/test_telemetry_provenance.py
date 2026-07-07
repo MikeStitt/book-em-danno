@@ -70,13 +70,13 @@ def test_model_provenance_probes_local_ref(monkeypatch: pytest.MonkeyPatch) -> N
     assert got == {"quantization": "Q4", "digest": "sha256:abc"}
 
 
-def test_agent_provenance_records_danno_owned_pins() -> None:
-    occ_info = provenance.agent_provenance("occ", _config())
-    assert occ_info["agent"] == "occ" and "occ_ref" in occ_info and "occ_repo" in occ_info
-    claurst_info = provenance.agent_provenance("claurst", _config())
+def test_harness_provenance_records_danno_owned_pins() -> None:
+    occ_info = provenance.harness_provenance("occ", _config())
+    assert occ_info["harness"] == "occ" and "occ_ref" in occ_info and "occ_repo" in occ_info
+    claurst_info = provenance.harness_provenance("claurst", _config())
     assert claurst_info["claurst_version"]  # the pinned release tag
     # opencode is image-provided: no danno-owned version pin
-    assert provenance.agent_provenance("opencode", _config()) == {"agent": "opencode"}
+    assert provenance.harness_provenance("opencode", _config()) == {"harness": "opencode"}
 
 
 def test_collect_and_write_provenance(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -93,7 +93,7 @@ def test_collect_and_write_provenance(monkeypatch: pytest.MonkeyPatch, tmp_path:
         ConfigVariant(model_name="qwen", model_ref="ollama/qwen3:latest", description="qwen")
     ]
     payload = provenance.collect_provenance(
-        _config(), variants, agent="opencode", sample_interval_s=0.5
+        _config(), variants, harness="opencode", sample_interval_s=0.5
     )
     assert payload["sample_interval_s"] == 0.5
     assert payload["host"] == {"cpu_cores": 8}

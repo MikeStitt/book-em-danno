@@ -3,7 +3,7 @@
 M5's reference point. The local-model sweep (`sweep.run_sweep`) answers *which
 declared models work*; the baseline answers *how the strong agent does on this
 exact battery*, so a local model's L0/L1/L2 verdicts can be read against it. The
-comparison is on **agent-agnostic oracle outcomes** — the workspace side-effect
+comparison is on **harness-agnostic oracle outcomes** — the workspace side-effect
 probe (L0), the `line_count.txt` check (L1), and the hidden test suite run in-VM
 (L2) — so it sidesteps opencode-vs-claude transcript differences entirely.
 
@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from book_em_danno.commands.sandbox import DEFAULT_OLLAMA_URL, _build_env_file, agent_env
+from book_em_danno.commands.sandbox import DEFAULT_OLLAMA_URL, _build_env_file, harness_env
 from book_em_danno.core.exec import Runner
 from danno_validator.driver import Turn, TurnFn, claude_run, reset_workspace
 from danno_validator.events import ProgressFn
@@ -63,18 +63,18 @@ def baseline_variant(model: str | None = None) -> ConfigVariant:
 def _build_claude_auth_env_file() -> Path:
     """Build a chmod-600 env-file carrying claude's auth, for the exec `--env-file`.
 
-    Reuses danno's own secret handling: `agent_env("claude", …)` resolves
+    Reuses danno's own secret handling: `harness_env("claude", …)` resolves
     `CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY` from the host environment and
     fails loud when neither is set (Working Rule 8); `_build_env_file` writes them
     to a 0600 temp file. The caller is responsible for unlinking it.
     """
-    return _build_env_file(agent_env("claude", DEFAULT_OLLAMA_URL), [], [])
+    return _build_env_file(harness_env("claude", DEFAULT_OLLAMA_URL), [], [])
 
 
 def _authed_claude_run(env_file: Path, claude_model: str | None) -> TurnFn:
     """A `TurnFn` that drives `claude_run` with `env_file` and `claude_model` bound.
 
-    Keeps the auth env-file and the pinned claude model out of the agent-agnostic
+    Keeps the auth env-file and the pinned claude model out of the harness-agnostic
     level-runner / `run_tiers` API: the baseline binds them here and the runners
     just call a plain `TurnFn`. The `model` the runner passes (`variant.model_ref`,
     a display string) is **ignored** — the bound `claude_model` (the real alias/id

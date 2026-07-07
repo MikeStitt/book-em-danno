@@ -5,7 +5,7 @@ paths colliding on one sandbox name. A thin, mockable wrapper (Working Rule 7):
 the pure `load`/`lookup`/`record` take the json path explicitly so tests drive
 them with `tmp_path` and never touch real host state.
 
-Shape: `{name: {"target": <abs path>, "agent": <agent>}}`.
+Shape: `{name: {"target": <abs path>, "harness": <harness>}}`.
 """
 
 from __future__ import annotations
@@ -35,10 +35,10 @@ def lookup(path: Path, name: str) -> dict[str, str] | None:
     return load(path).get(name)
 
 
-def record(path: Path, name: str, target: str, agent: str) -> None:
-    """Bind `name` → (target, agent). Idempotent: re-recording the same mapping
+def record(path: Path, name: str, target: str, harness: str) -> None:
+    """Bind `name` → (target, harness). Idempotent: re-recording the same mapping
     leaves the file's content unchanged (keys are sorted on write)."""
     data = load(path)
-    data[name] = {"target": target, "agent": agent}
+    data[name] = {"target": target, "harness": harness}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")

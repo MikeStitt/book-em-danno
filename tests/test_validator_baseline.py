@@ -195,9 +195,9 @@ def test_run_baseline_records_resolved_model(
 def test_run_baseline_builds_and_removes_auth_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # Let the real builder run (no token needed: stub agent_env), then confirm the
+    # Let the real builder run (no token needed: stub harness_env), then confirm the
     # 0600 env-file it writes is unlinked after the run.
-    monkeypatch.setattr(baseline, "agent_env", lambda *a, **k: ["CLAUDE_CODE_OAUTH_TOKEN=x"])
+    monkeypatch.setattr(baseline, "harness_env", lambda *a, **k: ["CLAUDE_CODE_OAUTH_TOKEN=x"])
     built: list[Path] = []
     real_build = baseline._build_claude_auth_env_file
 

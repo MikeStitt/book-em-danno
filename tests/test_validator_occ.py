@@ -1,4 +1,4 @@
-"""Unit tests for the Phase-2 occ AUT seam — `install_occ` command construction
+"""Unit tests for the Phase-2 occ HUT seam — `install_occ` command construction
 (clone/checkout/npm-install/stamp; no source patch or shim — the fork carries those
 natively), `interactive_launch_script` (local relay vs shimless cloud), `occ_repo_ref`
 pin precedence, and `authed_occ_run` forwarding. No Docker daemon: the install is asserted

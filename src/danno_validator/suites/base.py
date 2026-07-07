@@ -4,7 +4,7 @@ A `BenchTask` generalises `level2.Level2Task` to externally-sourced benchmark
 instances: it seeds an instance into the mounted workspace, exposes the prompt the
 agent is given, resets the instance between agent runs, and grades by running the
 instance's own tests in the VM. `run_bench_task` drives one task against one
-agent-under-test (a `TurnFn`) and composes the result with the shared oracle, so a
+harness-under-test (a `TurnFn`) and composes the result with the shared oracle, so a
 benchmark row reads on the same axes as an L2 row (side-effect pass/fail + tool
 calls + latency).
 """
@@ -122,7 +122,7 @@ def run_bench_task(
     The instance must already be provisioned (`task.provision`); this resets it,
     runs a single headless turn with the task prompt, grades by the instance's tests,
     and classifies the turn with the shared oracle (`side_effect = tests passed`).
-    `run_turn` is the agent-under-test's turn producer (`opencode_run` by default,
+    `run_turn` is the harness-under-test's turn producer (`opencode_run` by default,
     resolved at call time so a monkeypatched `base.opencode_run` still applies).
     `capture`, when set (`danno bench --capture`), records this permutation's wire
     traffic to its own `<suite>/<task>/<model>.<backend>.jsonl` for the turn's duration.

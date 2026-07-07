@@ -2,7 +2,7 @@
 §6). Pure post-processing: the recording proxy already stamped each request/response
 with `ts` and the model's `/v1` response body carries `usage`, so token split, cached
 tokens, per-request round-trip time, tokens/sec, and the context-occupancy curve fall
-straight out of the recording — no new infrastructure and agent-agnostic (so occ, whose
+straight out of the recording — no new infrastructure and harness-agnostic (so occ, whose
 `stream-json` reports `tokens==0`, still yields real totals from the wire, §1.3).
 
 `render_transcript` turns the same (already-redacted) JSONL into a readable markdown

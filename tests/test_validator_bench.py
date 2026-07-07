@@ -1,5 +1,5 @@
 """Unit tests for the M7 `danno bench` orchestration (`suites.bench`) and the shared
-AUT resolver (`suites.aut`). No Docker: dry-run returns without provisioning, and the
+HUT resolver (`suites.aut`). No Docker: dry-run returns without provisioning, and the
 resolver/naming are pure."""
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def test_resolve_image_maps_claurst_to_shell() -> None:
 
 
 def test_resolve_image_claude_is_prebuilt_image() -> None:
-    # claude is a prebuilt `docker sandbox create claude` image (the cloud reference AUT).
+    # claude is a prebuilt `docker sandbox create claude` image (the cloud reference HUT).
     assert aut.resolve_image("claude") == "claude"
 
 
@@ -76,7 +76,7 @@ def test_build_bench_env_files_occ_carries_knob_defaults_overridable(tmp_path: P
         models={"qwen": Model(backend="ollama", tag="qwen3:latest")},
         env={"CLAUDE_CODE_MAX_RECURSION_DEPTH": "5"},  # [env] lowers the generous default
     )
-    opts = bench.BenchOptions(target=tmp_path, agent="occ")
+    opts = bench.BenchOptions(target=tmp_path, harness="occ")
     variants = model_variants(cfg)
     files = bench._build_bench_env_files(cfg, opts, variants)
     path = files[variants[0].model_ref]
@@ -96,7 +96,7 @@ def test_build_bench_env_files_occ_cloud_variant_injects_openai_base_and_key(
     # fell back to api.anthropic.com when no per-variant auth was injected).
     monkeypatch.setenv("NVIDIA_API_KEY", "nv-secret")
     cfg = _cloud_config()
-    opts = bench.BenchOptions(target=tmp_path, agent="occ")
+    opts = bench.BenchOptions(target=tmp_path, harness="occ")
     variants = model_variants(cfg)  # sorted: nemo (cloud), qwen (local)
     files = bench._build_bench_env_files(cfg, opts, variants)
     by_name = {v.model_name: files[v.model_ref] for v in variants}
@@ -115,15 +115,15 @@ def test_build_bench_env_files_opencode_cloud_variant_injects_raw_provider_key(
     # references {env:NVIDIA_API_KEY}), not occ's OPENAI_* mapping.
     monkeypatch.setenv("NVIDIA_API_KEY", "nv-secret")
     cfg = _cloud_config()
-    for agent in ("opencode", "claurst"):
-        opts = bench.BenchOptions(target=tmp_path, agent=agent)
+    for harness in ("opencode", "claurst"):
+        opts = bench.BenchOptions(target=tmp_path, harness=harness)
         variants = model_variants(cfg)
         files = bench._build_bench_env_files(cfg, opts, variants)
         by_name = {v.model_name: files[v.model_ref] for v in variants}
         cloud_body = by_name["nemo"].read_text(encoding="utf-8")  # type: ignore[union-attr]
         _cleanup_env_files(files)
-        assert "NVIDIA_API_KEY=nv-secret" in cloud_body, agent
-        assert "OPENAI_API_KEY=" not in cloud_body, agent
+        assert "NVIDIA_API_KEY=nv-secret" in cloud_body, harness
+        assert "OPENAI_API_KEY=" not in cloud_body, harness
 
 
 def test_build_bench_env_files_cloud_variant_fails_loud_without_key(
@@ -133,7 +133,7 @@ def test_build_bench_env_files_cloud_variant_fails_loud_without_key(
     # provisioned), naming the missing var — not mid-session at an auth failure.
     monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
     cfg = _cloud_config()
-    opts = bench.BenchOptions(target=tmp_path, agent="occ")
+    opts = bench.BenchOptions(target=tmp_path, harness="occ")
     with pytest.raises(CommandFailedError, match="NVIDIA_API_KEY"):
         bench._build_bench_env_files(cfg, opts, model_variants(cfg))
 
@@ -149,22 +149,22 @@ def test_seed_opencode_config_writes_provider_and_models(tmp_path: Path) -> None
     assert "qwen3:latest" in body  # the model registry is declared
 
 
-def test_seed_opencode_config_noop_for_non_opencode_agents(tmp_path: Path) -> None:
+def test_seed_opencode_config_noop_for_non_opencode_harnesses(tmp_path: Path) -> None:
     # claurst/occ/claude dial Ollama through the relay or a cloud provider, not opencode.jsonc.
-    for agent in ("claurst", "occ", "claude"):
-        bench._seed_opencode_config(_config(), agent, tmp_path)
+    for harness in ("claurst", "occ", "claude"):
+        bench._seed_opencode_config(_config(), harness, tmp_path)
         assert not (tmp_path / ".opencode" / "opencode.jsonc").exists()
 
 
 def test_build_bench_env_files_claude_uses_host_token(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # claude does NOT flow through assemble_agent_env: every variant maps to the single auth
+    # claude does NOT flow through assemble_harness_env: every variant maps to the single auth
     # file, built from a host token (fail-loud without one).
     for var in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-abc")
-    opts = bench.BenchOptions(target=tmp_path, agent="claude")
+    opts = bench.BenchOptions(target=tmp_path, harness="claude")
     variants = [baseline.baseline_variant(None)]
     files = bench._build_bench_env_files(_config(), opts, variants)
     path = files[variants[0].model_ref]
@@ -179,7 +179,7 @@ def test_build_bench_env_files_claude_fails_loud_without_token(
 ) -> None:
     for var in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(var, raising=False)
-    opts = bench.BenchOptions(target=tmp_path, agent="claude")
+    opts = bench.BenchOptions(target=tmp_path, harness="claude")
     with pytest.raises(CommandFailedError):
         bench._build_bench_env_files(_config(), opts, [baseline.baseline_variant(None)])
 
@@ -187,24 +187,24 @@ def test_build_bench_env_files_claude_fails_loud_without_token(
 def test_run_bench_claude_collapses_matrix_to_reference_row(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # --agent claude ignores the local model matrix: a single `claude-code` row is written.
+    # --harness claude ignores the local model matrix: a single `claude-code` row is written.
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-abc")
     captured: dict[str, object] = {}
 
     def fake_write(
-        report, *, config_path, agent, variants, num_ctx_by_model=None, capture_dir=None
+        report, *, config_path, harness, variants, num_ctx_by_model=None, capture_dir=None
     ):  # type: ignore[no-untyped-def]
         captured["models"] = [v.model_ref for v in variants]
         captured["model_names"] = [v.model_name for v in variants]
         path = report.out_dir / "bench.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"agent": agent, "models": [v.model_ref for v in variants], "results": []}
+        payload = {"harness": harness, "models": [v.model_ref for v in variants], "results": []}
         path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
         return path
 
     # no suites enabled → no provisioning; we only assert the variant collapse + env-file.
     monkeypatch.setattr(bench, "_write_results", fake_write)
-    opts = bench.BenchOptions(target=tmp_path, agent="claude", out_dir=tmp_path / "out")
+    opts = bench.BenchOptions(target=tmp_path, harness="claude", out_dir=tmp_path / "out")
     report = bench.run_bench(_config(), BenchmarksConfig(), opts, Runner())
     assert captured["model_names"] == ["claude-code"]  # one reference row, not per local model
     assert report.verdicts == []
@@ -219,7 +219,7 @@ def test_run_turn_for_opencode_pins_build_agent(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(exec_mod.subprocess, "run", fake_run)
     aut.run_turn_for("opencode", None)(Runner(), "box", "go", model="ollama/x")
-    # opencode AUT drives its read-write run-agent so benchmark edits land.
+    # opencode HUT drives its read-write run-agent so benchmark edits land.
     assert "--agent" in seen["cmd"] and "build" in seen["cmd"]
 
 
@@ -230,7 +230,7 @@ def test_run_turn_for_claurst_returns_callable() -> None:
 def test_setup_bench_capture_off_is_a_noop() -> None:
     # No --capture → the original config, no binding, the default egress, no relay port.
     cfg = _config()
-    opts = bench.BenchOptions(target=Path("."), agent="opencode", capture=False)
+    opts = bench.BenchOptions(target=Path("."), harness="opencode", capture=False)
     cfg_for_run, binding, allow, port = bench._setup_bench_capture(cfg, opts, Path("/out"))
     assert cfg_for_run is cfg  # the original config, unrewritten
     assert binding is None
@@ -242,7 +242,7 @@ def test_setup_bench_capture_on_rewrites_backend_and_opens_port(tmp_path: Path) 
     # --capture rewrites the ollama backend base_url at a proxy, opens its egress port,
     # and reports that port as the occ/claurst relay upstream (capture_port).
     cfg = _config()
-    opts = bench.BenchOptions(target=Path("."), agent="opencode", capture=True)
+    opts = bench.BenchOptions(target=Path("."), harness="opencode", capture=True)
     cfg_for_run, binding, allow, port = bench._setup_bench_capture(cfg, opts, tmp_path)
     assert binding is not None and port is not None
     # base_url now dials host.docker.internal:<proxy-port> (the recording proxy).
@@ -335,33 +335,33 @@ def _dial_config() -> DannoConfig:
     )
 
 
-def test_agent_dial_ref_occ_local_normalizes_backend_name() -> None:
+def test_harness_dial_ref_occ_local_normalizes_backend_name() -> None:
     # The reported ref is `danno-ollama/…` (misread as cloud); the dial ref is `ollama/…`.
     cfg = _dial_config()
     (qwen,) = [v for v in model_variants(cfg) if v.model_name == "qwen"]
     assert qwen.model_ref == "danno-ollama/qwen3-coder-next"
-    assert bench._agent_dial_ref("occ", cfg, qwen) == "ollama/qwen3-coder-next"
+    assert bench._harness_dial_ref("occ", cfg, qwen) == "ollama/qwen3-coder-next"
 
 
-def test_agent_dial_ref_claurst_local_normalizes_backend_name() -> None:
+def test_harness_dial_ref_claurst_local_normalizes_backend_name() -> None:
     cfg = _dial_config()
     (qwen,) = [v for v in model_variants(cfg) if v.model_name == "qwen"]
-    assert bench._agent_dial_ref("claurst", cfg, qwen) == "ollama/qwen3-coder-next"
+    assert bench._harness_dial_ref("claurst", cfg, qwen) == "ollama/qwen3-coder-next"
 
 
-def test_agent_dial_ref_cloud_matches_reported_ref_for_occ() -> None:
+def test_harness_dial_ref_cloud_matches_reported_ref_for_occ() -> None:
     # A cloud (openai) backend's dial ref equals its reported `<backend>/<tag>` ref.
     cfg = _dial_config()
     (nemo,) = [v for v in model_variants(cfg) if v.model_name == "nemo"]
-    assert bench._agent_dial_ref("occ", cfg, nemo) == nemo.model_ref
+    assert bench._harness_dial_ref("occ", cfg, nemo) == nemo.model_ref
 
 
-def test_agent_dial_ref_opencode_and_claude_are_none() -> None:
+def test_harness_dial_ref_opencode_and_claude_are_none() -> None:
     # opencode (provider = backend name in opencode.jsonc) and claude need no override.
     cfg = _dial_config()
     (qwen,) = [v for v in model_variants(cfg) if v.model_name == "qwen"]
-    assert bench._agent_dial_ref("opencode", cfg, qwen) is None
-    assert bench._agent_dial_ref("claude", cfg, qwen) is None
+    assert bench._harness_dial_ref("opencode", cfg, qwen) is None
+    assert bench._harness_dial_ref("claude", cfg, qwen) is None
 
 
 def test_sandbox_name_sanitises_instance_ids() -> None:
@@ -371,7 +371,7 @@ def test_sandbox_name_sanitises_instance_ids() -> None:
 
 
 def test_run_bench_dry_run_does_not_provision(tmp_path: pytest.TempPathFactory) -> None:
-    opts = bench.BenchOptions(target=Path("."), agent="claurst", dry_run=True)
+    opts = bench.BenchOptions(target=Path("."), harness="claurst", dry_run=True)
     cfg = BenchmarksConfig()
     cfg.aider_polyglot.enabled = True
     cfg.aider_polyglot.select = ["python/anagram"]
@@ -381,43 +381,43 @@ def test_run_bench_dry_run_does_not_provision(tmp_path: pytest.TempPathFactory) 
     assert report.results_json is None
 
 
-def test_resolve_bench_agents_defaults_to_single_opencode() -> None:
-    # No CLI agents, no [agents] in benchmarks.toml → the single opencode default.
-    assert bench.resolve_bench_agents(None, BenchmarksConfig()) == ["opencode"]
+def test_resolve_bench_harnesses_defaults_to_single_opencode() -> None:
+    # No CLI harnesses, no [harnesses] in benchmarks.toml → the single opencode default.
+    assert bench.resolve_bench_harnesses(None, BenchmarksConfig()) == ["opencode"]
 
 
-def test_resolve_bench_agents_reads_benchmarks_toml_list() -> None:
-    cfg = BenchmarksConfig(agents=["occ", "claurst"])
-    assert bench.resolve_bench_agents(None, cfg) == ["occ", "claurst"]
+def test_resolve_bench_harnesses_reads_benchmarks_toml_list() -> None:
+    cfg = BenchmarksConfig(harnesses=["occ", "claurst"])
+    assert bench.resolve_bench_harnesses(None, cfg) == ["occ", "claurst"]
 
 
-def test_resolve_bench_agents_cli_overrides_toml_and_dedupes() -> None:
-    # --agent wins over [agents]; repeats collapse but order is preserved.
-    cfg = BenchmarksConfig(agents=["occ"])
-    assert bench.resolve_bench_agents(["claude", "occ", "claude"], cfg) == ["claude", "occ"]
+def test_resolve_bench_harnesses_cli_overrides_toml_and_dedupes() -> None:
+    # --harness wins over benchmarks.toml [harnesses]; repeats collapse but order is preserved.
+    cfg = BenchmarksConfig(harnesses=["occ"])
+    assert bench.resolve_bench_harnesses(["claude", "occ", "claude"], cfg) == ["claude", "occ"]
 
 
-def test_resolve_bench_agents_unknown_fails_loud() -> None:
-    with pytest.raises(ValueError, match="unknown --agent 'gpt5'"):
-        bench.resolve_bench_agents(["gpt5"], BenchmarksConfig())
+def test_resolve_bench_harnesses_unknown_fails_loud() -> None:
+    with pytest.raises(ValueError, match="unknown --harness 'gpt5'"):
+        bench.resolve_bench_harnesses(["gpt5"], BenchmarksConfig())
 
 
-def test_run_bench_agents_single_agent_runs_in_place(tmp_path: Path) -> None:
-    # One agent → straight through run_bench into opts.out_dir, no comparison layer.
+def test_run_bench_harnesses_single_harness_runs_in_place(tmp_path: Path) -> None:
+    # One harness → straight through run_bench into opts.out_dir, no comparison layer.
     opts = bench.BenchOptions(
-        target=Path("."), agent="opencode", out_dir=tmp_path / "out", dry_run=True
+        target=Path("."), harness="opencode", out_dir=tmp_path / "out", dry_run=True
     )
-    reports = bench.run_bench_agents(_config(), BenchmarksConfig(), opts, Runner(), ["opencode"])
+    reports = bench.run_bench_harnesses(_config(), BenchmarksConfig(), opts, Runner(), ["opencode"])
     assert len(reports) == 1
-    assert reports[0].out_dir == tmp_path / "out"  # no per-agent subdir for the single case
+    assert reports[0].out_dir == tmp_path / "out"  # no per-harness subdir for the single case
 
 
-def test_run_bench_agents_multi_agent_uses_per_agent_subdirs(tmp_path: Path) -> None:
-    # Several agents → each into <root>/<agent>/; dry-run skips the comparison report.
+def test_run_bench_harnesses_multi_harness_uses_per_harness_subdirs(tmp_path: Path) -> None:
+    # Several harnesses → each into <root>/<harness>/; dry-run skips the comparison report.
     opts = bench.BenchOptions(
-        target=Path("."), agent="opencode", out_dir=tmp_path / "root", dry_run=True
+        target=Path("."), harness="opencode", out_dir=tmp_path / "root", dry_run=True
     )
-    reports = bench.run_bench_agents(
+    reports = bench.run_bench_harnesses(
         _config(), BenchmarksConfig(), opts, Runner(), ["occ", "claurst"]
     )
     root = tmp_path / "root"

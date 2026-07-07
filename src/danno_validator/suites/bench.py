@@ -1,5 +1,5 @@
 """`danno bench` orchestration: run the enabled benchmark suites across the model
-matrix (the "permutations") against one agent-under-test.
+matrix (the "permutations") against one harness-under-test.
 
 Standalone from `danno validate` (the user's call): it provisions disposable,
 validator-owned sandboxes over a throwaway workspace, runs each enabled suite for
@@ -36,7 +36,7 @@ from danno_validator.suites.aut import (
     CLAUDE,
     CLAURST,
     OCC,
-    install_aut,
+    install_harness,
     resolve_image,
     run_turn_for,
 )
@@ -66,7 +66,7 @@ from danno_validator.telemetry.wire_metrics import TurnWireMetrics, headroom_pct
 @dataclass
 class BenchOptions:
     target: Path
-    agent: str = "opencode"
+    harness: str = "opencode"
     only: list[str] | None = None
     benchmarks_path: Path | None = None
     workspace: Path | None = None
@@ -89,22 +89,26 @@ class BenchReport:
     results_json: Path | None = None
 
 
-# The agents-under-test `danno bench` can drive (occ/claurst/opencode on the local +
+# The harnesses-under-test `danno bench` can drive (occ/claurst/opencode on the local +
 # cloud matrix; claude the single cloud reference row). Ordered for a stable report layout.
-BENCH_AGENTS: tuple[str, ...] = (sb.DEFAULT_AGENT, CLAURST, OCC, CLAUDE)
+BENCH_HARNESSES: tuple[str, ...] = (sb.DEFAULT_HARNESS, CLAURST, OCC, CLAUDE)
 
 
-def resolve_bench_agents(cli_agents: list[str] | None, bench_cfg: BenchmarksConfig) -> list[str]:
-    """The de-duplicated, order-preserving list of agents to benchmark, with precedence
-    `--agent` (CLI) > `benchmarks.toml [agents]` > the single opencode default.
+def resolve_bench_harnesses(
+    cli_harnesses: list[str] | None, bench_cfg: BenchmarksConfig
+) -> list[str]:
+    """The de-duplicated, order-preserving list of harnesses to benchmark, with precedence
+    `--harness` (CLI) > `benchmarks.toml [harnesses]` > the single opencode default.
 
-    Fails loud (Working Rule 8) on an unknown agent name from either source, naming the
+    Fails loud (Working Rule 8) on an unknown harness name from either source, naming the
     valid set, rather than provisioning a sandbox for a typo."""
-    chosen: list[str] = list(cli_agents or bench_cfg.agents) or [sb.DEFAULT_AGENT]
+    chosen: list[str] = list(cli_harnesses or bench_cfg.harnesses) or [sb.DEFAULT_HARNESS]
     seen: dict[str, None] = {}
     for name in chosen:
-        if name not in BENCH_AGENTS:
-            raise ValueError(f"unknown --agent '{name}'. Valid agents: {', '.join(BENCH_AGENTS)}.")
+        if name not in BENCH_HARNESSES:
+            raise ValueError(
+                f"unknown --harness '{name}'. Valid harnesses: {', '.join(BENCH_HARNESSES)}."
+            )
         seen.setdefault(name, None)
     return list(seen)
 
@@ -117,7 +121,7 @@ def _sandbox_name(target: Path, suffix: str) -> str:
     kept compact: a readable truncated suffix plus an 8-char hash of the full
     (project, suffix) for uniqueness. Capped well under the limit for any username.
     """
-    base = sb.default_name(target.resolve(), sb.DEFAULT_AGENT)
+    base = sb.default_name(target.resolve(), sb.DEFAULT_HARNESS)
     digest = hashlib.sha1(f"{base}-{suffix}".encode()).hexdigest()[:8]
     short = re.sub(r"[^A-Za-z0-9]+", "-", suffix).strip("-")[:16].strip("-")
     return f"danno-bench-{short}-{digest}"
@@ -130,25 +134,25 @@ def _teardown(runner: Runner, name: str, *, keep: bool) -> None:
     runner.advise(["docker", "sandbox", "rm", name], why=f"remove bench sandbox '{name}'")
 
 
-def _variant_cloud_env_lines(agent: str, config: DannoConfig, model_name: str) -> list[str]:
+def _variant_cloud_env_lines(harness: str, config: DannoConfig, model_name: str) -> list[str]:
     """The cloud-provider auth env-file lines for one bench variant, or [] for a local model.
 
     Reuses the exact builders `danno sandbox start` uses, so bench authenticates a cloud
-    model identically per agent: occ needs the `OPENAI_BASE_URL`/`OPENAI_API_KEY` mapping;
+    model identically per harness: occ needs the `OPENAI_BASE_URL`/`OPENAI_API_KEY` mapping;
     claurst and opencode read the provider key under its own `{api_key_env}` name (opencode's
     generated provider block references `{env:<api_key_env>}`). Fails loud (Working Rule 8)
     when the key var is unset. `model_name` is the danno.toml `[models]` key (a raw
     `<provider>/<tag>` ref, which the matrix never yields for a cloud row, resolves to [])."""
-    if agent == OCC:
+    if harness == OCC:
         return sb.occ_cloud_env_lines(config, model_name)
-    if agent == CLAURST:
+    if harness == CLAURST:
         return sb.claurst_cloud_env_lines(config, model_name)
-    if agent == sb.DEFAULT_AGENT:  # opencode
+    if harness == sb.DEFAULT_HARNESS:  # opencode
         return sb.cloud_api_key_env_lines(config, model_name)
-    return []  # claude: the cloud reference AUT carries its own auth (never a [models] key)
+    return []  # claude: the cloud reference HUT carries its own auth (never a [models] key)
 
 
-def _agent_dial_ref(agent: str, config: DannoConfig, variant: ConfigVariant) -> str | None:
+def _harness_dial_ref(harness: str, config: DannoConfig, variant: ConfigVariant) -> str | None:
     """The ref occ/claurst must actually dial for `variant`, or None (report ref stands).
 
     The matrix reports the generic `<backend>/<tag>` ref (`variant.model_ref`) so the
@@ -158,11 +162,11 @@ def _agent_dial_ref(agent: str, config: DannoConfig, variant: ConfigVariant) -> 
     misread as cloud and falls back to Anthropic — the item-3 bug. Reuse the exact
     resolvers `danno sandbox start` dials with (`resolve_occ_model`/`resolve_claurst_model`,
     from the `[models]` name) so bench dials a ref their locality check understands: Ollama
-    → `ollama/<tag>`, cloud → each agent's own provider namespace. opencode (whose provider
+    → `ollama/<tag>`, cloud → each harness's own provider namespace. opencode (whose provider
     is the backend name in the generated `opencode.jsonc`) and claude need no override."""
-    if agent == OCC:
+    if harness == OCC:
         return sb.resolve_occ_model(config, variant.model_name)
-    if agent == CLAURST:
+    if harness == CLAURST:
         return sb.resolve_claurst_model(config, variant.model_name)
     return None
 
@@ -183,28 +187,28 @@ def _build_bench_env_files(
     """One chmod-600 env-file per model variant (keyed by `model_ref`), bound into that
     variant's bench turns.
 
-    A single base set of lines is shared by every variant — the AUT's level-4 defaults
+    A single base set of lines is shared by every variant — the HUT's level-4 defaults
     (occ's loop ceilings, opencode's `OLLAMA_BASE_URL`) plus `danno.toml [env]` and any
     `--env`/`--env-file`. A CLOUD variant additionally injects its provider auth for the
-    AUT (`_variant_cloud_env_lines`), so a mixed local+cloud matrix authenticates each row
-    correctly — the previous single agent-scoped file left cloud rows unauthenticated, so
+    HUT (`_variant_cloud_env_lines`), so a mixed local+cloud matrix authenticates each row
+    correctly — the previous single harness-scoped file left cloud rows unauthenticated, so
     occ fell back to api.anthropic.com and 404'd. Cloud-key resolution fails loud HERE,
     before any sandbox is provisioned. Files are de-duplicated by content, so local variants
     share one file and all variants on the same cloud backend share another. `config` is the
     (capture-rewritten) config the run drives from, so occ cloud's `OPENAI_BASE_URL` points
     at the `--capture` proxy when capture is on. claude is special: a single model-independent
     auth file (fails loud without a host token, exactly like the baseline)."""
-    if opts.agent == CLAUDE:
+    if opts.harness == CLAUDE:
         auth = baseline._build_claude_auth_env_file()  # fails loud without a host token
         return {v.model_ref: auth for v in variants}
-    defaults = sb.agent_env(opts.agent, sb.DEFAULT_OLLAMA_URL)
-    base = sb.assemble_agent_env(
-        config, agent_defaults=defaults, env_pairs=opts.env, env_files=opts.env_file
+    defaults = sb.harness_env(opts.harness, sb.DEFAULT_OLLAMA_URL)
+    base = sb.assemble_harness_env(
+        config, harness_defaults=defaults, env_pairs=opts.env, env_files=opts.env_file
     )
     files: dict[str, Path | None] = {}
     by_content: dict[tuple[str, ...], Path | None] = {}
     for v in variants:
-        cloud = _variant_cloud_env_lines(opts.agent, config, v.model_name)
+        cloud = _variant_cloud_env_lines(opts.harness, config, v.model_name)
         lines = _merge_env_lines(base, cloud) if cloud else base
         content = tuple(lines)
         if content not in by_content:
@@ -236,7 +240,7 @@ def _setup_bench_capture(
             "--capture cannot record built-in cloud refs (no danno base_url lever): "
             f"{', '.join(uncap)}"
         )
-    if opts.agent == CLAUDE:
+    if opts.harness == CLAUDE:
         log_warn("--capture does not record the claude reference row (api.anthropic.com).")
     binding = CaptureBinding(targets=tuple(targets), capture_dir=capture_dir)
     allow = capture_allow_hosts(targets, sb.DEFAULT_ALLOW_HOSTS)
@@ -257,7 +261,7 @@ def _setup_bench_sampler(opts: BenchOptions, out_dir: Path) -> SampleBinding | N
     return SampleBinding(sample_dir=sample_dir, interval=opts.sample_interval)
 
 
-def _seed_opencode_config(config: DannoConfig, agent: str, workspace: Path) -> None:
+def _seed_opencode_config(config: DannoConfig, harness: str, workspace: Path) -> None:
     """Generate `.opencode/opencode.jsonc` into the bench workspace for opencode.
 
     Only opencode reads this file — it declares the `ollama`/openai providers (with
@@ -268,7 +272,7 @@ def _seed_opencode_config(config: DannoConfig, agent: str, workspace: Path) -> N
     claude don't read opencode.jsonc (they dial Ollama through the in-VM relay or a
     cloud provider), so this is a no-op for them. `disable_title` matches the sweep:
     no throwaway per-session title-gen call against the local model."""
-    if agent != sb.DEFAULT_AGENT:  # "opencode"
+    if harness != sb.DEFAULT_HARNESS:  # "opencode"
         return
     generate(config, workspace, apply=True, disable_title=True)
 
@@ -291,10 +295,10 @@ def _run_aider(
     if not (ap.enabled and ap.select):
         return []
     name = _sandbox_name(opts.target, "aider")
-    image = resolve_image(opts.agent)
-    log_info(f"[bench] aider — provision {opts.agent} sandbox '{name}'")
-    sb.provision(runner, name, workspace, agent=image, allow_hosts=allow_hosts)
-    install_aut(runner, name, opts.agent, config)
+    image = resolve_image(opts.harness)
+    log_info(f"[bench] aider — provision {opts.harness} sandbox '{name}'")
+    sb.provision(runner, name, workspace, harness=image, allow_hosts=allow_hosts)
+    install_harness(runner, name, opts.harness, config)
     checkout = clone_polyglot(runner, ap.source, temp_checkout_dir())
     verdicts: list[BenchVerdict] = []
     try:
@@ -307,10 +311,10 @@ def _run_aider(
                 select=ap.select,
                 workspace=workspace,
                 run_turn=run_turn_for(
-                    opts.agent,
+                    opts.harness,
                     env_files[variant.model_ref],
                     capture_port,
-                    model_override=_agent_dial_ref(opts.agent, config, variant),
+                    model_override=_harness_dial_ref(opts.harness, config, variant),
                 ),
                 model=variant.model_ref,
                 capture=capture,
@@ -343,11 +347,11 @@ def _run_swebench(
     verdicts: list[BenchVerdict] = []
     for task in tasks:
         name = _sandbox_name(opts.target, f"swe-{task.id}")
-        log_info(f"[bench] swebench {task.id} — provision {opts.agent} sandbox '{name}'")
+        log_info(f"[bench] swebench {task.id} — provision {opts.harness} sandbox '{name}'")
         sb.provision(
-            runner, name, workspace, agent=resolve_image(opts.agent), allow_hosts=allow_hosts
+            runner, name, workspace, harness=resolve_image(opts.harness), allow_hosts=allow_hosts
         )
-        install_aut(runner, name, opts.agent, config)
+        install_harness(runner, name, opts.harness, config)
         try:
             try:
                 task.provision(runner, name, workspace)
@@ -372,10 +376,10 @@ def _run_swebench(
                         model=variant.model_ref,
                         run_turn=cwd_bound(
                             run_turn_for(
-                                opts.agent,
+                                opts.harness,
                                 env_files[variant.model_ref],
                                 capture_port,
-                                model_override=_agent_dial_ref(opts.agent, config, variant),
+                                model_override=_harness_dial_ref(opts.harness, config, variant),
                             ),
                             task.workspace_dir(workspace),
                         ),
@@ -480,7 +484,7 @@ def _build_results_payload(
     report: BenchReport,
     *,
     config_path: Path,
-    agent: str,
+    harness: str,
     variants: list[ConfigVariant],
     num_ctx_by_model: dict[str, int | None],
     capture_dir: Path | None,
@@ -488,7 +492,7 @@ def _build_results_payload(
     return {
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "config": str(config_path),
-        "agent": agent,
+        "harness": harness,
         "models": [v.model_ref for v in variants],
         "results": [
             _result_row(
@@ -506,7 +510,7 @@ def _write_results(
     report: BenchReport,
     *,
     config_path: Path,
-    agent: str,
+    harness: str,
     variants: list[ConfigVariant],
     num_ctx_by_model: dict[str, int | None] | None = None,
     capture_dir: Path | None = None,
@@ -516,7 +520,7 @@ def _write_results(
     payload = _build_results_payload(
         report,
         config_path=config_path,
-        agent=agent,
+        harness=harness,
         variants=variants,
         num_ctx_by_model=num_ctx_by_model or {},
         capture_dir=capture_dir,
@@ -544,11 +548,11 @@ def run_bench(
     *,
     now: datetime | None = None,
 ) -> BenchReport:
-    """Run the enabled suites across the model matrix against `opts.agent`."""
+    """Run the enabled suites across the model matrix against `opts.harness`."""
     now = now or datetime.now(UTC)
-    # claude is the cloud reference AUT: it ignores `-m`, so its matrix collapses to a
+    # claude is the cloud reference HUT: it ignores `-m`, so its matrix collapses to a
     # single `claude-code` row rather than one per local model (see baseline_variant).
-    if opts.agent == CLAUDE:
+    if opts.harness == CLAUDE:
         variants = [baseline.baseline_variant(None)]
     else:
         variants = model_variants(config, only=opts.only)
@@ -556,7 +560,7 @@ def run_bench(
     report = BenchReport(out_dir=out_dir, dry_run=opts.dry_run)
 
     log_info(
-        f"danno bench — agent={opts.agent} · models={[v.model_ref for v in variants]} · "
+        f"danno bench — harness={opts.harness} · models={[v.model_ref for v in variants]} · "
         f"aider={'on' if bench_cfg.aider_polyglot.enabled else 'off'} "
         f"swebench={'on' if bench_cfg.swebench.enabled else 'off'}"
     )
@@ -574,9 +578,9 @@ def run_bench(
     # must be generated from the REWRITTEN config so its base_url dials the proxy.
     cfg_for_run, capture, allow_hosts, capture_port = _setup_bench_capture(config, opts, out_dir)
     sampler = _setup_bench_sampler(opts, out_dir)
-    _seed_opencode_config(cfg_for_run, opts.agent, workspace)
+    _seed_opencode_config(cfg_for_run, opts.harness, workspace)
 
-    # One chmod-600 env-file PER model variant: shared base lines (the AUT's loop-ceiling
+    # One chmod-600 env-file PER model variant: shared base lines (the HUT's loop-ceiling
     # knobs, opencode's OLLAMA_BASE_URL, danno.toml [env], --env/--env-file) plus each cloud
     # variant's provider auth (occ: OPENAI_BASE_URL/OPENAI_API_KEY; claurst/opencode: the raw
     # {api_key_env}). Built from the capture-rewritten config so occ cloud dials the --capture
@@ -614,20 +618,20 @@ def run_bench(
             env_file.unlink(missing_ok=True)
 
     # §7 provenance is always written (a separate file, so bench.json's schema is stable):
-    # exact model bytes + static facts, agent/danno pins, host descriptor, sampler interval.
+    # exact model bytes + static facts, harness/danno pins, host descriptor, sampler interval.
     # Collected BEFORE the results so each row's §6.3 headroom can compare peak context
     # against the model's real loaded `context_length`.
     provenance = collect_provenance(
         config,
         variants,
-        agent=opts.agent,
+        harness=opts.harness,
         sample_interval_s=opts.sample_interval if opts.sample else None,
     )
     write_provenance(out_dir, provenance)
     report.results_json = _write_results(
         report,
         config_path=opts.target / "danno.toml",
-        agent=opts.agent,
+        harness=opts.harness,
         variants=variants,
         num_ctx_by_model=_num_ctx_by_model(provenance),
         capture_dir=opts.capture_dir,
@@ -642,32 +646,32 @@ def run_bench(
     return report
 
 
-def run_bench_agents(
+def run_bench_harnesses(
     config: DannoConfig,
     bench_cfg: BenchmarksConfig,
     opts: BenchOptions,
     runner: Runner,
-    agents: list[str],
+    harnesses: list[str],
     *,
     now: datetime | None = None,
 ) -> list[BenchReport]:
-    """Run the matrix for each agent in `agents`, then (for >1 agent) emit a cross-agent
+    """Run the matrix for each harness in `harnesses`, then (for >1 harness) emit a cross-harness
     comparison report.
 
-    A single agent runs exactly as before — `run_bench` straight into `opts.out_dir`. For
-    several agents, each runs into its own `<root>/<agent>/` subdir (isolated bench.json +
+    A single harness runs exactly as before — `run_bench` straight into `opts.out_dir`. For
+    several harnesses, each runs into its own `<root>/<harness>/` subdir (isolated bench.json +
     sidecars + provenance), sharing one timestamped `root` so the run is one artifact tree;
-    a combined `report.md`/`report.html` grid (one column per agent, via the existing
+    a combined `report.md`/`report.html` grid (one column per harness, via the existing
     `report.merge_*`) lands at the root. Per-row fail-loud accounting is unchanged."""
     now = now or datetime.now(UTC)
-    if len(agents) == 1:
-        return [run_bench(config, bench_cfg, replace(opts, agent=agents[0]), runner, now=now)]
+    if len(harnesses) == 1:
+        return [run_bench(config, bench_cfg, replace(opts, harness=harnesses[0]), runner, now=now)]
 
     root = opts.out_dir or Path(".danno-bench") / now.strftime("%Y-%m-%dT%H-%M-%S")
-    log_info(f"danno bench — {len(agents)} agents [{', '.join(agents)}] → {root}")
+    log_info(f"danno bench — {len(harnesses)} harnesses [{', '.join(harnesses)}] → {root}")
     reports = [
-        run_bench(config, bench_cfg, replace(opts, agent=ag, out_dir=root / ag), runner, now=now)
-        for ag in agents
+        run_bench(config, bench_cfg, replace(opts, harness=ag, out_dir=root / ag), runner, now=now)
+        for ag in harnesses
     ]
     if opts.dry_run:
         return reports

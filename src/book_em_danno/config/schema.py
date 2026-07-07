@@ -196,7 +196,7 @@ class DannoConfig(BaseModel):
     # Agent-general environment table: any KEY=value here is injected into the
     # env-file of every config-driven agent (opencode/claurst/occ — NOT claude,
     # whose auth is injected separately). Values MAY embed {env:VAR} host
-    # indirection, resolved at assembly time (see sandbox.assemble_agent_env).
+    # indirection, resolved at assembly time (see sandbox.assemble_harness_env).
     # Keys are OS env var names, so they are exempt from the no-'/' danno-name
     # rule and from _check_references below.
     env: dict[str, str] = Field(default_factory=dict)

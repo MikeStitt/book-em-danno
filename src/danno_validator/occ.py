@@ -1,4 +1,4 @@
-"""occ (open-claude-code) agent-under-test: install it into a sandbox and drive it.
+"""occ (open-claude-code) harness-under-test: install it into a sandbox and drive it.
 
 occ is danno's fork of open-claude-code (`MikeStitt/open-claude-code`, branch
 `danno-integration`, pinned by `OCC_REF`) — a Node/ESM Claude-Code clone. It is NOT a
@@ -22,7 +22,7 @@ Two non-obvious requirements the integration spike pinned (both handled here):
 `CLAUDE_CODE_STREAMING=0` (occ's OpenAI path is non-streaming; the default crashes) and a
 dummy `OPENAI_API_KEY` on the local path (occ requires the Bearer header; Ollama ignores
 it). Tunable ceilings (`CLAUDE_CODE_API_TIMEOUT`, `CLAUDE_CODE_MAX_RECURSION_DEPTH`,
-`CLAUDE_CODE_MAX_TURNS`) ride the env-file as level-4 `agent_env("occ")` defaults, so
+`CLAUDE_CODE_MAX_TURNS`) ride the env-file as level-4 `harness_env("occ")` defaults, so
 `danno.toml [env]` can override them. See `driver.occ_run` for the drive seam; this module
 supplies install + the launch/`TurnFn` seams so `run_sweep`/the oracle stay unchanged.
 """
@@ -81,7 +81,7 @@ def occ_repo_ref(config: DannoConfig | None) -> tuple[str, str]:
         exported host env (`OCC_REPO`/`OCC_REF`)  >  danno.toml `[env]`  >  code default
 
     This is the user-requested "set the version first through ENV variables, then
-    danno.toml" flow. It is a purpose-built resolver rather than `assemble_agent_env`:
+    danno.toml" flow. It is a purpose-built resolver rather than `assemble_harness_env`:
     the pins are install-time code defaults, and the general assembler deliberately does
     NOT let a bare host var override a code default (that guard protects `OLLAMA_BASE_URL`
     etc.), whereas here `export OCC_REF=…` MUST win. A `{env:VAR}` indirection in an

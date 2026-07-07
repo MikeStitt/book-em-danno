@@ -1,6 +1,6 @@
 # Claurst integration — findings, fixes, and resume plan
 
-_Dogfooding `danno sandbox start --agent claurst` with a local Ollama model
+_Dogfooding `danno sandbox start --harness claurst` with a local Ollama model
 (2026-06-25/26, ongoing). This doc is a **handoff**: it captures every confirmed
 claurst↔danno↔Ollama integration issue we've hit, the instrumented build used to
 diagnose them, the current-run analysis, and how to resume after a `/clear`._
@@ -416,7 +416,7 @@ give a model the prompt in that tag's annotation, then fact-check its claims aga
   binary. Verify with `grep -a -c "DISPATCH turn=" /home/agent/.local/bin/claurst`.
 - **Run with tracing on:**
   ```bash
-  danno sandbox start --apply --agent claurst -m ollama/qwen3-coder-next-ud-q4-65k \
+  danno sandbox start --apply --harness claurst -m ollama/qwen3-coder-next-ud-q4-65k \
     --env CLAURST_LOOP_LOG=/tmp/claurst-loop.log --env DANNO_RELAY_LOG=/tmp/danno-relay.log \
     -- --dangerously-skip-permissions
   ```

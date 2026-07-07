@@ -30,7 +30,7 @@ _SANDBOX_HOST_ALIAS = "host.docker.internal"
 
 @dataclass(frozen=True)
 class CaptureTarget:
-    """One backend's capture proxy: where the agent dials, where the proxy forwards,
+    """One backend's capture proxy: where the harness dials, where the proxy forwards,
     and where the JSONL lands."""
 
     backend_name: str
@@ -66,7 +66,7 @@ def plan_capture(config: DannoConfig, capture_dir: Path) -> tuple[DannoConfig, l
     """Return (rewritten_config, targets) for capturing `config`'s redirectable backends.
 
     Each `OllamaBackend`/`OpenAIBackend` gets a free port and a target; its `base_url`
-    is rewritten to `http://host.docker.internal:<port><path>` so the sandboxed agent
+    is rewritten to `http://host.docker.internal:<port><path>` so the sandboxed harness
     dials the proxy (always plain HTTP — the proxy re-originates TLS for cloud). The
     URL path (e.g. `/v1`) is preserved so `/v1/chat/completions` reconstructs upstream.
     `llamacpp` (stubbed) and built-in cloud refs like `anthropic/*` (no backend → no
@@ -100,7 +100,7 @@ def captures_running(targets: Sequence[CaptureTarget]) -> Iterator[None]:
     """Run every target's capture proxy for the duration of the block (one ExitStack).
 
     Ordering invariant (caller's job): enter this BEFORE provisioning/launching the
-    agent and exit it AFTER the last turn — the proxy must be up for every request."""
+    harness and exit it AFTER the last turn — the proxy must be up for every request."""
     with contextlib.ExitStack() as stack:
         for target in targets:
             stack.enter_context(
@@ -143,7 +143,7 @@ class CaptureBinding:
     """The fixed-port capture targets plus the root dir, ready to mint a
     per-permutation capture context for `danno bench`.
 
-    `plan_capture` runs ONCE per bench run (stable proxy ports baked into the agent's
+    `plan_capture` runs ONCE per bench run (stable proxy ports baked into the harness's
     provisioning), then `permutation()` is called per `(suite, task, model)` turn to
     write that turn's wire traffic to its own JSONL. Because bench turns run
     sequentially and `http.server.HTTPServer` sets `allow_reuse_address`, standing a

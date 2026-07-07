@@ -143,23 +143,23 @@ parent dir is included so same-basename checkouts and worktrees never collide), 
 `sandbox ls` reads `~/.danno/sandboxes.json` to print each `name → target` plus live
 status. OpenCode **only ever runs inside the sandbox** — never on your host.
 
-#### Forwarding flags to the agent (`--`)
+#### Forwarding flags to the harness (`--`)
 
-Anything after `--` on `sandbox start` is passed **verbatim** to the agent binary,
-so you can use the agent's own flags — for example resuming a prior Claude session
+Anything after `--` on `sandbox start` is passed **verbatim** to the harness binary,
+so you can use the harness's own flags — for example resuming a prior Claude session
 (its history lives in the persistent agent home, so the session is still on disk):
 
 ```bash
-danno sandbox start --agent claude -- --resume <session-id>
-danno sandbox start --agent claude -- --continue   # most recent session
+danno sandbox start --harness claude -- --resume <session-id>
+danno sandbox start --harness claude -- --continue   # most recent session
 ```
 
-danno's own options (`--target`, `--agent`, `--apply`, …) stay before the `--` and
+danno's own options (`--target`, `--harness`, `--apply`, …) stay before the `--` and
 are not forwarded.
 
 #### Capturing model wire traffic (`--capture`)
 
-`--capture` records the request **and** response between the sandboxed agent and its
+`--capture` records the request **and** response between the sandboxed harness and its
 model backends — useful for seeing exactly what is sent (e.g. that a local model is
 being used for an auxiliary call). danno interposes a small recording proxy in front
 of each *redirectable* backend by rewriting its `base_url`, then writes one JSONL file
@@ -167,11 +167,11 @@ per backend with auth-header values redacted.
 
 ```bash
 danno sandbox start --capture --apply   # ./.danno/captures/<ts>/<backend>.jsonl
-danno sandbox start --capture --apply --agent claurst   # claurst<->Ollama too
+danno sandbox start --capture --apply --harness claurst   # claurst<->Ollama too
 danno validate --capture --only <model> # <out>/captures/<backend>.jsonl
 ```
 
-For `--agent claurst` the lever depends on where the model lives. A **local Ollama**
+For `--harness claurst` the lever depends on where the model lives. A **local Ollama**
 model doesn't flow through `opencode.jsonc`, so danno points its in-VM Ollama relay at
 the same recording proxy instead — capture covers claurst's local-Ollama traffic too
 (the JSONL shows its system prompt, tool definitions, and the model's reply). A **cloud**
@@ -194,11 +194,11 @@ That splits the cases into three:
 | --- | --- | --- | --- |
 | A backend you define (Ollama, or any `openai`-compatible like NVIDIA NIM) | `[backends.danno-nvidia] base_url = …` | **Yes** | danno owns the `base_url`, so it can point it at the proxy (HTTPS is re-originated; the auth header is forwarded upstream and redacted in the capture). |
 | A built-in Anthropic model used *inside* opencode | `[agents] pm = "anthropic/claude-sonnet-4-6"` | **No** | a raw OpenCode ref has no danno `base_url`; opencode calls `api.anthropic.com` directly, so there is nothing to redirect. |
-| Claude Code itself as the agent | `sandbox start --agent claude`, `validate --baseline` | **No** | a different tool on a fixed Anthropic endpoint; redirecting it would mean injecting `ANTHROPIC_BASE_URL` (a documented follow-on). |
+| Claude Code itself as the harness | `sandbox start --harness claude`, `validate --baseline` | **No** | a different tool on a fixed Anthropic endpoint; redirecting it would mean injecting `ANTHROPIC_BASE_URL` (a documented follow-on). |
 
 In short: capture covers **anything whose endpoint danno configures** (Ollama,
 NVIDIA/openai). It does **not** capture Anthropic-served Claude in either form —
-opencode's `anthropic/*` models *or* the `claude` agent — because both use fixed
+opencode's `anthropic/*` models *or* the `claude` harness — because both use fixed
 Anthropic endpoints danno doesn't currently redirect. A captured run that touches
 either **warns loudly** naming exactly what it skipped.
 
@@ -227,14 +227,14 @@ WAL journal — so sessions reset on rebuild). See
 [Sandboxed agents: repo, agent-home, auth](#sandboxed-agents-repo-agent-home-auth)
 for the full model.
 
-#### Other agents (`--agent`)
+#### Other harnesses (`--harness`)
 
-`docker sandbox` ships prebuilt agents (`opencode`, `claude`, …). Pass `--agent`
-to run a different one; non-default agents get their **own** sandbox
-(`danno-<parent>-<dir>-<agent>`) so they coexist with the opencode sandbox.
+`docker sandbox` ships prebuilt harnesses (`opencode`, `claude`, …). Pass `--harness`
+to run a different one; non-default harnesses get their **own** sandbox
+(`danno-<parent>-<dir>-<harness>`) so they coexist with the opencode sandbox.
 
 ```bash
-danno sandbox start --apply --target ./my-project --agent claude
+danno sandbox start --apply --target ./my-project --harness claude
 ```
 
 **Claude Code auth** is read from danno's host environment and injected into the
@@ -250,12 +250,12 @@ export CLAUDE_CODE_OAUTH_TOKEN=...
 export ANTHROPIC_API_KEY=...
 ```
 
-If neither is set, `sandbox start --agent claude` **fails loud** with the
+If neither is set, `sandbox start --harness claude` **fails loud** with the
 `claude setup-token` hint rather than launching unauthenticated. The token is
 re-injected on every `start`, so it survives `sandbox rebuild`.
 
-**claurst** — `--agent claurst` runs [claurst](https://github.com/Kuberwastaken/claurst),
-a pure-Rust Claude-Code clone, as a first-class danno agent on **local Ollama and the
+**claurst** — `--harness claurst` runs [claurst](https://github.com/Kuberwastaken/claurst),
+a pure-Rust Claude-Code clone, as a first-class danno harness on **local Ollama and the
 cloud providers danno can fully wire** (today NVIDIA NIM). danno ships a danno-pinned
 fork build (`MikeStitt/claurst`) that honors the sandbox egress proxy; claurst isn't a
 prebuilt image, so danno hosts it in the `shell` sandbox and curl-installs the binary on
@@ -268,16 +268,16 @@ never on the command line). A `[models]` entry on a backend danno can't wire, or
 to a silent mid-session failure.
 
 ```bash
-danno sandbox start --apply --agent claurst              # claurst's default model
-danno sandbox start --apply --agent claurst -m gemma4    # a local Ollama [models] entry
-danno sandbox start --apply --agent claurst -m qwen-coder # an NVIDIA NIM [models] entry
+danno sandbox start --apply --harness claurst              # claurst's default model
+danno sandbox start --apply --harness claurst -m gemma4    # a local Ollama [models] entry
+danno sandbox start --apply --harness claurst -m qwen-coder # an NVIDIA NIM [models] entry
 ```
 
-claurst is also a first-class **agent-under-test**: `danno validate --agent claurst` and
-`danno bench --agent claurst` sweep your danno.toml `[models]` through the same tiered
+claurst is also a first-class **harness-under-test**: `danno validate --harness claurst` and
+`danno bench --harness claurst` sweep your danno.toml `[models]` through the same tiered
 battery / benchmark suites opencode runs (local Ollama, and NVIDIA NIM for validate's
 cloud matrix). `danno benchmark` compares opencode config trees and stays opencode-only —
-use `danno bench --agent claurst` to benchmark claurst across models instead.
+use `danno bench --harness claurst` to benchmark claurst across models instead.
 
 ## `danno.toml` quickstart
 
@@ -454,13 +454,13 @@ danno validate --dry-run                 # preview the plan (models, tiers, sand
 danno validate                           # run it — provisions, sweeps, writes the report
 danno validate --only gemma4 --max-level 1   # just one model, liveness + tool/bash
 danno validate --baseline --baseline-model opus   # add a Claude Code reference row
-danno validate --agent claurst               # sweep the models via claurst, not opencode
+danno validate --harness claurst             # sweep the models via claurst, not opencode
 ```
 
-`--agent` picks the **agent-under-test** that drives the sweep: `opencode` (the
+`--harness` picks the **harness-under-test** that drives the sweep: `opencode` (the
 default) or `claurst` (the Rust Claude-Code clone, benchmarked on local Ollama
 models). claurst also runs as an **interactive** coding tool via `danno sandbox start
---agent claurst` (see the [`--agent`](#other-agents---agent) section above and
+--harness claurst` (see the [`--harness`](#other-harnesses---harness) section above and
 [`.docs/user-experience-elephant.md`](.docs/user-experience-elephant.md) §5).
 
 It **runs immediately** (like `sandbox start`, no `--apply`) and is
@@ -496,7 +496,7 @@ for the harness design.
 Where `validate` runs danno's own tiered battery, `danno bench` runs **established
 coding-benchmark suites** — an Aider Polyglot subset and a SWE-bench Verified subset
 — across every model your `danno.toml` declares, against your chosen
-agent-under-test. Suites and the exact instances come from a `benchmarks.toml` (next
+harness-under-test. Suites and the exact instances come from a `benchmarks.toml` (next
 to `danno.toml` by default, or `--benchmarks <path>`): enable `[aider_polyglot]`
 and/or `[swebench]` and list the exercise/instance ids under each `select`.
 
@@ -504,7 +504,7 @@ and/or `[swebench]` and list the exercise/instance ids under each `select`.
 danno bench --dry-run                 # preview the suites × models plan
 danno bench                           # run the enabled suites across danno.toml's models
 danno bench --only gemma4             # restrict the matrix to one model
-danno bench --agent claurst           # benchmark claurst (local Ollama) instead of opencode
+danno bench --harness claurst         # benchmark claurst (local Ollama) instead of opencode
 ```
 
 It provisions disposable, validator-owned sandboxes over a throwaway workspace, runs
@@ -528,7 +528,7 @@ optional Claude `--baseline`), then writes a comparison report + `results.json` 
 danno benchmark ./candidate-configs --dry-run        # preview which configs run
 danno benchmark ./candidate-configs --baseline       # run + a Claude reference row
 danno benchmark ./candidate-configs --judge          # add L2 dev-quality grading
-danno benchmark ./candidate-configs --agent claurst  # drive the candidates with claurst
+danno benchmark ./candidate-configs --harness claurst  # drive the candidates with claurst
 ```
 
 Each candidate carries its own model (in its opencode.jsonc), so no `-m` override
@@ -626,7 +626,7 @@ Say you keep a main checkout plus two `git worktree` siblings on different branc
 ```
 
 Each directory is a **separate workspace**, so danno gives each its **own sandbox**
-and its **own agent home**. Sandbox names are `danno-<parent>-<dir>[-<agent>]` — the
+and its **own agent home**. Sandbox names are `danno-<parent>-<dir>[-<harness>]` — the
 parent dir is included so same-basename checkouts (and worktrees) never collide:
 
 | Directory | Sandbox | Agent home (`per-project`) |

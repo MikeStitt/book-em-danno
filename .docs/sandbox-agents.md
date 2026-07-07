@@ -16,7 +16,7 @@ your project inside it, wire it to host Ollama / agent auth, and then **launch a
 coding agent inside that VM** so a runaway build or command can't touch your host.
 
 The agent is one of Docker's **prebuilt sandbox agents**. danno does **not** ship or
-allowlist agents — `--agent <name>` is forwarded verbatim to
+allowlist agents — `--harness <name>` is forwarded verbatim to
 `docker sandbox create … <name>` (`src/book_em_danno/commands/sandbox.py:262`), and the
 container binary danno execs *is* that name (`sandbox.py:566`). So "which agents
 exist" is whatever your `docker sandbox` provides.
@@ -138,7 +138,7 @@ Two more distinctions worth holding:
 - **cagent is structurally different from all of them** — a multi-agent *framework*
   (you author the agent graph) rather than a ready-to-run single coding agent. Closer to
   "a config format that orchestrates sub-agents" than to opencode/claude.
-- **Current-wiring nuance:** danno's `agent_env` "else" branch injects `OLLAMA_BASE_URL`
+- **Current-wiring nuance:** danno's `harness_env` "else" branch injects `OLLAMA_BASE_URL`
   + `XDG_CONFIG_HOME` for every non-claude agent (`sandbox.py:377-379`), but **only
   opencode actually reads those.** For codex/copilot/gemini/kiro those two vars are
   inert — each uses its own config/env conventions (above). So today a non-native agent
@@ -147,7 +147,7 @@ Two more distinctions worth holding:
 ## How danno wires each agent (the env matrix)
 
 All wiring lands in a single **chmod-600 `--env-file`** bound into the sandbox exec —
-secrets never hit the command line (`agent_env`, `sandbox.py:342-380`;
+secrets never hit the command line (`harness_env`, `sandbox.py:342-380`;
 `_build_env_file`, `:383`). The shared session core (`_exec_session`, `:489`) is
 identical for `start` (runs the agent) and `shell` (runs `bash`) — they differ only
 in the container command.
@@ -180,7 +180,7 @@ sandboxes (`default_name`, `sandbox.py:39-50`). E.g. for `~/projects/elephant`:
 - `opencode` → `danno-projects-elephant`
 - `claude` → `danno-projects-elephant-claude`
 
-Every `danno sandbox …` subcommand takes `--agent`, so it targets the right per-agent
+Every `danno sandbox …` subcommand takes `--harness`, so it targets the right per-harness
 sandbox. Standing in the project dir (`cd elephant`) and omitting `--target/--name`
 recomputes the same name each time.
 
@@ -198,7 +198,7 @@ danno install --target . --apply
 cd <project> && danno sandbox start
 ```
 
-`danno install` has **no `--agent` flag** — it always provisions the default
+`danno install` has **no `--harness` flag** — it always provisions the default
 (opencode) sandbox (`cli.py:83-92`). It's the opencode-specific path: config gen +
 Ollama pulls + tools + opencode sandbox.
 
@@ -212,14 +212,14 @@ via `sandbox start --apply` (it provisions when missing, then launches —
 # Claude Code — export auth first (subscription token preferred):
 claude setup-token            # then export the printed CLAUDE_CODE_OAUTH_TOKEN
 #   …or: export ANTHROPIC_API_KEY=sk-ant-…
-danno sandbox start --agent claude --apply
+danno sandbox start --harness claude --apply
 
 # A pass-through agent — bring its own auth via --env (lands in the 0600 env-file):
-danno sandbox start --agent codex  --apply --env OPENAI_API_KEY=sk-…
-danno sandbox start --agent gemini --apply --env GEMINI_API_KEY=…
+danno sandbox start --harness codex  --apply --env OPENAI_API_KEY=sk-…
+danno sandbox start --harness gemini --apply --env GEMINI_API_KEY=…
 
 # A plain sandboxed shell (no agent) — run builds/tests in isolation:
-danno sandbox shell --agent shell --apply
+danno sandbox shell --harness shell --apply
 ```
 
 > Pass-through auth: danno only knows claude's and opencode's auth conventions. For
@@ -234,15 +234,15 @@ Anything after `--` is passed verbatim to the agent binary (`launch` /
 `sandbox.py:566`; `sandbox start` uses `allow_extra_args`):
 
 ```bash
-danno sandbox start --agent claude -- --resume <session-id>
+danno sandbox start --harness claude -- --resume <session-id>
 ```
 
-### Lifecycle (all take `--agent`)
+### Lifecycle (all take `--harness`)
 
 ```bash
-danno sandbox shell   --agent claude   # bash in the SAME wiring as start (debug)
-danno sandbox stop    --agent claude   # stop the VM
-danno sandbox rebuild --agent claude   # wipe & re-provision (agent-home survives)
+danno sandbox shell   --harness claude   # bash in the SAME wiring as start (debug)
+danno sandbox stop    --harness claude   # stop the VM
+danno sandbox rebuild --harness claude   # wipe & re-provision (agent-home survives)
 danno sandbox ls                       # list danno-tracked sandboxes
 ```
 
@@ -266,7 +266,7 @@ everything else → `XDG_CONFIG_HOME`).
 
 1. **Pass-through (today):** danno provisions the sandbox; you supply auth via `--env`.
    Works for every agent, zero per-agent code.
-2. **Auth-aware:** teach `agent_env` each agent's auth var (codex→`OPENAI_API_KEY`,
+2. **Auth-aware:** teach `harness_env` each agent's auth var (codex→`OPENAI_API_KEY`,
    copilot→`GITHUB_TOKEN`, gemini→`GEMINI_API_KEY`, kiro→`KIRO_API_KEY`) so users don't
    hand-pass them, with claude-style fail-loud. Cheap, but only a convenience.
 3. **Fully first-class:** danno **generates the agent's config** from `danno.toml` to
@@ -356,7 +356,7 @@ mapping (it degrades to launch-time profiles).
   `docker sandbox create`, which will error. The roster is Docker's.
 - **`opencode.jsonc` warning** ("run `danno install` first") only fires for the
   opencode agent (`sandbox.py:322`); it's intentionally silent for the others.
-- **Per-agent sandboxes are separate VMs** — switching `--agent` doesn't reuse the
+- **Per-harness sandboxes are separate VMs** — switching `--harness` doesn't reuse the
   opencode sandbox; it provisions a suffixed one.
 - **opencode chats reset on `rebuild`** (see persistence note above); `stop`/`start`
   preserve them.
@@ -365,5 +365,5 @@ mapping (it degrades to launch-time profiles).
 
 - `README.md` "Sandboxed agents" / `danno.toml` quickstart — the user-facing summary.
 - `.specify/memory/parts/ados-ollama.md` — what danno provisions and the network model.
-- `sandbox.py` — the authoritative implementation (`agent_env`, `create`, `provision`,
+- `sandbox.py` — the authoritative implementation (`harness_env`, `create`, `provision`,
   `launch`, `_exec_session`).

@@ -151,7 +151,7 @@ class Runner:
         executes (apply-independent, like `run`) but does NOT stream — output is
         captured for the caller to parse.
 
-        `check=False` by default: a non-zero exit from the agent-under-test is
+        `check=False` by default: a non-zero exit from the harness-under-test is
         data to inspect, not a danno failure. Pass `check=True` to raise
         `CommandFailedError` on a non-zero exit (e.g. a workspace reset that must
         succeed). The command is logged only under `--verbose` (machine-driven; no

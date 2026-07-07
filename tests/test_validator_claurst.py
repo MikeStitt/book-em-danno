@@ -1,4 +1,4 @@
-"""Unit tests for the M2/M3 Claurst AUT seam — `install_claurst` command
+"""Unit tests for the M2/M3 Claurst HUT seam — `install_claurst` command
 construction and `authed_claurst_run` forwarding. No Docker daemon: the install is
 asserted via the advised (non-apply) command, and the turn producer is checked by
 stubbing `claurst.claurst_run`."""

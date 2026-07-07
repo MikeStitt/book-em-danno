@@ -1,4 +1,4 @@
-"""Claurst agent-under-test: install it into a sandbox and drive the sweep with it.
+"""Claurst harness-under-test: install it into a sandbox and drive the sweep with it.
 
 Claurst (a pure-Rust Claude-Code clone) is NOT one of the prebuilt `docker sandbox`
 images, so the validator hosts it in a `shell` sandbox and installs the release
