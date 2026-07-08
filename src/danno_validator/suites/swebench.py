@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,6 +32,11 @@ from danno_validator.driver import capture_exec
 _ROWS_API = "https://datasets-server.huggingface.co/rows"
 _PAGE = 100  # max rows per request
 _TOTAL = 500  # SWE-bench_Verified size; paged to find the select ids
+# The datasets-server 502s intermittently (a ~1-2 min window under load), and a single
+# blip must not abort a 25-min bench run — retry transient upstream failures with a
+# linear backoff (5s,10s,…), then fail loud. 4xx (bad dataset/params) never retries.
+_FETCH_ATTEMPTS = 6
+_FETCH_BACKOFF_S = 5.0
 # SWE-bench checkouts live VM-LOCAL, not on the mounted workspace: `git clone` of a
 # real repo onto the gvisor/virtiofs macOS mount corrupts ("inflate inconsistency").
 # Nothing here needs the host mount — the agent edits via --cwd and grading runs
@@ -52,6 +58,35 @@ def _as_list(value: object) -> list[str]:
     return []
 
 
+def _fetch_rows_page(url: str, *, dataset: str, offset: int) -> dict:
+    """GET one rows page, retrying transient upstream failures.
+
+    The HF datasets-server 502s intermittently (esp. under load). Retry 5xx / network /
+    timeout errors up to `_FETCH_ATTEMPTS` with a linear backoff so a brief blip doesn't
+    abort a long bench run; a 4xx is a client error that won't fix itself, so it fails
+    loud immediately. Fails loud (ValueError, Working Rule 8) once attempts are exhausted.
+    """
+    last: Exception | None = None
+    for attempt in range(1, _FETCH_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=60) as resp:  # noqa: S310 (trusted host)
+                result: dict = json.load(resp)
+                return result
+        except urllib.error.HTTPError as exc:
+            last = exc
+            if exc.code < 500:
+                break  # client error (bad dataset/params) — retrying is pointless
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last = exc
+        if attempt < _FETCH_ATTEMPTS:
+            time.sleep(_FETCH_BACKOFF_S * attempt)
+    raise ValueError(
+        f"swebench: could not fetch instances from the HF datasets-server for "
+        f"'{dataset}' (offset {offset}) after {_FETCH_ATTEMPTS} attempt(s): {last}. "
+        f"The datasets-server is likely down or overloaded — retry later."
+    ) from last
+
+
 def fetch_instances(select: Sequence[str], *, dataset: str) -> dict[str, dict]:
     """Fetch the `select` instances' rows from the HF datasets-server (host-side).
 
@@ -67,18 +102,7 @@ def fetch_instances(select: Sequence[str], *, dataset: str) -> dict[str, dict]:
             f"{_ROWS_API}?dataset={urllib.parse.quote(dataset)}"
             f"&config=default&split=test&offset={offset}&length={_PAGE}"
         )
-        try:
-            with urllib.request.urlopen(url, timeout=60) as resp:  # noqa: S310 (trusted host)
-                payload = json.load(resp)
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
-            # The HF datasets-server is a live upstream (transient 500s, rate limits,
-            # timeouts). Fail loud with a clean message (Working Rule 8) instead of a raw
-            # traceback; the caller reports it as a bench error, not a danno crash.
-            raise ValueError(
-                f"swebench: could not fetch instances from the HF datasets-server for "
-                f"'{dataset}' (offset {offset}): {exc}. This is usually a transient upstream "
-                f"error — retry in a moment."
-            ) from exc
+        payload = _fetch_rows_page(url, dataset=dataset, offset=offset)
         rows = payload.get("rows", [])
         if not rows:
             break
@@ -119,23 +143,29 @@ class SwebenchTask:
     @property
     def prompt(self) -> str:
         return (
-            f"You are working in a clone of the {self.repo} repository. Resolve this "
-            f"issue by editing the project's source code (do NOT edit any test files):\n\n"
-            f"{self.problem_statement}\n\n"
+            f"You are working in a clone of the {self.repo} repository, checked out at "
+            f"{self._repo_dir} — this is your current working directory. Use paths "
+            f"relative to it, or absolute paths under it; do NOT assume /testbed or any "
+            f"other location. Run Python as `python` or `python3` (both work).\n\n"
+            f"Resolve this issue by editing the project's source code (do NOT edit any "
+            f"test files):\n\n{self.problem_statement}\n\n"
             "Make the necessary code changes so the project's tests pass."
         )
 
     @property
-    def _subdir(self) -> str:
-        return self.instance_id
+    def _repo_dir(self) -> str:
+        """VM-local checkout path — the SINGLE source of truth shared by the agent's
+        cwd (`workspace_dir`), provisioning, grading, and the prompt. Derived from the
+        instance id, so it is correct for every instance with no per-instance config."""
+        return f"{_VM_ROOT}/{self.instance_id}"
 
     def workspace_dir(self, workspace: Path) -> Path:
         # VM-LOCAL (ignores the mounted `workspace`) — see _VM_ROOT. The agent's
         # --cwd and the grader's pytest both run here, in the VM.
-        return Path(_VM_ROOT) / self._subdir
+        return Path(self._repo_dir)
 
     def _patch_path(self) -> str:
-        return f"{_VM_ROOT}/{self.instance_id}.patch"
+        return f"{self._repo_dir}.patch"
 
     def _pip(self) -> str:
         # --no-build-isolation avoids the PEP 517 isolated-subprocess proxy timeout
@@ -160,6 +190,16 @@ class SwebenchTask:
         heredoc = f"cat > {qp} <<'{_PATCH_HEREDOC}'\n{self.test_patch}\n{_PATCH_HEREDOC}"
         script = (
             f"set -e; mkdir -p {shlex.quote(_VM_ROOT)}\n"
+            # Shim `python` -> `python3` for the WHOLE sandbox. SWE-bench-era models
+            # reflexively invoke `python …` (e.g. `python -m pytest` to self-verify),
+            # but this image ships only python3, so those calls silently fail and the
+            # model stops early believing it is done. The `shell` VM runs as the
+            # unprivileged `agent` user, so /usr/local/bin & /usr/bin are read-only —
+            # the symlink goes in ~/.local/bin, which is writable AND first on PATH for
+            # both login and non-login shells (verified). Best-effort; never aborts.
+            "command -v python >/dev/null 2>&1 || "
+            '{ mkdir -p "$HOME/.local/bin" && '
+            'ln -sf "$(command -v python3)" "$HOME/.local/bin/python"; } || true\n'
             f"{heredoc}\n"
             f"if [ ! -d {qd}/.git ]; then rm -rf {qd}; git clone {url} {qd}; fi\n"
             f"cd {qd}; git checkout -f {commit}; git apply {qp}; {self._pip()}"

@@ -41,6 +41,10 @@ def test_task_from_row_parses_fields() -> None:
     assert t.pass_to_pass == ("t_test.py::test_c",)
     assert "Fix the widget." in t.prompt
     assert "do NOT edit any test files" in t.prompt
+    # The prompt must name the real checkout path (derived from the instance id) and
+    # defuse the /testbed training bias — otherwise the model thrashes on bad paths.
+    assert "/tmp/danno-swe/demo__demo-1" in t.prompt
+    assert "do NOT assume /testbed" in t.prompt
 
 
 def _mock_rows_api(monkeypatch: pytest.MonkeyPatch, pages: list[list[dict]]) -> None:
@@ -71,6 +75,53 @@ def test_fetch_instances_missing_id_fails_loud(monkeypatch: pytest.MonkeyPatch) 
         fetch_instances(["demo__demo-1", "ghost__ghost-9"], dataset="d")
 
 
+def test_fetch_instances_retries_transient_502(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The datasets-server 502s intermittently; two blips then success must NOT abort.
+    monkeypatch.setattr(swebench.time, "sleep", lambda _s: None)  # no real backoff wait
+    attempts = {"n": 0}
+
+    def flaky_urlopen(url, timeout=0):  # type: ignore[no-untyped-def]
+        attempts["n"] += 1
+        if attempts["n"] <= 2:
+            raise swebench.urllib.error.HTTPError(url, 502, "Bad Gateway", {}, None)  # type: ignore[arg-type]
+        body = json.dumps({"rows": [{"row": _ROW}]}).encode()
+        return io.BytesIO(body)
+
+    monkeypatch.setattr(swebench.urllib.request, "urlopen", flaky_urlopen)
+    found = fetch_instances(["demo__demo-1"], dataset="d")
+    assert set(found) == {"demo__demo-1"}
+    assert attempts["n"] == 3  # 2 failures + 1 success
+
+
+def test_fetch_instances_gives_up_after_max_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(swebench.time, "sleep", lambda _s: None)
+    attempts = {"n": 0}
+
+    def always_502(url, timeout=0):  # type: ignore[no-untyped-def]
+        attempts["n"] += 1
+        raise swebench.urllib.error.HTTPError(url, 502, "Bad Gateway", {}, None)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(swebench.urllib.request, "urlopen", always_502)
+    with pytest.raises(ValueError, match="after .* attempt"):
+        fetch_instances(["demo__demo-1"], dataset="d")
+    assert attempts["n"] == swebench._FETCH_ATTEMPTS
+
+
+def test_fetch_instances_4xx_fails_fast_no_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A client error won't fix itself — fail loud on the first try, don't burn retries.
+    monkeypatch.setattr(swebench.time, "sleep", lambda _s: None)
+    attempts = {"n": 0}
+
+    def always_404(url, timeout=0):  # type: ignore[no-untyped-def]
+        attempts["n"] += 1
+        raise swebench.urllib.error.HTTPError(url, 404, "Not Found", {}, None)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(swebench.urllib.request, "urlopen", always_404)
+    with pytest.raises(ValueError):
+        fetch_instances(["demo__demo-1"], dataset="d")
+    assert attempts["n"] == 1
+
+
 def _stub_capture(monkeypatch: pytest.MonkeyPatch, *, grade_ok: bool) -> list[str]:
     seen: list[str] = []
 
@@ -94,6 +145,9 @@ def test_provision_clones_checks_out_applies_patch_installs(
     assert "git checkout -f abc123" in script
     assert "git apply" in script
     assert "pip install" in script and "-e ." in script
+    # A `python` -> `python3` PATH shim is installed in the unprivileged agent's
+    # ~/.local/bin (writable + on PATH) so the model's own `python …` calls resolve.
+    assert "ln -sf" in script and '"$HOME/.local/bin/python"' in script
     # VM-local checkout under /tmp (NOT the mounted workspace), patch via heredoc.
     assert "/tmp/danno-swe/demo__demo-1" in script
     assert "diff --git" in script  # the test patch is heredoc'd into the script

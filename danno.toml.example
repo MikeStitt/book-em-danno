@@ -39,6 +39,32 @@ output_limit   = 8192    # tokens OpenCode reserves for the reply (usable input 
 kind     = "llamacpp"
 base_url = "http://host.docker.internal:8080/v1"
 
+# The `claude` reference harness serves its own model — it talks straight to
+# api.anthropic.com with its own OAuth token and picks the model by `--model`, so
+# danno dials no endpoint and needs no base_url/api_key. Declare that with an INERT
+# backend (kind = "inert", nothing else). Each model's `tag` IS the raw `--model`
+# value, and `danno bench --harness claude` sweeps every inert model below by
+# threading its tag to `--model` (omit these and the claude row uses the install
+# default, recorded only as "(default model)"). IMPLEMENTED.
+[backends.claude]
+kind = "inert"
+
+[models.haiku]
+backend = "claude"
+tag     = "claude-haiku-4-5-20251001"    # tag = the exact `claude --model` value
+
+[models.sonnet]
+backend = "claude"
+tag     = "claude-sonnet-4-6"
+
+[models.opus]
+backend = "claude"
+tag     = "claude-opus-4-8"              # current claude install default resolves to claude-opus-4-8[1m]
+
+[models.fable]
+backend = "claude"
+tag     = "claude-fable-5"
+
 # --- Models: a named (backend, tag) pair. ---
 [backends.danno-nvidia]                  # IMPLEMENTED — any OpenAI-compatible endpoint (NVIDIA NIM)
 kind        = "openai"
@@ -110,6 +136,25 @@ tag       = "mistralai/mistral-large-3-675b-instruct-2512"   # the model id the 
 [models.glm-5p1-danno]
 backend   = "danno-nvidia"
 tag       = "z-ai/glm-5.1"   # the model id the endpoint expects
+
+# --- Smaller NVIDIA NIM models for easy aider tasks where tool-calling RELIABILITY
+#     — not raw coding skill — is the binding constraint. These three were LIVE
+#     smoke-tested on a free account 2026-07-08 (HTTP 200 + a real completion), so they
+#     actually run; the catalog lists ~121 models but most small ones are gated (404
+#     "not found for account") or down (500 "inference connection error") on free tier
+#     — e.g. mistralai/mistral-nemotron (500) and mistralai/codestral-22b (404 entitlement).
+#     Tool-call format differs and is itself worth benchmarking per harness (see below). ---
+[models.llama31-8b-danno]                # META 8B dense — emits clean OpenAI tool_calls, fastest (~0.8s ttfb)
+backend   = "danno-nvidia"
+tag       = "meta/llama-3.1-8b-instruct"
+
+[models.ministral-14b-danno]             # MISTRAL 14B dense (2512) — clean tool_calls, steady small "real coder"
+backend   = "danno-nvidia"
+tag       = "mistralai/ministral-14b-instruct-2512"
+
+[models.nemotron-nano-9b-danno]          # NVIDIA 9B hybrid reasoning — emits <TOOLCALL> in content, not a
+backend   = "danno-nvidia"               #   structured tool_calls array; stresses each harness's tool-parse path
+tag       = "nvidia/nvidia-nemotron-nano-9b-v2"
 
 # --- Agent -> model. A value WITHOUT "/" names a [models] entry above; a value WITH
 #     "/" is a raw OpenCode ref passed through verbatim (built-in cloud model, no

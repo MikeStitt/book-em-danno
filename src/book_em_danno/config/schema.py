@@ -78,8 +78,28 @@ class OpenAIBackend(BaseModel):
     output_limit: int = 8192
 
 
+class InertBackend(BaseModel):
+    """A backend danno does NOT dial — the harness serves the model itself. IMPLEMENTED.
+
+    For a reference harness that carries its own endpoint + auth and picks the model
+    by a native flag rather than an OpenAI-compatible base_url danno controls. Today
+    that is the `claude` reference row: Claude Code talks straight to
+    api.anthropic.com with its own OAuth token and selects the model via `--model`,
+    so danno has no base_url/api_key lever to emit — hence no fields here.
+
+    A model on an inert backend uses its `tag` as the raw harness model id/alias
+    (e.g. "claude-opus-4-8", "sonnet"): `model_ref` returns the bare tag (no
+    `<backend>/` prefix), and `danno bench --harness claude` passes it to `--model`.
+    Dialing an inert model with a config-driven harness (opencode/occ/claurst) fails
+    loud, since there is no endpoint to reach.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["inert"]
+
+
 Backend = Annotated[
-    OllamaBackend | LlamacppBackend | OpenAIBackend,
+    OllamaBackend | LlamacppBackend | OpenAIBackend | InertBackend,
     Field(discriminator="kind"),
 ]
 

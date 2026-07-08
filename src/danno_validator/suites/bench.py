@@ -14,6 +14,7 @@ import hashlib
 import json
 import re
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,7 +28,7 @@ from book_em_danno.capture.wiring import (
 )
 from book_em_danno.commands import sandbox as sb
 from book_em_danno.config.generate import generate
-from book_em_danno.config.schema import DannoConfig
+from book_em_danno.config.schema import DannoConfig, InertBackend
 from book_em_danno.core.exec import CommandFailedError, Runner, log_info, log_warn
 from danno_validator import baseline
 from danno_validator.driver import seed_workspace
@@ -90,7 +91,8 @@ class BenchReport:
 
 
 # The harnesses-under-test `danno bench` can drive (occ/claurst/opencode on the local +
-# cloud matrix; claude the single cloud reference row). Ordered for a stable report layout.
+# cloud matrix; claude sweeps its inert-backend models, or one `(default model)` row if
+# none are declared). Ordered for a stable report layout.
 BENCH_HARNESSES: tuple[str, ...] = (sb.DEFAULT_HARNESS, CLAURST, OCC, CLAUDE)
 
 
@@ -152,6 +154,24 @@ def _variant_cloud_env_lines(harness: str, config: DannoConfig, model_name: str)
     return []  # claude: the cloud reference HUT carries its own auth (never a [models] key)
 
 
+def _claude_inert_models(config: DannoConfig, only: Sequence[str] | None) -> list[str]:
+    """The declared inert-backend model names claude should sweep, sorted (`only`-filtered).
+
+    claude selects its model by `--model`, so only inert-backend [models] (whose `tag` is
+    the raw `--model` value) are meaningful to it — local/cloud OpenAI-compatible models
+    are opencode/occ/claurst's matrix, not claude's. Empty → the caller falls back to the
+    single install-default reference row."""
+    names = [
+        n
+        for n in sorted(config.models)
+        if isinstance(config.backends[config.models[n].backend], InertBackend)
+    ]
+    if only is not None:
+        keep = set(only)
+        names = [n for n in names if n in keep]
+    return names
+
+
 def _harness_dial_ref(harness: str, config: DannoConfig, variant: ConfigVariant) -> str | None:
     """The ref occ/claurst must actually dial for `variant`, or None (report ref stands).
 
@@ -168,6 +188,15 @@ def _harness_dial_ref(harness: str, config: DannoConfig, variant: ConfigVariant)
         return sb.resolve_occ_model(config, variant.model_name)
     if harness == CLAURST:
         return sb.resolve_claurst_model(config, variant.model_name)
+    if harness == CLAUDE:
+        # claude picks its model by `--model <alias|id>`, not an OpenAI-compatible ref.
+        # Only an INERT-backend model's tag is that value (e.g. "claude-opus-4-8"); a
+        # local/cloud model or the synthetic reference row (`baseline_variant`, whose
+        # model_name isn't in [models]) → None → claude's install default.
+        model = config.models.get(variant.model_name)
+        if model is not None and isinstance(config.backends[model.backend], InertBackend):
+            return model.tag
+        return None
     return None
 
 
@@ -550,10 +579,17 @@ def run_bench(
 ) -> BenchReport:
     """Run the enabled suites across the model matrix against `opts.harness`."""
     now = now or datetime.now(UTC)
-    # claude is the cloud reference HUT: it ignores `-m`, so its matrix collapses to a
-    # single `claude-code` row rather than one per local model (see baseline_variant).
+    # claude picks its model by `--model`, not the OpenAI-compatible `-m` matrix. So it
+    # sweeps only its INERT-backend models (each tag → `--model`); the local ollama/cloud
+    # matrix is irrelevant to it. With no inert model declared, it collapses to a single
+    # `claude-code` reference row on the install default (see baseline_variant).
     if opts.harness == CLAUDE:
-        variants = [baseline.baseline_variant(None)]
+        claude_models = _claude_inert_models(config, opts.only)
+        variants = (
+            model_variants(config, only=claude_models)
+            if claude_models
+            else [baseline.baseline_variant(None)]
+        )
     else:
         variants = model_variants(config, only=opts.only)
     out_dir = opts.out_dir or Path(".danno-bench") / now.strftime("%Y-%m-%dT%H-%M-%S")
