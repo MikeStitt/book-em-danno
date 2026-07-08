@@ -14,8 +14,11 @@ def test_load_example_ok() -> None:
     cfg = load_config(EXAMPLE)
     assert cfg.defaults.default_agent == "build"
     assert cfg.defaults.profile == "hybrid"
-    assert set(cfg.backends) == {"danno-ollama", "llamacpp", "danno-nvidia"}
+    assert set(cfg.backends) == {"danno-ollama", "llamacpp", "danno-nvidia", "claude"}
     assert cfg.models["qwen3-coder-next"].tag == "qwen3-coder-next"
+    # the claude reference harness's models sit on an inert backend; the tag IS --model
+    assert cfg.backends["claude"].kind == "inert"
+    assert cfg.models["opus"].tag == "claude-opus-4-8"
     # cloud model referenced inline as a raw OpenCode ref, no backend/[models] entry
     assert cfg.agents["pm"] == "anthropic/claude-sonnet-4-6"
     assert cfg.agents["build"] == "qwen3-coder-next"

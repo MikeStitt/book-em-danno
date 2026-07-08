@@ -39,6 +39,32 @@ output_limit   = 8192    # tokens OpenCode reserves for the reply (usable input 
 kind     = "llamacpp"
 base_url = "http://host.docker.internal:8080/v1"
 
+# The `claude` reference harness serves its own model — it talks straight to
+# api.anthropic.com with its own OAuth token and picks the model by `--model`, so
+# danno dials no endpoint and needs no base_url/api_key. Declare that with an INERT
+# backend (kind = "inert", nothing else). Each model's `tag` IS the raw `--model`
+# value, and `danno bench --harness claude` sweeps every inert model below by
+# threading its tag to `--model` (omit these and the claude row uses the install
+# default, recorded only as "(default model)"). IMPLEMENTED.
+[backends.claude]
+kind = "inert"
+
+[models.haiku]
+backend = "claude"
+tag     = "claude-haiku-4-5-20251001"    # tag = the exact `claude --model` value
+
+[models.sonnet]
+backend = "claude"
+tag     = "claude-sonnet-4-6"
+
+[models.opus]
+backend = "claude"
+tag     = "claude-opus-4-8"              # current claude install default resolves to claude-opus-4-8[1m]
+
+[models.fable]
+backend = "claude"
+tag     = "claude-fable-5"
+
 # --- Models: a named (backend, tag) pair. ---
 [backends.danno-nvidia]                  # IMPLEMENTED — any OpenAI-compatible endpoint (NVIDIA NIM)
 kind        = "openai"

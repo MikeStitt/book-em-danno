@@ -58,12 +58,14 @@ def run_turn_for(
     claurst sets up its Ollama relay per turn; opencode is pinned to its read-write
     run-agent (`DEFAULT_RUN_AGENT`, "build") so benchmark edits actually land. claude is
     the cloud *reference* HUT — its `env_file` carries auth (never None; built loud
-    from a host token) and it ignores the per-variant `-m` (fixed default model).
+    from a host token) and it selects its model via `--model` (see `model_override`).
     `capture_port` (from `--capture`) points occ/claurst's in-VM Ollama relay at the
     recording proxy so their local wire traffic is captured; opencode captures via its
     rewritten backend `base_url` instead and ignores it, as does the cloud claude row.
-    `model_override` (occ/claurst only) is the normalized ref they dial when the reported
-    matrix ref's backend segment isn't the literal `ollama` their locality check expects.
+    `model_override` is the harness's own model selector, set by `_harness_dial_ref`:
+    for occ/claurst the normalized ref they dial (when the reported matrix ref's backend
+    segment isn't the literal `ollama` their locality check expects); for claude the
+    `--model` value (an inert-backend model's tag); None → the harness default.
     """
     if harness == CLAURST:
         return claurst.authed_claurst_run(
@@ -76,7 +78,9 @@ def run_turn_for(
     if harness == CLAUDE:
         if env_file is None:  # defensive: bench builds the auth file before dispatch
             raise ValueError("claude HUT requires an auth env-file (host token)")
-        return baseline._authed_claude_run(env_file, None)
+        # `model_override` carries the per-variant claude `--model` value (an inert
+        # model's tag, resolved by `_harness_dial_ref`); None → claude's install default.
+        return baseline._authed_claude_run(env_file, model_override)
 
     def run(
         runner: Runner,

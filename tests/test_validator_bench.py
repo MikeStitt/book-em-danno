@@ -10,7 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from book_em_danno.config.schema import DannoConfig, Model, OllamaBackend, OpenAIBackend
+from book_em_danno.config.schema import (
+    DannoConfig,
+    InertBackend,
+    Model,
+    OllamaBackend,
+    OpenAIBackend,
+)
 from book_em_danno.core import exec as exec_mod
 from book_em_danno.core.exec import CommandFailedError, Runner
 from danno_validator import baseline
@@ -210,6 +216,66 @@ def test_run_bench_claude_collapses_matrix_to_reference_row(
     assert report.verdicts == []
 
 
+def _claude_config() -> DannoConfig:
+    """A config declaring inert-backend claude models to sweep, plus a local model."""
+    return DannoConfig(
+        backends={
+            "ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1"),
+            "claude": InertBackend(kind="inert"),
+        },
+        models={
+            "qwen": Model(backend="ollama", tag="qwen3:latest"),  # not claude's to run
+            "opus": Model(backend="claude", tag="claude-opus-4-8"),
+            "sonnet": Model(backend="claude", tag="claude-sonnet-4-6"),
+        },
+        agents={"build": "qwen"},
+    )
+
+
+def test_claude_inert_models_discovers_and_only_filters() -> None:
+    cfg = _claude_config()
+    # sorted danno keys of inert-backend models only — the local `qwen` is excluded
+    assert bench._claude_inert_models(cfg, None) == ["opus", "sonnet"]
+    assert bench._claude_inert_models(cfg, ["opus"]) == ["opus"]
+    assert bench._claude_inert_models(_config(), None) == []  # no inert → collapse fallback
+
+
+def test_harness_dial_ref_claude_inert_model_is_its_tag() -> None:
+    cfg = _claude_config()
+    (opus,) = [v for v in model_variants(cfg, only=["opus"])]
+    (qwen,) = [v for v in model_variants(cfg, only=["qwen"])]
+    # inert model → its tag is the claude --model value
+    assert bench._harness_dial_ref("claude", cfg, opus) == "claude-opus-4-8"
+    # a local model is not claude's to run → None (claude default); ditto the baseline row
+    assert bench._harness_dial_ref("claude", cfg, qwen) is None
+    assert bench._harness_dial_ref("claude", cfg, baseline.baseline_variant(None)) is None
+
+
+def test_run_bench_claude_sweeps_declared_inert_models(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # With inert models declared, --harness claude sweeps them (one row each), NOT the
+    # single collapsed reference row and NOT the local qwen model.
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-abc")
+    captured: dict[str, object] = {}
+
+    def fake_write(
+        report, *, config_path, harness, variants, num_ctx_by_model=None, capture_dir=None
+    ):  # type: ignore[no-untyped-def]
+        captured["model_names"] = [v.model_name for v in variants]
+        captured["model_refs"] = [v.model_ref for v in variants]
+        path = report.out_dir / "bench.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"harness": harness, "results": []}) + "\n", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(bench, "_write_results", fake_write)
+    opts = bench.BenchOptions(target=tmp_path, harness="claude", out_dir=tmp_path / "out")
+    bench.run_bench(_claude_config(), BenchmarksConfig(), opts, Runner())
+    assert captured["model_names"] == ["opus", "sonnet"]  # swept, not collapsed
+    assert captured["model_refs"] == ["claude-opus-4-8", "claude-sonnet-4-6"]  # bare tags
+
+
 def test_run_turn_for_opencode_pins_build_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, object] = {}
 
@@ -221,6 +287,40 @@ def test_run_turn_for_opencode_pins_build_agent(monkeypatch: pytest.MonkeyPatch)
     aut.run_turn_for("opencode", None)(Runner(), "box", "go", model="ollama/x")
     # opencode HUT drives its read-write run-agent so benchmark edits land.
     assert "--agent" in seen["cmd"] and "build" in seen["cmd"]
+
+
+def test_run_turn_for_claude_threads_model_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # aut → baseline → driver: the per-variant model_override reaches claude's --model.
+    seen: dict[str, object] = {}
+
+    def fake_run(cmd, **kw):  # type: ignore[no-untyped-def]
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, "[]", "")
+
+    monkeypatch.setattr(exec_mod.subprocess, "run", fake_run)
+    envf = tmp_path / "auth"
+    envf.write_text("CLAUDE_CODE_OAUTH_TOKEN=t\n", encoding="utf-8")
+    aut.run_turn_for("claude", envf, model_override="claude-opus-4-8")(Runner(), "box", "go")
+    cmd = seen["cmd"]
+    assert cmd[cmd.index("--model") + 1] == "claude-opus-4-8"
+
+
+def test_run_turn_for_claude_uses_default_when_no_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_run(cmd, **kw):  # type: ignore[no-untyped-def]
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, "[]", "")
+
+    monkeypatch.setattr(exec_mod.subprocess, "run", fake_run)
+    envf = tmp_path / "auth"
+    envf.write_text("CLAUDE_CODE_OAUTH_TOKEN=t\n", encoding="utf-8")
+    aut.run_turn_for("claude", envf)(Runner(), "box", "go")
+    assert "--model" not in seen["cmd"]  # no override → claude's install default
 
 
 def test_run_turn_for_claurst_returns_callable() -> None:

@@ -17,6 +17,7 @@ from book_em_danno.config.generate import (
     generate_claurst_agents,
     generate_claurst_models,
     generate_md,
+    model_ref,
     render_config,
     scan_agent_frontmatter,
 )
@@ -25,6 +26,7 @@ from book_em_danno.config.schema import (
     AgentSpec,
     DannoConfig,
     Defaults,
+    InertBackend,
     LlamacppBackend,
     Model,
     NpmPlugin,
@@ -189,6 +191,52 @@ def test_openai_backend_emits_env_substituted_api_key() -> None:
     assert model["tool_call"] is True
     assert model["limit"]["context"] == 128000
     assert doc["agent"]["plan"]["model"] == "nvidia/nvidia/nemotron-3-ultra-550b-a55b"
+
+
+def _inert_cfg() -> DannoConfig:
+    """A config whose claude reference models sit on an inert backend, plus one local."""
+    return DannoConfig(
+        defaults=Defaults(default_agent="build"),
+        backends={
+            "ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1"),
+            "claude": InertBackend(kind="inert"),
+        },
+        models={
+            "qwen": Model(backend="ollama", tag="qwen3:latest"),
+            "opus": Model(backend="claude", tag="claude-opus-4-8"),
+            "sonnet": Model(backend="claude", tag="claude-sonnet-4-6"),
+        },
+        agents={"build": "qwen"},
+    )
+
+
+def test_inert_backend_model_ref_is_bare_tag() -> None:
+    # danno dials nothing for an inert model; its tag IS the raw harness --model value,
+    # so the ref is the bare tag (no <backend>/ prefix, unlike ollama/openai).
+    cfg = _inert_cfg()
+    assert model_ref(cfg, "opus") == "claude-opus-4-8"
+    assert model_ref(cfg, "sonnet") == "claude-sonnet-4-6"
+    # sibling non-inert model still carries its provider prefix
+    assert model_ref(cfg, "qwen") == "ollama/qwen3:latest"
+
+
+def test_inert_model_without_tag_fails_loud() -> None:
+    cfg = DannoConfig(
+        backends={"claude": InertBackend(kind="inert")},
+        models={"opus": Model(backend="claude")},  # no tag
+    )
+    with pytest.raises(ValueError, match="inert backend needs a 'tag'"):
+        model_ref(cfg, "opus")
+
+
+def test_inert_models_absent_from_opencode_provider_block() -> None:
+    # An inert model is not an opencode model (no base_url to dial), so it must not
+    # appear in the generated provider catalog; the local ollama model still does.
+    doc = json.loads(_strip_comments(render_config(_inert_cfg())))
+    providers = doc.get("provider", {})
+    assert "claude" not in providers  # the inert backend emits no provider block
+    assert "claude-opus-4-8" not in json.dumps(providers)
+    assert "qwen3:latest" in doc["provider"]["ollama"]["models"]
 
 
 def _claurst_cfg() -> DannoConfig:
