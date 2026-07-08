@@ -119,23 +119,29 @@ class SwebenchTask:
     @property
     def prompt(self) -> str:
         return (
-            f"You are working in a clone of the {self.repo} repository. Resolve this "
-            f"issue by editing the project's source code (do NOT edit any test files):\n\n"
-            f"{self.problem_statement}\n\n"
+            f"You are working in a clone of the {self.repo} repository, checked out at "
+            f"{self._repo_dir} — this is your current working directory. Use paths "
+            f"relative to it, or absolute paths under it; do NOT assume /testbed or any "
+            f"other location. Run Python as `python` or `python3` (both work).\n\n"
+            f"Resolve this issue by editing the project's source code (do NOT edit any "
+            f"test files):\n\n{self.problem_statement}\n\n"
             "Make the necessary code changes so the project's tests pass."
         )
 
     @property
-    def _subdir(self) -> str:
-        return self.instance_id
+    def _repo_dir(self) -> str:
+        """VM-local checkout path — the SINGLE source of truth shared by the agent's
+        cwd (`workspace_dir`), provisioning, grading, and the prompt. Derived from the
+        instance id, so it is correct for every instance with no per-instance config."""
+        return f"{_VM_ROOT}/{self.instance_id}"
 
     def workspace_dir(self, workspace: Path) -> Path:
         # VM-LOCAL (ignores the mounted `workspace`) — see _VM_ROOT. The agent's
         # --cwd and the grader's pytest both run here, in the VM.
-        return Path(_VM_ROOT) / self._subdir
+        return Path(self._repo_dir)
 
     def _patch_path(self) -> str:
-        return f"{_VM_ROOT}/{self.instance_id}.patch"
+        return f"{self._repo_dir}.patch"
 
     def _pip(self) -> str:
         # --no-build-isolation avoids the PEP 517 isolated-subprocess proxy timeout
@@ -160,6 +166,13 @@ class SwebenchTask:
         heredoc = f"cat > {qp} <<'{_PATCH_HEREDOC}'\n{self.test_patch}\n{_PATCH_HEREDOC}"
         script = (
             f"set -e; mkdir -p {shlex.quote(_VM_ROOT)}\n"
+            # Shim `python` -> `python3` for the WHOLE sandbox. SWE-bench-era models
+            # reflexively invoke `python …` (e.g. `python -m pytest` to self-verify),
+            # but this image ships only python3, so those calls silently fail and the
+            # model stops early believing it is done. A PATH symlink fixes EVERY such
+            # invocation for the sandbox's lifetime (best-effort; never aborts provision).
+            "command -v python >/dev/null 2>&1 || "
+            'ln -sf "$(command -v python3)" /usr/local/bin/python 2>/dev/null || true\n'
             f"{heredoc}\n"
             f"if [ ! -d {qd}/.git ]; then rm -rf {qd}; git clone {url} {qd}; fi\n"
             f"cd {qd}; git checkout -f {commit}; git apply {qp}; {self._pip()}"

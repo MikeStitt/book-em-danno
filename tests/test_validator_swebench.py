@@ -41,6 +41,10 @@ def test_task_from_row_parses_fields() -> None:
     assert t.pass_to_pass == ("t_test.py::test_c",)
     assert "Fix the widget." in t.prompt
     assert "do NOT edit any test files" in t.prompt
+    # The prompt must name the real checkout path (derived from the instance id) and
+    # defuse the /testbed training bias — otherwise the model thrashes on bad paths.
+    assert "/tmp/danno-swe/demo__demo-1" in t.prompt
+    assert "do NOT assume /testbed" in t.prompt
 
 
 def _mock_rows_api(monkeypatch: pytest.MonkeyPatch, pages: list[list[dict]]) -> None:
@@ -94,6 +98,9 @@ def test_provision_clones_checks_out_applies_patch_installs(
     assert "git checkout -f abc123" in script
     assert "git apply" in script
     assert "pip install" in script and "-e ." in script
+    # A `python` -> `python3` PATH shim is installed so the model's own `python …`
+    # calls (self-verification) resolve for the whole sandbox lifetime.
+    assert "ln -sf" in script and "/usr/local/bin/python" in script
     # VM-local checkout under /tmp (NOT the mounted workspace), patch via heredoc.
     assert "/tmp/danno-swe/demo__demo-1" in script
     assert "diff --git" in script  # the test patch is heredoc'd into the script
