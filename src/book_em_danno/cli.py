@@ -261,14 +261,16 @@ def bench(
         None,
         "--harness",
         help="Harness-under-test (repeatable): opencode (default), claurst, occ, or claude "
-        "(the cloud reference row — one `claude-code` result, ignores the local model matrix). "
-        "Overrides benchmarks.toml [harnesses]; several harnesses produce a comparison report.",
+        "(the cloud reference harness — sweeps the models declared on an inert backend, "
+        "threading each tag to `claude --model`; collapses to one `(default model)` row if "
+        "none are declared). Overrides benchmarks.toml [harnesses]; several harnesses produce "
+        "a comparison report.",
     ),
     only: list[str] = typer.Option(
         None,
         "--only",
         help="Restrict the model matrix to these danno.toml model keys (repeatable). "
-        "Ignored for --harness claude (single reference row).",
+        "For --harness claude, restricts the swept inert-backend models the same way.",
     ),
     benchmarks: Path = typer.Option(
         None, "--benchmarks", help="benchmarks.toml path (default: next to danno.toml)."
@@ -323,7 +325,8 @@ def bench(
     These run real benchmark task *content* via danno's own execution model — NOT the
     official Docker-per-task harness, so the pass counts are not official benchmark
     scores. `--harness claurst` benchmarks the Rust Claude-Code clone on local models;
-    `--harness claude` adds the cloud reference row (needs a host token; ignores `-m`).
+    `--harness claude` adds the cloud reference harness (needs a host token), sweeping every
+    model declared on an inert backend and honoring `--only`.
     """
     from danno_validator.suites.bench import (
         BenchOptions,

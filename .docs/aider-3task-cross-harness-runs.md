@@ -97,6 +97,38 @@ Going forward, the fix is to **pin the claude model explicitly** so the id is re
 — see the companion change adding an `inert` backend + a per-model claude sweep
 (`danno bench --harness claude` across `haiku`/`sonnet`/`opus`/`fable`).
 
+## Follow-up: the claude 4-model sweep (2026-07-08)
+
+With the `inert`-backend sweep shipped, we ran `danno bench --harness claude` over all
+four declared models on the same three tasks — the first run where each Claude model is
+a **distinct, recorded row** instead of the single `(default model)` line above. All
+**12/12 cells passed**. Cells show `tool_calls / latency_s`; sorted by total latency.
+
+| model | grade-school | proverb | transpose | **Σ tc** | **Σ latency** | **Σ cost** | pass |
+|---|---|---|---|---|---|---|---|
+| `claude-sonnet-4-6` | 6 / 21.1s | 6 / 19.2s | 6 / 21.1s | **18** | **61.4s** | $0.286 | 3/3 |
+| `claude-opus-4-8` | 5 / 23.6s | 7 / 40.7s | 6 / 41.8s | **18** | **106.1s** | $0.490 | 3/3 |
+| `claude-fable-5` | 6 / 36.5s | 6 / 32.7s | 8 / 53.5s | **20** | **122.7s** | $0.595 | 3/3 |
+| `claude-haiku-4-5` | 6 / 27.7s | 6 / 19.4s | 7 / 76.0s | **19** | **123.1s** | $0.234 | 3/3 |
+
+Total run cost **$1.60** for the 12 cells. Notes:
+
+- **All four models are entitled** on this account and solve every task — no gated/404
+  model (contrast the NVIDIA free-tier probe, where most small models were dead).
+- **`sonnet` was fastest** (61s, and the cleanest — 6 tool_calls every cell). **`haiku`
+  was cheapest** ($0.234) but its total was dragged up by a single 76s transpose cell;
+  **`opus` sits between** on latency but costs 2× haiku. **`fable` was the slowest and
+  priciest** here — on a trivial suite that mostly measures loop overhead, not a
+  capability verdict.
+- **These are the same-day, same-sandbox conditions** as row 1's resolution above, so
+  the `claude-opus-4-8` numbers here (106s / 18 tc) are directly comparable to the 07-05
+  default row (101s / 18 tc) — consistent, reinforcing that the 07-05 default was Opus.
+- **n = 1 per cell.** The transpose spread (haiku 76s vs sonnet 21s) is a single-sample
+  latency, not a stable per-model figure. Cost, by contrast, is real and repeatable.
+- **Provenance:** `book-em-danno/.danno-bench/2026-07-08T21-46-02/bench.json` (written
+  relative to the CWD the sweep ran from — the repo root — not the `-C` config dir).
+  Config: `bench2/claude/danno.toml` (the four inert models) + `bench2/benchmarks.toml`.
+
 ## Conditions common to all runs
 
 - **The "triple".** danno's unit-of-test is **harness × (model+config) × sandbox**, not

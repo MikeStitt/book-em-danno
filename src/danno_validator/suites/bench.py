@@ -91,7 +91,8 @@ class BenchReport:
 
 
 # The harnesses-under-test `danno bench` can drive (occ/claurst/opencode on the local +
-# cloud matrix; claude the single cloud reference row). Ordered for a stable report layout.
+# cloud matrix; claude sweeps its inert-backend models, or one `(default model)` row if
+# none are declared). Ordered for a stable report layout.
 BENCH_HARNESSES: tuple[str, ...] = (sb.DEFAULT_HARNESS, CLAURST, OCC, CLAUDE)
 
 
