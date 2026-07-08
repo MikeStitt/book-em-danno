@@ -3,6 +3,27 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.12.0] - 2026-07-08
+
+### Bug Fixes
+
+- *(swebench)* Give the model its real checkout path + a python shim
+- *(swebench)* Install python shim in ~/.local/bin (agent-writable, on PATH)
+- *(swebench)* Retry transient datasets-server 502s instead of aborting
+
+### Documentation
+
+- Record SWE-bench grader findings; clarify README harnesses + commands
+- Audit occ fork prompt-divergence + Piebald prompt reprocessors
+- Frame danno's unit-of-test as the triple in README intro
+- Archive NVIDIA NIM free-tier probe (setup, gating, cost, turn-cap)
+- Record cross-harness 3-task aider runs + resolve claude default model
+- Fold claude 4-model sweep into report; fix stale bench help text
+
+### Features
+
+- *(bench)* Sweep claude harness across declared inert-backend models
+
 ## [0.11.1] - 2026-07-07
 
 ### Documentation
