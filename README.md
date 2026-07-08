@@ -1,15 +1,35 @@
 # book-em-danno
 
-`danno` CLI reads a single `danno.toml` then declaratively provisions 
-an [OpenCode](https://opencode.ai), [Claude Code](https://github.com/anthropics/claude-code),
-or [claurst](https://github.com/Kuberwastaken/claurst) (a pure-Rust Claude-Code clone)
-agentic coding tool **inside a Docker Sandbox**. The `--target` folder defaults to `.`
-which is the `cwd` for the sandboxed coding tool. The sandboxed coding tool shares the `--target`
-folder, and a local host [ollama](https://ollama.com/) server, accesses the **internet**,
-but is sandboxed from the rest of the host and the host **intranet**.
+`danno` CLI reads a single `danno.toml` then declaratively provisions an agentic
+coding tool — a **harness** — **inside a Docker Sandbox**. It supports **four
+harnesses**:
 
-From the sandbox, `claude` uses its normal cast of AI Reasoning models;
-while `danno` uses `danno.toml` to configure `opencode` agents to use local or 
+- [OpenCode](https://opencode.ai) — the local/cloud multi-agent coding tool,
+- [Claude Code](https://github.com/anthropics/claude-code) — Anthropic's official CLI,
+- [claurst](https://github.com/Kuberwastaken/claurst) — a pure-Rust Claude-Code clone, and
+- [occ](https://github.com/MikeStitt/open-claude-code) (open-claude-code) — a Node/ESM Claude-Code clone.
+
+danno serves **two purposes** with these harnesses:
+
+1. **Run** a harness interactively — `danno sandbox start` launches your chosen
+   harness, wired to a **local** [ollama](https://ollama.com/) model or a **cloud** AI
+   model, inside the sandbox.
+2. **Benchmark** the configurations — drive the same harnesses through repeatable
+   graded tasks against **`claude` or local models**, so you can compare harness ×
+   model × config combinations head-to-head. Two flavors:
+   - `danno validate` runs the tiered **L0→L1→L2** battery (0 liveness · 1 +tool/bash ·
+     2 +dev quality) over your `danno.toml` model matrix; `danno benchmark` runs that
+     same battery over candidate `.opencode/` configs.
+   - `danno bench` runs the real-task benchmark **suites** — **Aider Polyglot** and a
+     **SWE-bench** subset.
+
+The `--target` folder defaults to `.` which is the `cwd` for the sandboxed harness. The
+sandboxed harness shares the `--target` folder and a local host `ollama` server,
+accesses the **internet**, but is sandboxed from the rest of the host and the host
+**intranet**.
+
+From the sandbox, `claude` uses its normal cast of AI Reasoning models; while `danno`
+uses `danno.toml` to configure `opencode` (and the other harnesses) to use local or
 cloud AI Reasoning models.
 
 From one file, `danno` writes the OpenCode config, pulls the local models, 

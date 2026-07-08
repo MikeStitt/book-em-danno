@@ -187,3 +187,112 @@ ollama cp hf.co/unsloth/Qwen3-Coder-Next-GGUF:UD-Q4_K_M qwen3-coder-next:latest
 
 > Status: pull kicked off 2026-06-25; verify with `ollama show` and a tool-calling
 > probe before the `ollama cp` alias.
+
+## 7. SWE-bench calibration of qwen3-coder-next (2026-07-07/08)
+
+Follow-on: `danno bench --harness occ --only qwen3-coder-next-65k` on 3 SWE-bench
+Verified instances (astropy-12907, django-16527, sympy-20590), a `qwen3-coder-next`
+variant baked at `num_ctx 65536`. First run scored 3/6 with early-stops; the
+diagnosis, fixes, and a review of the suite's design followed.
+
+### 7.1 Why the early-stops happened (first run)
+
+Two distinct mechanisms, plus environment gaps that amplified them:
+
+- **Context exhaustion (astropy, sympy).** Both pinned at ~65,458–65,469 against the
+  65,536 ceiling with negative ctx deltas (compaction churn); final turns were
+  truncated no-tool-call preambles. This is *real* — a genuine window limit for that
+  variant, not a bug.
+- **Premature victory (django).** Stopped at 28 turns / 9,382 ctx declaring "the fix
+  is already in place," having made **no edit**.
+- **Environment gaps (amplifiers).** The model reflexively used `/testbed` (its
+  training path — the real checkout is `/tmp/danno-swe/<instance_id>`): sympy logged
+  4,808 `/testbed` refs and 2,970 "File not found". And it invoked `python …` but the
+  `shell` image ships only `python3`, so self-verification calls silently failed.
+
+### 7.2 Fixes applied — branch `fix/swebench-repo-path-and-python-shim`
+
+Three commits (`ac4d03e`, `92be9ac`, `2f5704d`), gate green, in `swebench.py`:
+
+1. **Real checkout path in the prompt** + an explicit "do NOT assume /testbed" — cut
+   astropy `/testbed` refs 1075→51 and "File not found" 407→0 (sympy 4808→10, 2970→0).
+2. **`python`→`python3` PATH shim** in `provision`. First attempt targeted
+   `/usr/local/bin` (read-only: the `shell` VM runs as the unprivileged `agent` user);
+   fixed to `~/.local/bin` (writable + first on PATH for login and non-login shells).
+   `python: command not found` went 69→0.
+3. **HF datasets-server retry** (`_fetch_rows_page`, linear backoff, 4xx fails fast) —
+   a single transient 502 no longer aborts a 25-min run.
+
+### 7.3 The three failures that remain are INDEPENDENT — 0/3 is not a fair signal
+
+The clean re-run (all fixes active) still scored 0/3, for three *unrelated* reasons:
+
+- **astropy → genuine context exhaustion** (65,532 against the 65,536 ceiling). Grader
+  valid; a real capability/window result for this variant.
+- **django → grader bug (false negative).** The model produced the *exact gold fix*
+  (`has_add_permission` on `show_save_as_new`) in two separate runs and still graded
+  fail. Cause: **SWE-bench node-id format mismatch** — see §7.4.
+- **sympy → transport error, never graded.** Intermittent qwen3-coder-next
+  malformed-tool-call: `OpenAI API error 500: XML syntax error … element <function>
+  closed by </parameter>`. This is the **same 3B-active tool-call fragility** as §2
+  (narrate-then-stop), here surfacing as a malformed emission rather than a missing one.
+
+### 7.4 The grader bug (danno's, NOT upstream) — node-id format mismatch
+
+`SwebenchTask.grade` runs a **uniform** `cd <repo> && python3 -m pytest <FAIL_TO_PASS +
+PASS_TO_PASS ids>`. But SWE-bench stores each instance's ids in that repo's **native
+runner format**, and bare pytest can only collect one of them:
+
+| repo | node id as stored | pytest can collect? |
+| --- | --- | --- |
+| astropy | `astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]` | ✅ proper `path::test[param]` |
+| django | `test_submit_row_save_as_new_add_permission_required (admin_views.test_templatetags.AdminTemplateTagsTest.test_…)` | ❌ unittest `method (module.Class.method)` — needs `tests/runtests.py` + settings |
+| sympy | `test_immutable` | ❌ bare name, no `path::` |
+
+So django/sympy (and any non-pytest-path repo) **always grade FALSE even on the gold
+patch**. This is a bug in **danno's own grader**, not upstream: the official SWE-bench
+harness already carries per-repo eval specs (`MAP_REPO_VERSION_TO_SPECS`). Our env
+fixes did NOT cause it (`grade()` is byte-for-byte unchanged, `workspace_dir`/
+`_patch_path` refactor is behavior-preserving) — they *exposed* it by getting the model
+far enough to emit a correct patch that then hit the broken grader.
+
+### 7.5 Review — was diverging from the official SWE-bench harness right?
+
+The DoR (`plan-claurst-swe-benchmarks.md`) is careful to say danno runs "*real
+benchmark task content via danno's execution model*; we never claim an official …
+score." Unbundling that one decision into three:
+
+- **A. Execution via danno's `seed→run→grade` seam (not the official Docker harness)
+  — RIGHT, and essentially forced.** danno's whole purpose is comparing *harnesses*
+  head-to-head; the official harness has no seam to swap in claurst vs opencode vs occ.
+- **B. Reimplementing grading with uniform pytest — WRONG.** The official per-repo
+  eval specs are reusable *data*; we should have ported them instead of re-deriving a
+  worse version. This is §7.4, and the fix belongs in danno.
+- **C. Live proxy-only pip provisioning (not the official prebuilt images) —
+  DEFENSIBLE but cost undersold.** Forced by the sandbox's proxy-only egress and
+  security model, but it means we own all the per-instance provisioning flakiness the
+  official images exist to remove.
+
+**Recommendation:** keep SWE-bench as a small, clearly-caveated probe; port the
+per-repo grade commands (or at minimum have `grade()` report `ungradeable` for
+non-pytest id shapes rather than silently `False`), and lean on Aider Polyglot as the
+primary local-model signal. A real fix needs per-repo test-command resolution in
+`grade`, e.g. django → `python3 tests/runtests.py <label>`.
+
+### 7.6 Correction of record — danno's scope is HYBRID local/cloud, NOT "65k local"
+
+During review I asserted "danno's target is small local models on ~65k windows." **That
+is unsupported — the `65k` came from *my* calibration variant, not any requirement.**
+The docs state the opposite:
+
+- Constitution (`.specify/memory/constitution.md`, "What this repository is"):
+  "**hybrid local/cloud model runtimes** … cheap, high-volume agents run **locally**
+  (tuned for a MacBook Pro) while **cloud models run the high-stakes agents**."
+- Config defaults span **`context_budget = 32000`** (default local agent,
+  `danno.toml.example:24`) **up to `1000000`** (a cloud agent, line 49).
+
+So SWE-bench's context weight is a non-issue for the cloud/Claude slice and only
+context-binds the small-local slice. The honest, narrow claim: SWE-bench's signal is
+**uneven across danno's matrix** (fine for cloud, noisy for small-local), not that
+danno "targets 65k." See [[bench-cloud-auth-and-occ-local-routing]] and the grader
+memory [[swebench-grader-nodeid-mismatch]].
