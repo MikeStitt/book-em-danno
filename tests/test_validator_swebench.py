@@ -75,6 +75,53 @@ def test_fetch_instances_missing_id_fails_loud(monkeypatch: pytest.MonkeyPatch) 
         fetch_instances(["demo__demo-1", "ghost__ghost-9"], dataset="d")
 
 
+def test_fetch_instances_retries_transient_502(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The datasets-server 502s intermittently; two blips then success must NOT abort.
+    monkeypatch.setattr(swebench.time, "sleep", lambda _s: None)  # no real backoff wait
+    attempts = {"n": 0}
+
+    def flaky_urlopen(url, timeout=0):  # type: ignore[no-untyped-def]
+        attempts["n"] += 1
+        if attempts["n"] <= 2:
+            raise swebench.urllib.error.HTTPError(url, 502, "Bad Gateway", {}, None)  # type: ignore[arg-type]
+        body = json.dumps({"rows": [{"row": _ROW}]}).encode()
+        return io.BytesIO(body)
+
+    monkeypatch.setattr(swebench.urllib.request, "urlopen", flaky_urlopen)
+    found = fetch_instances(["demo__demo-1"], dataset="d")
+    assert set(found) == {"demo__demo-1"}
+    assert attempts["n"] == 3  # 2 failures + 1 success
+
+
+def test_fetch_instances_gives_up_after_max_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(swebench.time, "sleep", lambda _s: None)
+    attempts = {"n": 0}
+
+    def always_502(url, timeout=0):  # type: ignore[no-untyped-def]
+        attempts["n"] += 1
+        raise swebench.urllib.error.HTTPError(url, 502, "Bad Gateway", {}, None)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(swebench.urllib.request, "urlopen", always_502)
+    with pytest.raises(ValueError, match="after .* attempt"):
+        fetch_instances(["demo__demo-1"], dataset="d")
+    assert attempts["n"] == swebench._FETCH_ATTEMPTS
+
+
+def test_fetch_instances_4xx_fails_fast_no_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A client error won't fix itself — fail loud on the first try, don't burn retries.
+    monkeypatch.setattr(swebench.time, "sleep", lambda _s: None)
+    attempts = {"n": 0}
+
+    def always_404(url, timeout=0):  # type: ignore[no-untyped-def]
+        attempts["n"] += 1
+        raise swebench.urllib.error.HTTPError(url, 404, "Not Found", {}, None)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(swebench.urllib.request, "urlopen", always_404)
+    with pytest.raises(ValueError):
+        fetch_instances(["demo__demo-1"], dataset="d")
+    assert attempts["n"] == 1
+
+
 def _stub_capture(monkeypatch: pytest.MonkeyPatch, *, grade_ok: bool) -> list[str]:
     seen: list[str] = []
 

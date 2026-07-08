@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,6 +32,11 @@ from danno_validator.driver import capture_exec
 _ROWS_API = "https://datasets-server.huggingface.co/rows"
 _PAGE = 100  # max rows per request
 _TOTAL = 500  # SWE-bench_Verified size; paged to find the select ids
+# The datasets-server 502s intermittently (a ~1-2 min window under load), and a single
+# blip must not abort a 25-min bench run — retry transient upstream failures with a
+# linear backoff (5s,10s,…), then fail loud. 4xx (bad dataset/params) never retries.
+_FETCH_ATTEMPTS = 6
+_FETCH_BACKOFF_S = 5.0
 # SWE-bench checkouts live VM-LOCAL, not on the mounted workspace: `git clone` of a
 # real repo onto the gvisor/virtiofs macOS mount corrupts ("inflate inconsistency").
 # Nothing here needs the host mount — the agent edits via --cwd and grading runs
@@ -52,6 +58,35 @@ def _as_list(value: object) -> list[str]:
     return []
 
 
+def _fetch_rows_page(url: str, *, dataset: str, offset: int) -> dict:
+    """GET one rows page, retrying transient upstream failures.
+
+    The HF datasets-server 502s intermittently (esp. under load). Retry 5xx / network /
+    timeout errors up to `_FETCH_ATTEMPTS` with a linear backoff so a brief blip doesn't
+    abort a long bench run; a 4xx is a client error that won't fix itself, so it fails
+    loud immediately. Fails loud (ValueError, Working Rule 8) once attempts are exhausted.
+    """
+    last: Exception | None = None
+    for attempt in range(1, _FETCH_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=60) as resp:  # noqa: S310 (trusted host)
+                result: dict = json.load(resp)
+                return result
+        except urllib.error.HTTPError as exc:
+            last = exc
+            if exc.code < 500:
+                break  # client error (bad dataset/params) — retrying is pointless
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last = exc
+        if attempt < _FETCH_ATTEMPTS:
+            time.sleep(_FETCH_BACKOFF_S * attempt)
+    raise ValueError(
+        f"swebench: could not fetch instances from the HF datasets-server for "
+        f"'{dataset}' (offset {offset}) after {_FETCH_ATTEMPTS} attempt(s): {last}. "
+        f"The datasets-server is likely down or overloaded — retry later."
+    ) from last
+
+
 def fetch_instances(select: Sequence[str], *, dataset: str) -> dict[str, dict]:
     """Fetch the `select` instances' rows from the HF datasets-server (host-side).
 
@@ -67,18 +102,7 @@ def fetch_instances(select: Sequence[str], *, dataset: str) -> dict[str, dict]:
             f"{_ROWS_API}?dataset={urllib.parse.quote(dataset)}"
             f"&config=default&split=test&offset={offset}&length={_PAGE}"
         )
-        try:
-            with urllib.request.urlopen(url, timeout=60) as resp:  # noqa: S310 (trusted host)
-                payload = json.load(resp)
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
-            # The HF datasets-server is a live upstream (transient 500s, rate limits,
-            # timeouts). Fail loud with a clean message (Working Rule 8) instead of a raw
-            # traceback; the caller reports it as a bench error, not a danno crash.
-            raise ValueError(
-                f"swebench: could not fetch instances from the HF datasets-server for "
-                f"'{dataset}' (offset {offset}): {exc}. This is usually a transient upstream "
-                f"error — retry in a moment."
-            ) from exc
+        payload = _fetch_rows_page(url, dataset=dataset, offset=offset)
         rows = payload.get("rows", [])
         if not rows:
             break
