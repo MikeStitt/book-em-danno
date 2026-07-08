@@ -15,8 +15,10 @@ danno serves **two purposes** with these harnesses:
    harness, wired to a **local** [ollama](https://ollama.com/) model or a **cloud** AI
    model, inside the sandbox.
 2. **Benchmark** the configurations — drive the same harnesses through repeatable
-   graded tasks against **`claude` or local models**, so you can compare harness ×
-   model × config combinations head-to-head. Two flavors:
+   graded tasks against **`claude` or local models**. danno's unit-of-test is the
+   **triple: harness × (model + config) × sandbox** — the harness and the sandbox are
+   first-class parts of what's measured, not neutral plumbing — so you can compare whole
+   triples head-to-head. Two flavors:
    - `danno validate` runs the tiered **L0→L1→L2** battery (0 liveness · 1 +tool/bash ·
      2 +dev quality) over your `danno.toml` model matrix; `danno benchmark` runs that
      same battery over candidate `.opencode/` configs.
