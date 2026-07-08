@@ -98,9 +98,9 @@ def test_provision_clones_checks_out_applies_patch_installs(
     assert "git checkout -f abc123" in script
     assert "git apply" in script
     assert "pip install" in script and "-e ." in script
-    # A `python` -> `python3` PATH shim is installed so the model's own `python …`
-    # calls (self-verification) resolve for the whole sandbox lifetime.
-    assert "ln -sf" in script and "/usr/local/bin/python" in script
+    # A `python` -> `python3` PATH shim is installed in the unprivileged agent's
+    # ~/.local/bin (writable + on PATH) so the model's own `python …` calls resolve.
+    assert "ln -sf" in script and '"$HOME/.local/bin/python"' in script
     # VM-local checkout under /tmp (NOT the mounted workspace), patch via heredoc.
     assert "/tmp/danno-swe/demo__demo-1" in script
     assert "diff --git" in script  # the test patch is heredoc'd into the script

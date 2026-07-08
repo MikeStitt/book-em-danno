@@ -169,10 +169,13 @@ class SwebenchTask:
             # Shim `python` -> `python3` for the WHOLE sandbox. SWE-bench-era models
             # reflexively invoke `python …` (e.g. `python -m pytest` to self-verify),
             # but this image ships only python3, so those calls silently fail and the
-            # model stops early believing it is done. A PATH symlink fixes EVERY such
-            # invocation for the sandbox's lifetime (best-effort; never aborts provision).
+            # model stops early believing it is done. The `shell` VM runs as the
+            # unprivileged `agent` user, so /usr/local/bin & /usr/bin are read-only —
+            # the symlink goes in ~/.local/bin, which is writable AND first on PATH for
+            # both login and non-login shells (verified). Best-effort; never aborts.
             "command -v python >/dev/null 2>&1 || "
-            'ln -sf "$(command -v python3)" /usr/local/bin/python 2>/dev/null || true\n'
+            '{ mkdir -p "$HOME/.local/bin" && '
+            'ln -sf "$(command -v python3)" "$HOME/.local/bin/python"; } || true\n'
             f"{heredoc}\n"
             f"if [ ! -d {qd}/.git ]; then rm -rf {qd}; git clone {url} {qd}; fi\n"
             f"cd {qd}; git checkout -f {commit}; git apply {qp}; {self._pip()}"
