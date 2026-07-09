@@ -45,7 +45,7 @@ from ..config.loader import DannoConfigError, load_config
 from ..config.schema import DannoConfig, NpmPlugin, OllamaBackend, OpenAIBackend, Sandbox
 from ..core import registry
 from ..core.exec import CommandFailedError, Runner, log_info, log_warn
-from . import ollama
+from . import ollama, sandbox_cli
 
 DEFAULT_OLLAMA_URL = "http://host.docker.internal:11434/v1"
 DEFAULT_ALLOW_HOSTS = ("localhost:11434",)
@@ -111,7 +111,7 @@ def live_sandbox_names() -> set[str]:
     """The set of sandbox names `docker sandbox ls` reports (empty if unavailable)."""
     try:
         out = subprocess.run(
-            ["docker", "sandbox", "ls"], capture_output=True, text=True, check=False
+            [*sandbox_cli.base(), "ls"], capture_output=True, text=True, check=False
         ).stdout
     except (FileNotFoundError, OSError):
         return set()
@@ -316,7 +316,7 @@ def create(
                 f"for {target_abs} would collide — pass --name to disambiguate."
             )
 
-    cmd = ["docker", "sandbox", "create", "--name", name, _docker_image(harness), str(target_abs)]
+    cmd = [*sandbox_cli.base(), "create", "--name", name, _docker_image(harness), str(target_abs)]
     if home is not None:
         cmd.append(str(home))
 
@@ -339,9 +339,7 @@ def configure_proxy(
     runner: Runner, name: str, allow_hosts: tuple[str, ...] = DEFAULT_ALLOW_HOSTS
 ) -> list[str]:
     """Open general internet egress but keep host/LAN denied except the Ollama hole."""
-    cmd = ["docker", "sandbox", "network", "proxy", name, "--policy", "allow"]
-    for host in allow_hosts:
-        cmd += ["--allow-host", host]
+    cmd = sandbox_cli.policy_allow_argv(name, allow_hosts)
     return runner.advise(
         cmd, why="set the egress policy (internet allowed; host/LAN denied except Ollama)"
     )
@@ -349,7 +347,7 @@ def configure_proxy(
 
 def stop(runner: Runner, name: str) -> list[str]:
     """Stop the sandbox VM (also how a fresh network policy is made to take effect)."""
-    return runner.advise(["docker", "sandbox", "stop", name], why=f"stop sandbox '{name}'")
+    return runner.advise([*sandbox_cli.base(), "stop", name], why=f"stop sandbox '{name}'")
 
 
 def ensure_running(runner: Runner, name: str) -> list[str]:
@@ -358,7 +356,7 @@ def ensure_running(runner: Runner, name: str) -> list[str]:
     `network proxy`, which 400s ("not running") against a stopped VM — the case hit
     when re-provisioning an existing sandbox left stopped by a prior provision."""
     return runner.advise(
-        ["docker", "sandbox", "exec", name, "true"],
+        [*sandbox_cli.base(), "exec", name, "true"],
         why=f"ensure sandbox '{name}' is running before configuring its network",
     )
 
@@ -918,8 +916,7 @@ def _exec_session(
     log_info(f"injecting {injected} via a chmod-600 --env-file")
     env_path = _build_env_file(env_path_lines, env_path_pairs, env_path_files)
     cmd = [
-        "docker",
-        "sandbox",
+        *sandbox_cli.base(),
         "exec",
         "-it",
         "-w",
@@ -1207,7 +1204,7 @@ def exec_in_container(runner: Runner, name: str, command: str, *, why: str) -> l
     Non-tty (`bash -lc`, no `-it`) so it works headless / under --apply. `exec`
     auto-starts a created-but-stopped sandbox, so this needs no explicit `start`.
     """
-    return runner.advise(["docker", "sandbox", "exec", name, "bash", "-lc", command], why=why)
+    return runner.advise([*sandbox_cli.base(), "exec", name, "bash", "-lc", command], why=why)
 
 
 def run_npm_setup(runner: Runner, name: str, plugins: list[NpmPlugin]) -> list[list[str]]:
@@ -1314,7 +1311,7 @@ def rebuild(
         # Stop first so rm doesn't trip on a running VM, then remove.
         cmds.append(stop(runner, name))
         cmds.append(
-            runner.advise(["docker", "sandbox", "rm", name], why=f"remove sandbox '{name}'")
+            runner.advise([*sandbox_cli.base(), "rm", name], why=f"remove sandbox '{name}'")
         )
     cmds += provision(
         runner,
@@ -1341,7 +1338,7 @@ def update(runner: Runner, name: str, harness: str = DEFAULT_HARNESS) -> list[st
             "`danno sandbox rebuild --harness claude` after updating Docker Desktop."
         )
         return runner.advise(
-            ["docker", "sandbox", "exec", name, "claude", "update"],
+            [*sandbox_cli.base(), "exec", name, "claude", "update"],
             why=f"update Claude Code inside sandbox '{name}'",
         )
     log_info(
@@ -1349,6 +1346,6 @@ def update(runner: Runner, name: str, harness: str = DEFAULT_HARNESS) -> list[st
         "`danno sandbox rebuild` after updating Docker Desktop."
     )
     return runner.advise(
-        ["docker", "sandbox", "exec", name, "opencode", "upgrade"],
+        [*sandbox_cli.base(), "exec", name, "opencode", "upgrade"],
         why=f"update OpenCode inside sandbox '{name}'",
     )

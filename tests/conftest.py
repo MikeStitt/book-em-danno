@@ -2,7 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from book_em_danno.core.exec import Runner
+
+
+@pytest.fixture(autouse=True)
+def _pin_sandbox_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the sandbox CLI to the legacy `docker sandbox` so argv assertions are
+    deterministic regardless of whether `sbx` is installed on the host. Tests that
+    exercise the sbx backend override with `monkeypatch.setenv("DANNO_SANDBOX_CLI",
+    "sbx")` (or `delenv(..., raising=False)` to test auto-detection)."""
+    monkeypatch.setenv("DANNO_SANDBOX_CLI", "docker")
 
 
 class RecordingRunner(Runner):

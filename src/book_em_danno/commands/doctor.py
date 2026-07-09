@@ -15,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..core.exec import console
-from . import ollama
+from . import ollama, sandbox_cli
 
 MIN_PYTHON = (3, 13)
 
@@ -77,9 +77,9 @@ def run_doctor(*, ollama_host_url: str = ollama.DEFAULT_HOST_URL) -> int:
         (True, "Docker daemon running", "start Docker Desktop", lambda: _cmd_ok("docker", "info")),
         (
             True,
-            "docker sandbox subcommand",
-            "update Docker Desktop (the sandbox feature must be present)",
-            lambda: _cmd_ok("docker", "sandbox", "--help"),
+            f"sandbox CLI ({sandbox_cli.label()})",
+            "install sbx (brew install docker/tap/sbx) or update Docker Desktop",
+            lambda: _cmd_ok(*sandbox_cli.availability_argv()),
         ),
         (
             True,

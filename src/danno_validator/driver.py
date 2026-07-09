@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from book_em_danno.commands import sandbox_cli
 from book_em_danno.core.exec import CaptureResult, CommandFailedError, Runner
 
 # Dropped into every validator-owned workspace; the gate that lets reset_workspace
@@ -287,7 +288,7 @@ def capture_exec(runner: Runner, name: str, command: str, *, check: bool = False
     inspect rather than streamed. `exec` auto-starts a stopped VM, so no explicit
     start is needed.
     """
-    return runner.capture(["docker", "sandbox", "exec", name, "bash", "-lc", command], check=check)
+    return runner.capture([*sandbox_cli.base(), "exec", name, "bash", "-lc", command], check=check)
 
 
 @dataclass
@@ -460,7 +461,7 @@ def opencode_run(
     non-zero HUT exit, since a stalled/errored agent turn is the signal the battery
     is measuring.
     """
-    cmd = ["docker", "sandbox", "exec"]
+    cmd = [*sandbox_cli.base(), "exec"]
     if workspace is not None:
         cmd += ["-w", str(workspace)]
     if env_file is not None:
@@ -702,7 +703,7 @@ def claude_run(
     non-zero exit, since a stalled/errored turn is the signal the battery
     measures.
     """
-    cmd = ["docker", "sandbox", "exec"]
+    cmd = [*sandbox_cli.base(), "exec"]
     if workspace is not None:
         cmd += ["-w", str(workspace)]
     if env_file is not None:
@@ -908,7 +909,7 @@ def claurst_run(
     if session is not None:
         argv += [CLAURST_RESUME_FLAG, session]
     argv.append(prompt)
-    cmd = ["docker", "sandbox", "exec"]
+    cmd = [*sandbox_cli.base(), "exec"]
     if env_file is not None:
         cmd += ["--env-file", str(env_file)]
     # A LOCAL Ollama model (`ollama/…`, or claurst's default when `model` is None) needs
@@ -1099,7 +1100,7 @@ def occ_run(
         node_argv += [OCC_MODEL_FLAG, m_value]
     node_argv += [OCC_MAX_TURNS_FLAG, str(max_turns), OCC_PRINT_FLAG, prompt]
 
-    cmd = ["docker", "sandbox", "exec"]
+    cmd = [*sandbox_cli.base(), "exec"]
     if workspace is not None:
         cmd += ["-w", str(workspace)]
     if env_file is not None:
