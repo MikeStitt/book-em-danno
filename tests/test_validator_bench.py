@@ -524,9 +524,11 @@ def test_run_bench_harnesses_multi_harness_uses_per_harness_subdirs(tmp_path: Pa
     assert [r.out_dir for r in reports] == [root / "occ", root / "claurst"]
 
 
-def test_prewarm_dedupes_local_tags_and_skips_cloud(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`_prewarm` warms each unique local Ollama tag exactly once and never probes cloud
-    refs (which have no local model to load)."""
+def test_warm_variant_warms_local_skips_cloud_and_respects_no_warm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_warm_variant` warms a local Ollama variant (appending its record), skips cloud refs
+    (no local model), and is a no-op under `--no-warm`."""
     from danno_validator.matrix import ConfigVariant
 
     calls: list[str] = []
@@ -536,11 +538,34 @@ def test_prewarm_dedupes_local_tags_and_skips_cloud(monkeypatch: pytest.MonkeyPa
         return {"tag": tag, "cache_hit": False, "warm_load_s": 0.1}
 
     monkeypatch.setattr(bench.ollama, "warm_model", fake_warm)
-    variants = [
-        ConfigVariant(model_name="a", model_ref="ollama/qwen:latest", description=""),
-        ConfigVariant(model_name="b", model_ref="ollama/qwen:latest", description=""),  # dup tag
-        ConfigVariant(model_name="c", model_ref="anthropic/claude-x", description=""),  # cloud
-    ]
-    warmed = bench._prewarm(variants)
-    assert calls == ["qwen:latest"]  # deduped + cloud skipped
-    assert [w["tag"] for w in warmed] == ["qwen:latest"]
+    local = ConfigVariant(model_name="a", model_ref="ollama/qwen:latest", description="")
+    cloud = ConfigVariant(model_name="c", model_ref="anthropic/claude-x", description="")
+    warmup: list[dict] = []
+
+    bench._warm_variant(local, warm=True, warmup=warmup)
+    bench._warm_variant(cloud, warm=True, warmup=warmup)  # cloud → skipped
+    bench._warm_variant(local, warm=False, warmup=warmup)  # --no-warm → skipped
+    assert calls == ["qwen:latest"]
+    assert [w["tag"] for w in warmup] == ["qwen:latest"]
+
+
+def test_warm_variant_records_each_call_so_reloads_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Warming is just-in-time, NOT deduped: a model warmed again after an eviction (e.g. a
+    task-major matrix alternating two models that don't co-fit) records a second cold-load —
+    the thrash signal an up-front one-shot warm would hide."""
+    from danno_validator.matrix import ConfigVariant
+
+    monkeypatch.setattr(
+        bench.ollama,
+        "warm_model",
+        lambda tag: {"tag": tag, "cache_hit": False, "warm_load_s": 2.0},
+    )
+    a = ConfigVariant(model_name="a", model_ref="ollama/a:latest", description="")
+    b = ConfigVariant(model_name="b", model_ref="ollama/b:latest", description="")
+    warmup: list[dict] = []
+    # task 1: a, b ; task 2: a, b — a reloads on task 2 because b evicted it.
+    for variant in (a, b, a, b):
+        bench._warm_variant(variant, warm=True, warmup=warmup)
+    assert [w["tag"] for w in warmup] == ["a:latest", "b:latest", "a:latest", "b:latest"]

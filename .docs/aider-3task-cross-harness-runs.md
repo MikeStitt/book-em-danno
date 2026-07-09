@@ -137,17 +137,20 @@ first timed cell — a hidden, uncontrolled variable (worsened by mixing `:lates
 `-65k`, whose different runners evict each other). Two changes close this going forward
 (branch `bench-prewarm-and-load-timing`):
 
-- **Pre-warm is default-on** (`danno bench`, opt out with `--no-warm`). Before the timed
-  matrix, danno loads each unique local `ollama/<tag>` once via
-  `/v1/chat/completions` — the **same transport the harnesses use**, so it loads the exact
-  runner they reuse (a small-`num_ctx` `/api/generate` warm-up would load a *different*
-  runner and the harness would still pay the cold load). Cloud/claude refs are skipped;
-  a refused warm-up is non-fatal (the bench still runs, cell #1 just pays the load, as
-  before). The cold-start posture is recorded in `provenance.json` under `warmup` and
-  summarized in the report, e.g. *"1 pre-warmed — 0 already resident, 1 cold-loaded;
-  slowest load 41.3s"*. With `keep_alive` set to hours (this host), a warmed sweep takes
-  **zero** cold loads on timed cells; the single load is absorbed by pre-warm and reported
-  separately.
+- **Pre-warm is default-on** (`danno bench`, opt out with `--no-warm`). Each local
+  `ollama/<tag>` is loaded via `/v1/chat/completions` **just before its cells run** — the
+  **same transport the harnesses use**, so it loads the exact runner they reuse (a
+  small-`num_ctx` `/api/generate` warm-up would load a *different* runner and the harness
+  would still pay the cold load). Warming is **per model block, not all up front**: two
+  models that don't co-fit in VRAM evict each other (this is exactly the `:latest`↔`-65k`
+  case), so an up-front bulk warm of B would knock A out before A's model-major block runs —
+  warming each right before its block keeps it resident for its own cells. Cloud/claude refs
+  are skipped; a refused warm-up is non-fatal (the bench still runs, that cell just pays the
+  load, as before). Every warm is recorded in `provenance.json` under `warmup` and summarized
+  in the report, e.g. *"1 pre-warmed — 0 already resident, 1 cold-loaded; slowest load 41.3s"*
+  — and an eviction-forced reload surfaces as an extra cold-load, a direct thrash signal.
+  With `keep_alive` set to hours (this host), a warmed sweep takes **zero** cold loads on
+  timed cells; each model's one load is absorbed by pre-warm and reported separately.
 - **A load-timing plot** in `report.html` (inline SVG, `--capture` runs only): per cell,
   first-call `ttft_s` vs steady-state `rtt_mean_s`. A **red** first-call bar flags a load
   that leaked into a timed cell (>1.5× steady **and** >1s absolute) — the model-faithful
