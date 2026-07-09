@@ -129,6 +129,35 @@ Total run cost **$1.60** for the 12 cells. Notes:
   relative to the CWD the sweep ran from — the repo root — not the `-C` config dir).
   Config: `bench2/claude/danno.toml` (the four inert models) + `bench2/benchmarks.toml`.
 
+## Runtime change (2026-07-08): pre-warm + load-timing plot
+
+The rows above were all recorded **before** danno pre-warmed the local model, so an
+unknown amount of each qwen row's latency is Ollama **model-load time** leaking into the
+first timed cell — a hidden, uncontrolled variable (worsened by mixing `:latest` and
+`-65k`, whose different runners evict each other). Two changes close this going forward
+(branch `bench-prewarm-and-load-timing`):
+
+- **Pre-warm is default-on** (`danno bench`, opt out with `--no-warm`). Before the timed
+  matrix, danno loads each unique local `ollama/<tag>` once via
+  `/v1/chat/completions` — the **same transport the harnesses use**, so it loads the exact
+  runner they reuse (a small-`num_ctx` `/api/generate` warm-up would load a *different*
+  runner and the harness would still pay the cold load). Cloud/claude refs are skipped;
+  a refused warm-up is non-fatal (the bench still runs, cell #1 just pays the load, as
+  before). The cold-start posture is recorded in `provenance.json` under `warmup` and
+  summarized in the report, e.g. *"1 pre-warmed — 0 already resident, 1 cold-loaded;
+  slowest load 41.3s"*. With `keep_alive` set to hours (this host), a warmed sweep takes
+  **zero** cold loads on timed cells; the single load is absorbed by pre-warm and reported
+  separately.
+- **A load-timing plot** in `report.html` (inline SVG, `--capture` runs only): per cell,
+  first-call `ttft_s` vs steady-state `rtt_mean_s`. A **red** first-call bar flags a load
+  that leaked into a timed cell (>1.5× steady **and** >1s absolute) — the model-faithful
+  anomaly signal. (Note: `resource.model_load_s` is a weak detector in the hours-`keep_alive`
+  regime — it's name-agnostic and reads `None` whenever anything is resident at tick 0 — so
+  the `ttft`-vs-`rtt` chart, not `model_load_s`, is the signal to read.)
+
+So a **re-run of these nine rows under the new default would remove the model-load
+confound**; treat the qwen latencies above as *including* a possible one-time load hit.
+
 ## Conditions common to all runs
 
 - **The "triple".** danno's unit-of-test is **harness × (model+config) × sandbox**, not
@@ -180,3 +209,5 @@ harness comparison for that reason.
   reproducible across runs; it is not the model being nondeterministic.
 - **Dates span 07-05 → 07-08** and mix `qwen3-coder-next:latest` with the `-65k`
   Modelfile variant; treat cross-date rows as directional, not controlled A/Bs.
+- **These rows predate pre-warm** (see "Runtime change" above), so a qwen latency may
+  embed a one-time Ollama model-load hit that a warmed re-run would remove.
