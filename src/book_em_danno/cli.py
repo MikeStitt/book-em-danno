@@ -300,6 +300,13 @@ def bench(
     sample_interval: float = typer.Option(
         0.5, "--sample-interval", help="Resource sampler interval in seconds (with --sample)."
     ),
+    warm: bool = typer.Option(
+        True,
+        "--warm/--no-warm",
+        help="Pre-load each local Ollama model (one /v1 call) before the timed cells so the "
+        "first cell doesn't eat a cold model-load hit. On by default; --no-warm to measure "
+        "cold-start too. The per-model warm result is recorded in provenance.json.",
+    ),
     env: list[str] = typer.Option(
         None,
         "--env",
@@ -366,6 +373,7 @@ def bench(
         capture_dir=capture_dir,
         sample=sample,
         sample_interval=sample_interval,
+        warm=warm,
         env=env or [],
         env_file=env_file or [],
     )

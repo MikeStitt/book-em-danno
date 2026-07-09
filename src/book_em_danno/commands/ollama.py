@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 import urllib.error
 import urllib.request
 
-from ..core.exec import Runner, log_info
+from ..core.exec import Runner, log_info, log_warn
 
 DEFAULT_HOST_URL = "http://localhost:11434"
 
@@ -110,6 +111,47 @@ def ensure_model(runner: Runner, tag: str, *, host_url: str = DEFAULT_HOST_URL) 
     """Advise (and under --apply, run) `ollama pull <tag>`. `ollama pull` is itself
     idempotent — an already-present model is a fast no-op."""
     return runner.advise(["ollama", "pull", tag], why=f"ensure Ollama model present: {tag}")
+
+
+def warm_model(tag: str, *, host_url: str = DEFAULT_HOST_URL, timeout: float = 600.0) -> dict:
+    """Pre-load `tag` into Ollama so the first *timed* bench cell doesn't eat the cold
+    model-load hit. Returns `{"tag", "cache_hit": bool, "warm_load_s": float | None}`.
+
+    Warms via the SAME `/v1/chat/completions` transport the harnesses use — NOT
+    `/api/generate` — on purpose: under `/v1` Ollama loads the model at its full trained
+    context, and a Modelfile-baked `num_ctx` tag loads its own runner; either way this
+    loads the exact runner every cell reuses. A small-`num_ctx` `/api/generate` warm-up
+    would load a *different* runner and the harness would still trigger the real load.
+
+    - `cache_hit=True, warm_load_s=0.0` when the tag is already resident (`/api/ps`): the
+      keep-alive window covered it, so there was nothing to load.
+    - `cache_hit=False, warm_load_s=<wall-clock>` when this call loaded it. The prompt is
+      one token, so the wall-clock is load-dominated (an approximation, not `load_duration`).
+    - `warm_load_s=None` when the warm call itself failed — best-effort, never raises.
+    """
+    if any(m.get("name") == tag for m in running_models(host_url)):
+        return {"tag": tag, "cache_hit": True, "warm_load_s": 0.0}
+    payload = json.dumps(
+        {
+            "model": tag,
+            "messages": [{"role": "user", "content": "ok"}],
+            "max_tokens": 1,
+            "stream": False,
+        }
+    ).encode()
+    start = time.monotonic()
+    try:
+        req = urllib.request.Request(
+            f"{host_url}/v1/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp.read()
+    except (urllib.error.URLError, OSError) as exc:
+        log_warn(f"pre-warm failed for {tag} (non-fatal): {exc}")
+        return {"tag": tag, "cache_hit": False, "warm_load_s": None}
+    return {"tag": tag, "cache_hit": False, "warm_load_s": round(time.monotonic() - start, 3)}
 
 
 def verify_responds(tag: str, *, host_url: str = DEFAULT_HOST_URL, num_ctx: int = 32000) -> bool:

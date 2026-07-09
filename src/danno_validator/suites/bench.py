@@ -26,6 +26,7 @@ from book_em_danno.capture.wiring import (
     plan_capture,
     uncaptured_cloud_refs,
 )
+from book_em_danno.commands import ollama
 from book_em_danno.commands import sandbox as sb
 from book_em_danno.config.generate import generate
 from book_em_danno.config.schema import DannoConfig, InertBackend
@@ -78,6 +79,7 @@ class BenchOptions:
     capture_dir: Path | None = None
     sample: bool = False
     sample_interval: float = 0.5
+    warm: bool = True
     env: list[str] = field(default_factory=list)
     env_file: list[str] = field(default_factory=list)
 
@@ -94,6 +96,8 @@ class BenchReport:
 # cloud matrix; claude sweeps its inert-backend models, or one `(default model)` row if
 # none are declared). Ordered for a stable report layout.
 BENCH_HARNESSES: tuple[str, ...] = (sb.DEFAULT_HARNESS, CLAURST, OCC, CLAUDE)
+
+_OLLAMA_PREFIX = "ollama/"
 
 
 def resolve_bench_harnesses(
@@ -319,6 +323,8 @@ def _run_aider(
     sampler: SampleBinding | None,
     allow_hosts: tuple[str, ...],
     capture_port: int | None,
+    warm: bool,
+    warmup: list[dict],
 ) -> list[BenchVerdict]:
     ap = cfg.aider_polyglot
     if not (ap.enabled and ap.select):
@@ -332,6 +338,9 @@ def _run_aider(
     verdicts: list[BenchVerdict] = []
     try:
         for variant in variants:
+            # Warm this model right before its (model-major) block, not all up front — see
+            # `_warm_variant`: an up-front bulk warm loses to VRAM eviction between models.
+            _warm_variant(variant, warm=warm, warmup=warmup)
             log_info(f"[bench] aider × {variant.model_ref}")
             verdicts += run_aider_suite(
                 runner,
@@ -368,6 +377,8 @@ def _run_swebench(
     sampler: SampleBinding | None,
     allow_hosts: tuple[str, ...],
     capture_port: int | None,
+    warm: bool,
+    warmup: list[dict],
 ) -> list[BenchVerdict]:
     sw = cfg.swebench
     if not (sw.enabled and sw.select):
@@ -394,6 +405,9 @@ def _run_swebench(
                 ]
                 continue
             for variant in variants:
+                # Task-major: the prior task's model may have evicted this one — warm before
+                # each cell so an eviction reload is absorbed here (and recorded), not timed.
+                _warm_variant(variant, warm=warm, warmup=warmup)
                 log_info(f"[bench] swebench {task.id} × {variant.model_ref}")
                 verdicts.append(
                     run_bench_task(
@@ -569,6 +583,35 @@ def _summary(verdicts: list[BenchVerdict]) -> None:
         log_info(f"  {v.suite:9} {v.task_id:40} {mark}  ({v.latency_s:.0f}s)")
 
 
+def _warm_variant(variant: ConfigVariant, *, warm: bool, warmup: list[dict]) -> None:
+    """Warm this variant's local Ollama model right before its cells run (default on;
+    `--no-warm` skips), appending one record (see `ollama.warm_model`) to `warmup`.
+
+    Warming JUST-IN-TIME — per model block, not all models up front — is what makes pre-warm
+    survive a multi-model matrix. Two models that don't co-fit in VRAM evict each other, so an
+    up-front bulk warm of B would knock A back out of memory before A's model-major block ever
+    runs, and A's first cell would pay the reload anyway. Warming immediately before each block
+    instead means each model is resident for its own cells. `warm_model` no-ops (`cache_hit`)
+    when the tag is still resident (`/api/ps`), so this is a cheap check when the model stayed
+    warm and a RECORDED reload when it was evicted — those extra cold-load records are a direct
+    eviction/thrash signal (e.g. a task-major swebench matrix alternating two big models).
+
+    Cloud/claude refs have no local model and are skipped. Host-side and best-effort — off the
+    sandbox and harness path — so a warm-up failure never aborts the bench."""
+    if not warm or not variant.model_ref.startswith(_OLLAMA_PREFIX):
+        return
+    tag = variant.model_ref[len(_OLLAMA_PREFIX) :]
+    result = ollama.warm_model(tag)
+    if result["cache_hit"]:
+        state = "already resident"
+    elif result["warm_load_s"] is not None:
+        state = f"loaded in {result['warm_load_s']:g}s"
+    else:
+        state = "FAILED (cell may pay the load)"
+    log_info(f"  warm  {tag}: {state}")
+    warmup.append(result)
+
+
 def run_bench(
     config: DannoConfig,
     bench_cfg: BenchmarksConfig,
@@ -616,6 +659,12 @@ def run_bench(
     sampler = _setup_bench_sampler(opts, out_dir)
     _seed_opencode_config(cfg_for_run, opts.harness, workspace)
 
+    # Pre-warm accumulator: each suite warms a variant's local model JUST BEFORE its cells run
+    # (default on; `--no-warm` skips) so the first cell's latency reflects the harness loop, not
+    # a cold load — and so a multi-model matrix survives VRAM eviction (see `_warm_variant`). The
+    # per-warm records land in provenance so the report states the run's cold-start posture.
+    warmup: list[dict] = []
+
     # One chmod-600 env-file PER model variant: shared base lines (the HUT's loop-ceiling
     # knobs, opencode's OLLAMA_BASE_URL, danno.toml [env], --env/--env-file) plus each cloud
     # variant's provider auth (occ: OPENAI_BASE_URL/OPENAI_API_KEY; claurst/opencode: the raw
@@ -635,6 +684,8 @@ def run_bench(
             sampler=sampler,
             allow_hosts=allow_hosts,
             capture_port=capture_port,
+            warm=opts.warm,
+            warmup=warmup,
         )
         report.verdicts += _run_swebench(
             runner,
@@ -648,6 +699,8 @@ def run_bench(
             sampler=sampler,
             allow_hosts=allow_hosts,
             capture_port=capture_port,
+            warm=opts.warm,
+            warmup=warmup,
         )
     finally:
         for env_file in {p for p in env_files.values() if p is not None}:
@@ -662,6 +715,7 @@ def run_bench(
         variants,
         harness=opts.harness,
         sample_interval_s=opts.sample_interval if opts.sample else None,
+        warmup=warmup,
     )
     write_provenance(out_dir, provenance)
     report.results_json = _write_results(
