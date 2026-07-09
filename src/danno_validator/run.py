@@ -265,7 +265,7 @@ def _setup_capture(
 def _teardown(runner: Runner, name: str) -> None:
     """Stop and remove a disposable validator sandbox (best effort under --apply)."""
     sb.stop(runner, name)
-    runner.advise([*sandbox_cli.base(), "rm", name], why=f"remove validator sandbox '{name}'")
+    runner.advise(sandbox_cli.rm_argv(name), why=f"remove validator sandbox '{name}'")
 
 
 def run_validate(

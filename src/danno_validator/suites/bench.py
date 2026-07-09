@@ -137,7 +137,7 @@ def _teardown(runner: Runner, name: str, *, keep: bool) -> None:
     if keep:
         return
     runner.advise([*sandbox_cli.base(), "stop", name], why=f"stop bench sandbox '{name}'")
-    runner.advise([*sandbox_cli.base(), "rm", name], why=f"remove bench sandbox '{name}'")
+    runner.advise(sandbox_cli.rm_argv(name), why=f"remove bench sandbox '{name}'")
 
 
 def _variant_cloud_env_lines(harness: str, config: DannoConfig, model_name: str) -> list[str]:

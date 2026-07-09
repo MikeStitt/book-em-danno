@@ -24,6 +24,19 @@ All phases landed; `ninja check` green (571 passed); `danno doctor` live-shows
   autouse conftest fixture pins `DANNO_SANDBOX_CLI=docker` so the 43 legacy argv
   assertions stay deterministic host-independently; this doc + module docstrings.
 
+**Live end-to-end verification (2026-07-09, `sbx v0.34.0` on macOS)** — drove danno's
+real `create → ensure_running → configure_proxy → exec → stop → rm` against the Mac's
+Ollama (`192.168.1.5:11434`). Egress worked from inside the sbx sandbox via **both** the
+LAN IP and `host.docker.internal`. The run surfaced **three bugs `docker sandbox` never
+had, now fixed:**
+- **`sbx create` requires a one-time global policy init** (`ERROR: global network policy
+  has not been initialized`). Fix: `ensure_policy_initialized()` runs `sbx policy init
+  balanced` before create when `sbx policy ls` shows it's absent (init is not idempotent).
+- **`sbx rm` aborts on a non-tty** without `--force` ("stdin is not a terminal"). Fix:
+  `rm_argv()` adds `--force` for sbx (docker takes no force flag).
+- **`sbx ls` empty-state is prose, not a table** → the old header-skip parse returned a
+  phantom `Launch`. Fix: `ls_names_argv()` uses `sbx ls -q` (bare names, empty when none).
+
 **Resolved investigations (verified against `sbx v0.34.0`):** I1 exec = clean
 rename (`--env-file`/`-i`/`-t`/`-w` all present) · I2 policy = `sbx policy allow
 network [--sandbox N] RESOURCES`, `"**"` = allow-all · I3 create = agents

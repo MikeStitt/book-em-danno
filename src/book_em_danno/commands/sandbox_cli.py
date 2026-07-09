@@ -51,6 +51,43 @@ def availability_argv() -> list[str]:
     return [*base(), "version"]
 
 
+def rm_argv(name: str) -> list[str]:
+    """Remove a sandbox. `sbx rm` prompts for confirmation and aborts on a non-tty
+    ("stdin is not a terminal") — danno's exec path is headless — so it needs
+    `--force`; legacy `docker sandbox rm` takes no force flag."""
+    if resolve_backend() == "sbx":
+        return ["sbx", "rm", "--force", name]
+    return ["docker", "sandbox", "rm", name]
+
+
+def policy_init_argv() -> list[str] | None:
+    """Argv to initialize the sbx global network policy, or `None` for docker
+    (which has no such one-time step). `sbx create` FAILS until the global policy
+    exists; `balanced` = a safe default-deny base + common dev services (danno's
+    per-sandbox `policy_allow_argv` then opens what its sandbox needs). Init is NOT
+    idempotent, so callers must gate on `sbx policy ls` succeeding first."""
+    if resolve_backend() != "sbx":
+        return None
+    return ["sbx", "policy", "init", "balanced"]
+
+
+def policy_ls_argv() -> list[str]:
+    """`sbx policy ls` — succeeds once the global policy is initialized, errors
+    otherwise (the detection signal for `policy_init_argv`)."""
+    return ["sbx", "policy", "ls"]
+
+
+def ls_names_argv() -> tuple[list[str], bool]:
+    """Argv that lists sandbox names, and whether the output is *quiet* (one bare
+    name per line, no header). `sbx ls -q` is quiet — empty output when there are
+    no sandboxes; legacy `docker sandbox ls` prints a header + table (skip row 0,
+    take the first column). This avoids mis-reading `sbx`'s empty-state prose
+    ("No sandboxes found.") as a sandbox named "Launch"."""
+    if resolve_backend() == "sbx":
+        return ["sbx", "ls", "-q"], True
+    return ["docker", "sandbox", "ls"], False
+
+
 def policy_allow_argv(name: str, allow_hosts: tuple[str, ...]) -> list[str]:
     """Egress-allow argv for sandbox `name`.
 

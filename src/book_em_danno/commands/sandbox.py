@@ -108,19 +108,49 @@ def default_name(target_abs: Path, harness: str = DEFAULT_HARNESS) -> str:
 
 
 def live_sandbox_names() -> set[str]:
-    """The set of sandbox names `docker sandbox ls` reports (empty if unavailable)."""
+    """The set of sandbox names the active CLI reports (empty if unavailable).
+
+    `sbx ls -q` emits one bare name per line (empty when none); legacy
+    `docker sandbox ls` is a header + table (skip row 0, first column)."""
+    argv, quiet = sandbox_cli.ls_names_argv()
     try:
-        out = subprocess.run(
-            [*sandbox_cli.base(), "ls"], capture_output=True, text=True, check=False
-        ).stdout
+        out = subprocess.run(argv, capture_output=True, text=True, check=False).stdout
     except (FileNotFoundError, OSError):
         return set()
+    if quiet:
+        return {line.strip() for line in out.splitlines() if line.strip()}
     return {line.split()[0] for line in out.splitlines()[1:] if line.split()}
 
 
 def sandbox_exists(name: str) -> bool:
-    """True if a sandbox named `name` is listed by `docker sandbox ls`."""
+    """True if a sandbox named `name` is listed by the active CLI's `ls`."""
     return name in live_sandbox_names()
+
+
+def _sbx_policy_initialized() -> bool:
+    """True if the sbx global network policy is initialized (`sbx policy ls`
+    succeeds). Treated as True/absent for docker (no such requirement)."""
+    try:
+        return (
+            subprocess.run(
+                sandbox_cli.policy_ls_argv(), capture_output=True, text=True, check=False
+            ).returncode
+            == 0
+        )
+    except (FileNotFoundError, OSError):
+        return False
+
+
+def ensure_policy_initialized(runner: Runner) -> None:
+    """sbx requires a one-time global network-policy init before `create`; the
+    legacy `docker sandbox` has no such step. If the active backend is sbx and the
+    policy is not yet initialized, advise `sbx policy init balanced` (under --apply
+    it runs). No-op for docker and when already initialized (init is not
+    idempotent, so we gate on `sbx policy ls`)."""
+    init_argv = sandbox_cli.policy_init_argv()
+    if init_argv is None or _sbx_policy_initialized():
+        return
+    runner.advise(init_argv, why="initialize the sbx global network policy (one-time)")
 
 
 def _live(runner: Runner) -> bool:
@@ -308,6 +338,8 @@ def create(
     otherwise) and a loud warning fires if `name` already maps elsewhere.
     Idempotent under --apply: an already-existing sandbox is left in place.
     """
+    ensure_policy_initialized(runner)  # sbx needs a one-time global policy init before create
+
     if registry_path is not None:
         existing = registry.lookup(registry_path, name)
         if existing is not None and existing.get("target") != str(target_abs):
@@ -1310,9 +1342,7 @@ def rebuild(
     if not _live(runner) or sandbox_exists(name):
         # Stop first so rm doesn't trip on a running VM, then remove.
         cmds.append(stop(runner, name))
-        cmds.append(
-            runner.advise([*sandbox_cli.base(), "rm", name], why=f"remove sandbox '{name}'")
-        )
+        cmds.append(runner.advise(sandbox_cli.rm_argv(name), why=f"remove sandbox '{name}'"))
     cmds += provision(
         runner,
         name,
