@@ -107,9 +107,9 @@ Default policy when BOTH are present is a **decision point** (D1).
 
 ## Decision points (owner: user)
 
-- **D1 — default backend when both are installed:** prefer **`sbx`** (the future) or keep
-  **`docker sandbox`** until sbx is live-verified? (Recommend: auto-prefer `sbx`, with the
-  `DANNO_SANDBOX_CLI` override as the escape hatch.)
+- **D1 — default backend when both are installed: DECIDED (2026-07-09) → default to
+  `sbx`.** Selection auto-prefers `sbx` when present (`shutil.which("sbx")`), with
+  `DANNO_SANDBOX_CLI=docker` as the escape hatch to force the legacy `docker sandbox`.
 - **D2 — selection mechanism:** auto-detect only, explicit config only, or both (recommend
   both: detect, override wins).
 - **D3 — how long to keep `docker sandbox`:** until macOS Docker Desktop removes it, or drop
