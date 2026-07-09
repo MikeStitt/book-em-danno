@@ -118,9 +118,15 @@ danno doctor
 ```
 
 A read-only PASS/FAIL/WARN checklist with copy-paste fixes: Python, git, the
-Docker daemon, the `docker sandbox` subcommand, Ollama (installed, reachable, a
-model pulled), and a WARN if Ollama is bound to loopback only (unreachable from
-the sandbox VM).
+Docker daemon, the **sandbox CLI** (`sbx`, or the deprecated `docker sandbox` — see
+below), Ollama (installed, reachable, a model pulled), and a WARN if Ollama is
+bound to loopback only (unreachable from the sandbox VM).
+
+> **Sandbox CLI (`sbx` vs `docker sandbox`).** Docker replaced the Desktop-integrated
+> `docker sandbox` subcommand with the standalone [`sbx`](https://docs.docker.com/reference/cli/sbx/)
+> binary. danno **auto-prefers `sbx`** when it is on PATH and otherwise falls back to
+> `docker sandbox`; force either with `DANNO_SANDBOX_CLI=sbx|docker`. Command examples
+> below written as `docker sandbox …` become `sbx …` under the `sbx` backend.
 
 ### 2. Preview, then provision
 

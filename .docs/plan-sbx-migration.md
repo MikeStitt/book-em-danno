@@ -1,6 +1,43 @@
 # Plan — migrate danno from `docker sandbox` to `sbx` (dual-CLI during transition)
 
-**Date:** 2026-07-09 · **Status:** plan (no code yet) · **Branch base:** `main`.
+**Date:** 2026-07-09 · **Status:** **IMPLEMENTED (P1–P5), gate green, sbx default
+live-verified on macOS** · **Branch base:** `main`.
+
+## Implementation status (2026-07-09) — SHIPPED
+
+All phases landed; `ninja check` green (571 passed); `danno doctor` live-shows
+`PASS sandbox CLI (sbx)` on this Mac (both CLIs present).
+
+- **P1/P2 — seam + selection.** New `book_em_danno/commands/sandbox_cli.py`:
+  `resolve_backend()` (auto-prefer `sbx` via `shutil.which`; `DANNO_SANDBOX_CLI=
+  sbx|docker` override; invalid value fails loud), `base()`, `label()`,
+  `availability_argv()`, `policy_allow_argv()`. Every `["docker","sandbox",…]` call
+  site in `sandbox.py`, `driver.py`, `suites/bench.py`, `run.py` now routes through
+  `base()`. Verified live on macOS: no override → `sbx`.
+- **P3 — semantic verbs.** `policy_allow_argv` maps the egress verb per backend
+  (`sbx policy allow network --sandbox N "**"` vs `docker sandbox network proxy N
+  --policy allow --allow-host …`). Cloud auth stays on `--env-file` (works on `sbx
+  exec` too — clean rename, so no rip-out needed).
+- **P4 — health checks.** `doctor` probes the active backend
+  (`sandbox_cli.availability_argv()`); the portability probe already learned both.
+- **P5 — tests + docs.** `tests/test_sandbox_cli.py` (selection + argv mapping);
+  autouse conftest fixture pins `DANNO_SANDBOX_CLI=docker` so the 43 legacy argv
+  assertions stay deterministic host-independently; this doc + module docstrings.
+
+**Resolved investigations (verified against `sbx v0.34.0`):** I1 exec = clean
+rename (`--env-file`/`-i`/`-t`/`-w` all present) · I2 policy = `sbx policy allow
+network [--sandbox N] RESOURCES`, `"**"` = allow-all · I3 create = agents
+`shell`/`claude`/`opencode`/`codex` exist, no blueprint rename · I4 `sbx secret`
+exists (proxy-injected service secrets) · I5 `docker sandbox` still present on
+macOS Docker Desktop (dual-CLI window holds) · I6 `sbx version` is the probe.
+
+**Deferred (follow-ups, not blockers):**
+- **D4 / `sbx secret`** — the migration keeps the working `--env-file` cloud-auth
+  path (H4 unchanged). Adopting `sbx secret` (proxy-injected, never-exposed) is the
+  recommended next step that also fixes the Windows H4 chmod-600 no-op.
+- **R3 / policy hardening** — `sbx policy allow … "**"` is broader than the legacy
+  internet-allow/LAN-deny posture; tightening to sbx base profiles + per-host allows
+  needs live sbx-policy experimentation. Tracked below.
 
 ## Motivation
 
