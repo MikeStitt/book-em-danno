@@ -1,0 +1,137 @@
+{
+  "env": {
+    "timestamp_utc": "2026-07-09T20:29:59.275913+00:00",
+    "shell_label": "cmd",
+    "shell_hints": {
+      "PSModulePath": "present",
+      "COMSPEC": "C:\\WINDOWS\\system32\\cmd.exe"
+    },
+    "platform": "win32",
+    "os": "Windows",
+    "os_release": "11",
+    "arch": "AMD64",
+    "python": "3.14.2",
+    "python_exe": "C:\\projects\\try-danno\\cmd\\book-em-danno\\.venv\\Scripts\\python.exe",
+    "cwd": "C:\\projects\\try-danno\\cmd\\book-em-danno",
+    "which": {
+      "danno": "C:\\projects\\try-danno\\cmd\\book-em-danno\\.venv\\Scripts\\danno.EXE",
+      "uv": "C:\\Users\\mike\\.local\\bin\\uv.EXE",
+      "docker": "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.EXE",
+      "git": "C:\\Program Files\\Git\\cmd\\git.EXE",
+      "bash": "C:\\WINDOWS\\system32\\bash.EXE",
+      "ollama": null
+    },
+    "git_bash": "C:\\WINDOWS\\system32\\bash.EXE",
+    "danno_toml_in_cwd": false
+  },
+  "danno_invocation": [
+    "danno"
+  ],
+  "surfaces": [
+    {
+      "cmd": [
+        "danno",
+        "--help"
+      ],
+      "ok": true,
+      "returncode": 0,
+      "stdout": "Usage: danno [OPTIONS] COMMAND [ARGS]...                                      \n                                                                               \n Declarative, transparent setup of OpenCode in a Docker Sandbox, driven by     \n danno.toml.                                                                   \n                                                                               \n+- Options -------------------------------------------------------------------+\n| --version                     Show the danno version and exit.              |\n| --install-completion          Install completion for the current shell.     |\n| --show-completion             Show completion for the current shell, to     |\n|                               copy it or customize the installation.        |\n| --help                        Show this message and exit.                   |\n+-----------------------------------------------------------------------------+\n+- Commands ------------------------------------------------------------------+\n| install    Provision a target project: config + Ollama models + tools +     |\n|            sandbox.                                                         |\n| doctor     Read-only preflight: report environment readiness with           |\n|            copy-paste fixes.                                                |\n| validate   Sweep danno.toml's models through the tiered battery and write   |\n|            the report.                                                      |\n| bench      Run the enabled benchmark suites across danno.toml's models      |\n|            against a harness.                                               |\n| benchmark  Benchmark candidate agent CONFIGS for editing performance.       |\n| sandbox    Operate the provisioned Docker sandbox.                          |\n+-----------------------------------------------------------------------------+",
+      "stderr": "",
+      "error": null,
+      "surface": "S0 danno --help"
+    },
+    {
+      "cmd": [
+        "danno",
+        "doctor",
+        "--help"
+      ],
+      "ok": true,
+      "returncode": 0,
+      "stdout": "Usage: danno doctor [OPTIONS]                                                 \n                                                                               \n Read-only preflight: report environment readiness with copy-paste fixes.      \n                                                                               \n+- Options -------------------------------------------------------------------+\n| --help          Show this message and exit.                                 |\n+-----------------------------------------------------------------------------+",
+      "stderr": "",
+      "error": null,
+      "surface": "S0 danno doctor --help"
+    },
+    {
+      "cmd": [
+        "danno",
+        "doctor"
+      ],
+      "ok": false,
+      "returncode": 1,
+      "stdout": "danno doctor \u2014 preflight\n\nRuntime (required to provision and run the sandbox):\n  PASS  Python >= 3.13\n  PASS  git on PATH\n  PASS  Docker daemon running\n  FAIL  docker sandbox subcommand\n        fix: update Docker Desktop (the sandbox feature must be present)\n  FAIL  ollama installed\n        fix: brew install ollama  (or see https://ollama.com)\n  FAIL  Ollama server reachable\n        fix: start it: OLLAMA_HOST=0.0.0.0:11434 ollama serve\n  FAIL  an Ollama model pulled\n        fix: pull a tool-capable model: ollama pull gemma4:26b\n  PASS  Ollama bound for sandbox access (0.0.0.0, not loopback-only)\n\n4 required check(s) failed; 0 warning(s).",
+      "stderr": "",
+      "error": null,
+      "surface": "S1 danno doctor"
+    },
+    {
+      "cmd": [
+        "danno",
+        "install",
+        "--help"
+      ],
+      "ok": true,
+      "returncode": 0,
+      "stdout": "Usage: danno install [OPTIONS]                                                \n                                                                               \n Provision a target project: config + Ollama models + tools + sandbox.         \n                                                                               \n Default prints the host/Docker commands to run yourself; `--apply` executes.  \n Stops before the TUI \u2014 launch with `danno sandbox start`.                     \n                                                                               \n+- Options -------------------------------------------------------------------+\n| --target             PATH  Target project. [default: .]                     |\n| --ados-repo          TEXT  ADOS checkout to install from (else              |\n|                            auto-detected).                                  |\n| --config             PATH  Path to danno.toml. [default: danno.toml]        |\n| --apply                    Execute host/Docker/Ollama commands instead of   |\n|                            only printing them.                              |\n| --verbose    -v            Debug output.                                    |\n| --help                     Show this message and exit.                      |\n+-----------------------------------------------------------------------------+",
+      "stderr": "",
+      "error": null,
+      "surface": "S2 danno install --help"
+    }
+  ],
+  "preflight": {
+    "docker": {
+      "cmd": [
+        "docker",
+        "version",
+        "--format",
+        "{{.Server.Version}}"
+      ],
+      "ok": true,
+      "returncode": 0,
+      "stdout": "29.6.1",
+      "stderr": "",
+      "error": null
+    },
+    "docker_sandbox": {
+      "cmd": [
+        "docker",
+        "sandbox",
+        "--help"
+      ],
+      "ok": false,
+      "returncode": 1,
+      "stdout": "",
+      "stderr": "\"docker sandbox\" is deprecated and has been removed.\n\nPlease migrate to Docker Sandboxes: https://www.docker.com/products/docker-sandboxes",
+      "error": null
+    },
+    "ollama": {
+      "url": "http://192.168.1.5:11434/api/tags",
+      "reachable": true,
+      "error": null,
+      "models": [
+        "qwen3-coder-next-65k:latest",
+        "gpt-qwen3-coder-next:latest",
+        "qwen3-coder-next-ud-q4-65k:latest",
+        "Qwen3-Coder-Next-GGUF:UD-Q4_K_M",
+        "hf.co/unsloth/Qwen3-Coder-Next-GGUF:UD-Q4_K_M",
+        "qwen3-coder-next:latest",
+        "gpt-oss:20b",
+        "gemma3:27b",
+        "gemma4:26b",
+        "qwen3.6:27b-q4_K_M",
+        "gemma4:31b-mlx",
+        "gemma4:26b-mlx",
+        "gemma3:1b",
+        "llama3.3:latest",
+        "llama3.2:latest",
+        "llama2:13b"
+      ]
+    },
+    "run_leg_ready": false
+  },
+  "hazards": [
+    "H1 MASKED: Git Bash present (C:\\WINDOWS\\system32\\bash.EXE) -> danno's host bash subprocess (tools.py:107) will SUCCEED. This is a cmd+GitBash result, NOT pristine cmd.",
+    "H4: os.chmod(0o600) is a no-op on native Windows -> secret env-files are NOT owner-restricted. Do NOT run cloud-auth benches here until a Windows-ACL path exists."
+  ]
+}
