@@ -152,7 +152,28 @@ def _provenance_md(prov: dict) -> list[str]:
         parts.append(f"- danno: {danno.get('version') or '?'} ({danno.get('commit') or '?'})")
     if prov.get("sample_interval_s") is not None:
         parts.append(f"- sampler interval: {prov['sample_interval_s']}s")
+    warmup_line = _warmup_summary(prov.get("warmup") or [])
+    if warmup_line:
+        parts.append(warmup_line)
     return parts
+
+
+def _warmup_summary(warmup: list[dict]) -> str:
+    """One-line cold-start posture from the pre-warm records: how many models were already
+    resident vs cold-loaded before the timed cells (and the slowest load), or `""` when the
+    run didn't pre-warm (`--no-warm`) or had no local models."""
+    if not warmup:
+        return ""
+    cached = sum(1 for w in warmup if w.get("cache_hit"))
+    failed = sum(1 for w in warmup if w.get("warm_load_s") is None and not w.get("cache_hit"))
+    cold = len(warmup) - cached - failed
+    detail = f"{len(warmup)} pre-warmed — {cached} already resident, {cold} cold-loaded"
+    if failed:
+        detail += f", {failed} failed"
+    loads = [w["warm_load_s"] for w in warmup if isinstance(w.get("warm_load_s"), int | float)]
+    if any(v > 0 for v in loads):
+        detail += f"; slowest load {max(loads):g}s"
+    return f"- warm-up: {detail}"
 
 
 def _detail_md(row: dict) -> list[str]:
@@ -293,6 +314,73 @@ def _sparkline(values: list[int], *, width: int = 220, height: int = 40) -> str:
     )
 
 
+def _short_perm(row: dict) -> str:
+    """A compact `<task>·<model>` label for a per-cell chart axis (truncated)."""
+    task = str(row.get("task", "?")).split("/")[-1]
+    label = f"{task}·{_model_label(row)}"
+    return label if len(label) <= 18 else label[:17] + "…"
+
+
+def _load_spike(ttft: float, rtt_mean: float) -> bool:
+    """Whether a cell's first-call latency looks like a model-load hit: much slower than
+    its own steady-state RTT (>1.5x) AND slower in absolute terms (>1s), so we don't flag
+    noise on already-fast cells."""
+    return ttft > 1.5 * rtt_mean and (ttft - rtt_mean) > 1.0
+
+
+def _latency_chart(rows: list[dict], *, bar_w: int = 13, height: int = 170) -> str:
+    """Grouped inline-SVG bars of per-cell first-call latency (`ttft_s`) vs steady-state
+    (`rtt_mean_s`). A first-call bar towering over steady state is the fingerprint of a
+    model-load hit that leaked into a *timed* cell — pre-warm should keep these flat, so a
+    red bar is the anomaly to chase. Cells without wire capture (no `--capture`) carry no
+    per-request timing and are omitted; renders nothing when none qualify."""
+    cells = [
+        (r, float(r["wire"]["ttft_s"]), float(r["wire"]["rtt_mean_s"]))
+        for r in rows
+        if r.get("wire")
+        and isinstance(r["wire"].get("ttft_s"), int | float)
+        and isinstance(r["wire"].get("rtt_mean_s"), int | float)
+    ]
+    if not cells:
+        return ""
+    hi = max(max(t, m) for _, t, m in cells) or 1.0
+    gap, group_gap = 5, 20
+    pad_top, pad_bot, pad_left = 12, 52, 36
+    plot_h = height - pad_top - pad_bot
+    baseline = pad_top + plot_h
+    group_w = bar_w * 2 + gap
+    width = pad_left + len(cells) * (group_w + group_gap) + 12
+
+    def bar(x: float, v: float, fill: str, label: str) -> str:
+        y = round(baseline - (v / hi) * plot_h, 1)
+        return (
+            f'<rect x="{round(x, 1)}" y="{y}" width="{bar_w}" height="{round(baseline - y, 1)}" '
+            f'fill="{fill}"><title>{html.escape(label)}: {v:g}s</title></rect>'
+        )
+
+    parts: list[str] = [
+        f'<line x1="{pad_left - 5}" y1="{baseline}" x2="{width - 6}" y2="{baseline}" '
+        f'stroke="var(--muted)" stroke-width="1"/>',
+        f'<text x="2" y="{pad_top + 4}" font-size="9" fill="var(--muted)">{hi:g}s</text>',
+    ]
+    for i, (r, ttft, rtt) in enumerate(cells):
+        gx = pad_left + i * (group_w + group_gap)
+        first_fill = "var(--bad)" if _load_spike(ttft, rtt) else "var(--accent)"
+        parts.append(bar(gx, ttft, first_fill, f"{_perm_label(r)} first call"))
+        parts.append(bar(gx + bar_w + gap, rtt, "var(--accent-soft)", f"{_perm_label(r)} steady"))
+        cx = gx + group_w / 2
+        parts.append(
+            f'<text x="{round(cx, 1)}" y="{baseline + 12}" text-anchor="end" '
+            f'transform="rotate(-40 {round(cx, 1)} {baseline + 12})" font-size="9" '
+            f'fill="var(--muted)">{html.escape(_short_perm(r))}</text>'
+        )
+    return (
+        f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" '
+        f'aria-label="first-call vs steady-state request latency per cell">'
+        f"{''.join(parts)}</svg>"
+    )
+
+
 def _stat(key: str, value: str) -> str:
     return (
         f'<div class="stat"><span class="k">{html.escape(key)}</span>'
@@ -371,6 +459,18 @@ def render_html(payload: dict, provenance: dict | None = None) -> str:
     harness = html.escape(str(payload.get("harness", "?")))
     header = "".join(f"<th>{html.escape(c)}</th>" for c in _SUMMARY_COLS)
     summary = "".join(_summary_html_row(r) for r in rows)
+    chart = _latency_chart(rows)
+    chart_section = (
+        f"<h2>Request latency — first call vs steady state</h2>"
+        f'<p class="meta">Per cell: the first request (<span style="color:var(--accent)">■</span>, '
+        f"model-load-inclusive) beside the mean of the rest "
+        f'(<span style="color:var(--accent-soft)">■</span>). A '
+        f'<span style="color:var(--bad)">red</span> first bar is a first-call spike — a '
+        f"model load that leaked into a timed cell (pre-warm should keep these flat).</p>"
+        f'<div class="tablewrap">{chart}</div>'
+        if chart
+        else ""
+    )
     detail = "".join(_detail_html(r) for r in rows)
     meta = [
         f'<p class="meta">generated {html.escape(str(payload.get("generated_at", "?")))} · '
@@ -390,6 +490,7 @@ def render_html(payload: dict, provenance: dict | None = None) -> str:
         f"<h2>Summary</h2>"
         f'<div class="tablewrap"><table><thead><tr>{header}</tr></thead>'
         f"<tbody>{summary}</tbody></table></div>"
+        f"{chart_section}"
         f"<h2>Per-permutation detail</h2>{detail}"
         f'<p class="foot">Generated by danno bench. Token, context, and latency figures are '
         f"derived from the redacted wire capture; resource peaks from the host sampler.</p>"

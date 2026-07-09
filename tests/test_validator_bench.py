@@ -522,3 +522,25 @@ def test_run_bench_harnesses_multi_harness_uses_per_harness_subdirs(tmp_path: Pa
     )
     root = tmp_path / "root"
     assert [r.out_dir for r in reports] == [root / "occ", root / "claurst"]
+
+
+def test_prewarm_dedupes_local_tags_and_skips_cloud(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_prewarm` warms each unique local Ollama tag exactly once and never probes cloud
+    refs (which have no local model to load)."""
+    from danno_validator.matrix import ConfigVariant
+
+    calls: list[str] = []
+
+    def fake_warm(tag: str) -> dict:
+        calls.append(tag)
+        return {"tag": tag, "cache_hit": False, "warm_load_s": 0.1}
+
+    monkeypatch.setattr(bench.ollama, "warm_model", fake_warm)
+    variants = [
+        ConfigVariant(model_name="a", model_ref="ollama/qwen:latest", description=""),
+        ConfigVariant(model_name="b", model_ref="ollama/qwen:latest", description=""),  # dup tag
+        ConfigVariant(model_name="c", model_ref="anthropic/claude-x", description=""),  # cloud
+    ]
+    warmed = bench._prewarm(variants)
+    assert calls == ["qwen:latest"]  # deduped + cloud skipped
+    assert [w["tag"] for w in warmed] == ["qwen:latest"]

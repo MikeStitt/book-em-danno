@@ -301,6 +301,15 @@ battery / benchmark suites opencode runs (local Ollama, and NVIDIA NIM for valid
 cloud matrix). `danno benchmark` compares opencode config trees and stays opencode-only —
 use `danno bench --harness claurst` to benchmark claurst across models instead.
 
+Before the timed cells, `danno bench` **pre-warms** each local Ollama model (one `/v1`
+call, so it loads the exact runner the harness reuses) so the first cell's latency
+reflects the harness loop, not a one-off cold model load. It's on by default; pass
+`--no-warm` to also measure cold-start. Each model's warm result (already-resident vs
+cold-loaded, and the load time) is recorded in `provenance.json` and summarized in the
+report. With `--capture`, `report.html` also plots per-cell **first-call vs steady-state**
+request latency: a red first-call bar is a model load that leaked into a timed cell —
+what pre-warm exists to prevent.
+
 ## `danno.toml` quickstart
 
 `danno.toml` is the single source of truth. See [`danno.toml.example`](danno.toml.example)

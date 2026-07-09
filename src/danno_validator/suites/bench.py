@@ -26,6 +26,7 @@ from book_em_danno.capture.wiring import (
     plan_capture,
     uncaptured_cloud_refs,
 )
+from book_em_danno.commands import ollama
 from book_em_danno.commands import sandbox as sb
 from book_em_danno.config.generate import generate
 from book_em_danno.config.schema import DannoConfig, InertBackend
@@ -78,6 +79,7 @@ class BenchOptions:
     capture_dir: Path | None = None
     sample: bool = False
     sample_interval: float = 0.5
+    warm: bool = True
     env: list[str] = field(default_factory=list)
     env_file: list[str] = field(default_factory=list)
 
@@ -94,6 +96,8 @@ class BenchReport:
 # cloud matrix; claude sweeps its inert-backend models, or one `(default model)` row if
 # none are declared). Ordered for a stable report layout.
 BENCH_HARNESSES: tuple[str, ...] = (sb.DEFAULT_HARNESS, CLAURST, OCC, CLAUDE)
+
+_OLLAMA_PREFIX = "ollama/"
 
 
 def resolve_bench_harnesses(
@@ -569,6 +573,33 @@ def _summary(verdicts: list[BenchVerdict]) -> None:
         log_info(f"  {v.suite:9} {v.task_id:40} {mark}  ({v.latency_s:.0f}s)")
 
 
+def _prewarm(variants: list[ConfigVariant]) -> list[dict]:
+    """Pre-load each unique local Ollama model before the timed matrix so cell #1 doesn't
+    eat the cold model-load hit (default on; `--no-warm` skips). Cloud/claude refs have no
+    local Ollama to warm and are skipped. Host-side and best-effort — off the sandbox and
+    harness path — so a warm-up failure never aborts the bench. Returns one record per
+    unique tag (see `ollama.warm_model`) for `provenance.json`."""
+    seen: set[str] = set()
+    warmed: list[dict] = []
+    for v in variants:
+        if not v.model_ref.startswith(_OLLAMA_PREFIX):
+            continue
+        tag = v.model_ref[len(_OLLAMA_PREFIX) :]
+        if tag in seen:
+            continue
+        seen.add(tag)
+        result = ollama.warm_model(tag)
+        if result["cache_hit"]:
+            state = "already resident"
+        elif result["warm_load_s"] is not None:
+            state = f"loaded in {result['warm_load_s']:g}s"
+        else:
+            state = "FAILED (cell #1 may pay the load)"
+        log_info(f"  warm  {tag}: {state}")
+        warmed.append(result)
+    return warmed
+
+
 def run_bench(
     config: DannoConfig,
     bench_cfg: BenchmarksConfig,
@@ -616,6 +647,11 @@ def run_bench(
     sampler = _setup_bench_sampler(opts, out_dir)
     _seed_opencode_config(cfg_for_run, opts.harness, workspace)
 
+    # Pre-load each local model into Ollama BEFORE the timed cells (default on; `--no-warm`
+    # skips) so the first cell's latency reflects the harness loop, not a one-off cold load.
+    # The per-tag records land in provenance so the report states the run's cold-start posture.
+    warmup = _prewarm(variants) if opts.warm else []
+
     # One chmod-600 env-file PER model variant: shared base lines (the HUT's loop-ceiling
     # knobs, opencode's OLLAMA_BASE_URL, danno.toml [env], --env/--env-file) plus each cloud
     # variant's provider auth (occ: OPENAI_BASE_URL/OPENAI_API_KEY; claurst/opencode: the raw
@@ -662,6 +698,7 @@ def run_bench(
         variants,
         harness=opts.harness,
         sample_interval_s=opts.sample_interval if opts.sample else None,
+        warmup=warmup,
     )
     write_provenance(out_dir, provenance)
     report.results_json = _write_results(

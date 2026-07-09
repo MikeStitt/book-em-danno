@@ -137,3 +137,39 @@ def test_merge_grid_across_harnesses() -> None:
     assert "**passed**" in md
     html_doc = report.merge_html([a, b])
     assert "comparison" in html_doc and 'class="fail tnum"' in html_doc
+
+
+def test_latency_chart_highlights_first_call_spike() -> None:
+    fast = _row()  # ttft 2.0s < rtt_mean 2.5s → steady, not a spike
+    spike = _row(wire={"ttft_s": 40.0, "rtt_mean_s": 2.0})
+    svg = report._latency_chart([fast, spike])
+    assert svg.startswith("<svg") and "</svg>" in svg
+    assert "var(--bad)" in svg  # the 40s first-call bar is flagged red
+    # no spike anywhere → no red bars
+    assert "var(--bad)" not in report._latency_chart([fast])
+
+
+def test_latency_chart_empty_without_wire() -> None:
+    assert report._latency_chart([_row(wire=None)]) == ""
+    assert report._latency_chart([]) == ""
+
+
+def test_warmup_summary_counts_states() -> None:
+    warm = [
+        {"tag": "a", "cache_hit": True, "warm_load_s": 0.0},
+        {"tag": "b", "cache_hit": False, "warm_load_s": 3.4},
+        {"tag": "c", "cache_hit": False, "warm_load_s": None},
+    ]
+    line = report._warmup_summary(warm)
+    assert "3 pre-warmed" in line
+    assert "1 already resident" in line and "1 cold-loaded" in line
+    assert "1 failed" in line and "slowest load 3.4s" in line
+    assert report._warmup_summary([]) == ""
+
+
+def test_render_html_surfaces_load_timing_and_warmup() -> None:
+    payload = _payload(_row(wire={"ttft_s": 40.0, "rtt_mean_s": 2.0}))
+    prov = {"warmup": [{"tag": "qwen3:latest", "cache_hit": False, "warm_load_s": 40.0}]}
+    out = report.render_html(payload, prov)
+    assert "Request latency — first call vs steady state" in out
+    assert "warm-up:" in out and "cold-loaded" in out
