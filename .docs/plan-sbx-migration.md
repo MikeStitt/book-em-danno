@@ -14,10 +14,18 @@ All phases landed; `ninja check` green (571 passed); `danno doctor` live-shows
   `availability_argv()`, `policy_allow_argv()`. Every `["docker","sandbox",…]` call
   site in `sandbox.py`, `driver.py`, `suites/bench.py`, `run.py` now routes through
   `base()`. Verified live on macOS: no override → `sbx`.
-- **P3 — semantic verbs.** `policy_allow_argv` maps the egress verb per backend
-  (`sbx policy allow network --sandbox N "**"` vs `docker sandbox network proxy N
-  --policy allow --allow-host …`). Cloud auth stays on `--env-file` (works on `sbx
-  exec` too — clean rename, so no rip-out needed).
+- **P3 — semantic verbs.** `policy_allow_argv` maps the egress verb per backend,
+  allowing **only the enumerated Ollama endpoint** — `sbx policy allow network
+  --sandbox N <ollama-ip>:11434` on the `balanced` base (default-deny + curated
+  dev/AI hosts) vs `docker sandbox network proxy N --policy allow --allow-host …`.
+  **NEVER `"**"`.** The sbx allow must be the host's **routable LAN IP** (e.g.
+  `10.0.1.9:11434`): `host.docker.internal` resolves to a link-local `fe80::1`
+  inside the sandbox that the policy can't match (`docker sandbox` had a
+  proxy-rewrite; sbx does not). `configure_proxy` derives it from the Ollama
+  base_url and WARNS loudly if it's still a non-routable alias. Cloud auth stays on
+  `--env-file` (works on `sbx exec` too — clean rename). **Verified end-to-end
+  through `provision()` (2026-07-09):** `200` to the allowed Ollama, `403` to
+  `example.com`, the LAN router, and even SSH on the Ollama host.
 - **P4 — health checks.** `doctor` probes the active backend
   (`sandbox_cli.availability_argv()`); the portability probe already learned both.
 - **P5 — tests + docs.** `tests/test_sandbox_cli.py` (selection + argv mapping);
@@ -44,13 +52,32 @@ network [--sandbox N] RESOURCES`, `"**"` = allow-all · I3 create = agents
 exists (proxy-injected service secrets) · I5 `docker sandbox` still present on
 macOS Docker Desktop (dual-CLI window holds) · I6 `sbx version` is the probe.
 
+**SECURITY MISTAKE ON FIRST SHIP — two errors, both corrected.** (1) The initial
+migration mapped the egress verb to `sbx policy allow network --sandbox N "**"`
+(allow ALL: internet + host + LAN + cloud metadata), **breaking danno's core
+isolation contract**, pushed in PR #76 with a live agent turn under it, and filed as
+a low-priority "deferred hardening" item — a **fail-loud violation / false success**.
+(2) While fixing it I then wrongly concluded "sbx doesn't isolate at all" from a
+**broken test**: `curl` without `-f` exits 0 on a 403, so I misread proxy-*denied*
+responses as "REACHED." Reading actual HTTP codes showed sbx **does** enforce
+(403 on every denied host). **Truth:** sbx enforces egress via a host HTTP(S) proxy
+(`gateway.docker.internal:3128`); under `balanced` it is default-deny, and the fix
+allows ONLY the Ollama endpoint by its **routable LAN IP** (`host.docker.internal`
+is an unmatchable link-local `fe80::1`). Verified `200/403/403/403` through
+`provision()`. PR #76 stayed a non-mergeable draft throughout. Lessons in the
+`sandbox-security-contract-fail-loud` memory: weakening isolation is a blocking
+fail-loud; and **verify the boundary by reading allow/deny signals (HTTP 403), not
+proxy-tool exit codes.**
+
 **Deferred (follow-ups, not blockers):**
 - **D4 / `sbx secret`** — the migration keeps the working `--env-file` cloud-auth
   path (H4 unchanged). Adopting `sbx secret` (proxy-injected, never-exposed) is the
   recommended next step that also fixes the Windows H4 chmod-600 no-op.
-- **R3 / policy hardening** — `sbx policy allow … "**"` is broader than the legacy
-  internet-allow/LAN-deny posture; tightening to sbx base profiles + per-host allows
-  needs live sbx-policy experimentation. Tracked below.
+- **Egress allowlist curation (NOT a security relaxation)** — the secure default is
+  `balanced` + Ollama-host only. If danno's provisioning (git/apt/a custom pip index)
+  needs a host `balanced` doesn't already permit, it will **fail loud** (egress
+  denied); the fix is to add that *specific* host to the allowlist — never to widen
+  to `"**"`. Curate the gap list from a live `danno install` run.
 
 ## Motivation
 

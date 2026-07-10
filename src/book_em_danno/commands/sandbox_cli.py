@@ -89,18 +89,26 @@ def ls_names_argv() -> tuple[list[str], bool]:
 
 
 def policy_allow_argv(name: str, allow_hosts: tuple[str, ...]) -> list[str]:
-    """Egress-allow argv for sandbox `name`.
+    """Egress-allow argv for sandbox `name` — allow ONLY the enumerated hosts.
 
-    Legacy `docker sandbox`: `network proxy N --policy allow [--allow-host H]…`
-    (allow internet; deny host/LAN except the enumerated holes).
+    danno's whole purpose is isolating the AI from the host/LAN. The contract:
+    the sandbox may reach the internet-egress its base policy permits, but the
+    host/LAN is DENIED except the explicit Ollama hole in `allow_hosts`. NEVER
+    allow `"**"` (that would expose the host, the LAN, and cloud metadata — see the
+    `sandbox-security-contract-fail-loud` memory).
 
-    `sbx`: `policy allow network --sandbox N "**"` — allow ALL egress for the
-    sandbox. This is broader than the legacy LAN-deny posture; tightening it to
-    sbx base profiles / deny-rules is tracked as P3 hardening in the sbx-migration
-    plan (`allow_hosts` is retained for that future per-host form).
+    `allow_hosts` entries are `host:port` and are passed through VERBATIM — the
+    caller supplies the sandbox-reachable form. On `sbx` the host's own alias
+    `host.docker.internal` is a link-local `fe80::1` the policy cannot match, so the
+    caller must pass the host's ROUTABLE LAN IP:port (see `configure_proxy`).
+
+    - `sbx`: `policy allow network --sandbox N <h1,h2,…>` on the `balanced` base
+      (default-deny + curated dev/AI hosts; see `ensure_policy_initialized`).
+      Enforcement is via the host HTTP(S) proxy; a denied host returns 403.
+    - legacy `docker sandbox`: `network proxy N --policy allow --allow-host H…`.
     """
     if resolve_backend() == "sbx":
-        return ["sbx", "policy", "allow", "network", "--sandbox", name, "**"]
+        return ["sbx", "policy", "allow", "network", "--sandbox", name, ",".join(allow_hosts)]
     cmd = ["docker", "sandbox", "network", "proxy", name, "--policy", "allow"]
     for host in allow_hosts:
         cmd += ["--allow-host", host]

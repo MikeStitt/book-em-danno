@@ -19,6 +19,7 @@ import re
 import subprocess
 import tempfile
 import tomllib
+import urllib.parse
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -367,13 +368,54 @@ def create(
     return cmd
 
 
+def _ollama_hostport(url: str) -> str:
+    """The `host:port` the sandbox dials for Ollama, parsed from a base URL."""
+    return urllib.parse.urlparse(url).netloc or url
+
+
+# Aliases that are NOT routable from an sbx sandbox's egress policy: the docker
+# egress proxy rewrites `host.docker.internal`→`localhost`, but sbx has no such
+# rewrite and `host.docker.internal` resolves to a link-local `fe80::1` the policy
+# cannot match. An sbx Ollama endpoint must be the host's real LAN IP.
+_SBX_UNROUTABLE_OLLAMA_HOSTS = ("host.docker.internal", "localhost", "127.0.0.1")
+
+
 def configure_proxy(
-    runner: Runner, name: str, allow_hosts: tuple[str, ...] = DEFAULT_ALLOW_HOSTS
+    runner: Runner,
+    name: str,
+    allow_hosts: tuple[str, ...] = DEFAULT_ALLOW_HOSTS,
+    *,
+    ollama_url: str = DEFAULT_OLLAMA_URL,
 ) -> list[str]:
-    """Open general internet egress but keep host/LAN denied except the Ollama hole."""
-    cmd = sandbox_cli.policy_allow_argv(name, allow_hosts)
+    """Set the egress hole: allow ONLY the Ollama endpoint; host/LAN otherwise denied.
+
+    docker: its egress proxy rewrites `host.docker.internal`→`localhost`, so the
+    default `allow_hosts` (`localhost:11434`) is the correct token. sbx has no such
+    rewrite and the host alias is a link-local address the policy can't match, so
+    the allow must be the host's ROUTABLE `IP:port` — derived here from `ollama_url`.
+    If that host is still a non-routable alias, WARN loudly (the sandbox won't reach
+    Ollama; the user must point the Ollama base_url at the host's LAN IP) rather than
+    silently shipping a broken — or, if we widened it, an insecure — policy.
+    """
+    effective = allow_hosts
+    if sandbox_cli.resolve_backend() == "sbx":
+        hostport = _ollama_hostport(ollama_url)
+        host = hostport.rsplit(":", 1)[0]
+        if host in _SBX_UNROUTABLE_OLLAMA_HOSTS:
+            log_warn(
+                f"sbx: the sandbox cannot reach Ollama at '{hostport}' — '{host}' is not "
+                "routable from the sandbox egress policy (host.docker.internal is a link-local "
+                "address). Point the Ollama base_url at the host's LAN IP (e.g. "
+                "http://10.0.1.9:11434/v1) so danno can allow exactly that endpoint."
+            )
+        # Swap the docker-proxy localhost token for the real Ollama endpoint; keep any
+        # other allow_hosts (e.g. a capture proxy).
+        effective = tuple(hostport if h == DEFAULT_ALLOW_HOSTS[0] else h for h in allow_hosts)
+        if hostport not in effective:
+            effective = (hostport, *effective)
+    cmd = sandbox_cli.policy_allow_argv(name, effective)
     return runner.advise(
-        cmd, why="set the egress policy (internet allowed; host/LAN denied except Ollama)"
+        cmd, why="set the egress policy (host/LAN denied except the Ollama endpoint)"
     )
 
 
@@ -402,6 +444,7 @@ def provision(
     allow_hosts: tuple[str, ...] = DEFAULT_ALLOW_HOSTS,
     home: Path | None = None,
     registry_path: Path | None = None,
+    ollama_url: str = DEFAULT_OLLAMA_URL,
 ) -> list[list[str]]:
     """Get the sandbox to 'ready': create + egress hole + stop (so the policy applies
     on next start). Does NOT launch the TUI — that's `start`."""
@@ -419,7 +462,7 @@ def provision(
     cmds = [create(runner, name, target_abs, harness, home=home, registry_path=registry_path)]
     if preexisting:
         cmds.append(ensure_running(runner, name))
-    cmds.append(configure_proxy(runner, name, allow_hosts))
+    cmds.append(configure_proxy(runner, name, allow_hosts, ollama_url=ollama_url))
     # The network policy only takes on a fresh VM start; stop so the next `start`
     # applies the allow-rule.
     cmds.append(stop(runner, name))

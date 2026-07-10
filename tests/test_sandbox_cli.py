@@ -45,17 +45,67 @@ def test_availability_argv(monkeypatch: pytest.MonkeyPatch) -> None:
     assert sandbox_cli.availability_argv() == ["docker", "sandbox", "version"]
 
 
-def test_policy_allow_sbx(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_policy_allow_sbx_allows_only_given_hosts_never_star(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("DANNO_SANDBOX_CLI", "sbx")
-    # sbx allows all egress for the sandbox; the enumerated hosts are subsumed.
-    assert sandbox_cli.policy_allow_argv("danno-app", ("localhost:11434",)) == [
+    # Security contract: allow ONLY the enumerated host(s), verbatim. NEVER "**".
+    argv = sandbox_cli.policy_allow_argv("danno-app", ("10.0.1.9:11434",))
+    assert argv == [
         "sbx",
         "policy",
         "allow",
         "network",
         "--sandbox",
         "danno-app",
-        "**",
+        "10.0.1.9:11434",
+    ]
+    assert "**" not in argv  # would expose host + LAN + cloud metadata
+
+
+def test_policy_allow_sbx_multiple_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DANNO_SANDBOX_CLI", "sbx")
+    argv = sandbox_cli.policy_allow_argv("danno-app", ("10.0.1.9:11434", "127.0.0.1:9000"))
+    assert argv[-1] == "10.0.1.9:11434,127.0.0.1:9000"
+
+
+def test_configure_proxy_sbx_allows_ollama_ip_from_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DANNO_SANDBOX_CLI", "sbx")
+    runner = RecordingRunner()
+    sb.configure_proxy(runner, "danno-app", ollama_url="http://10.0.1.9:11434/v1")
+    # the docker-proxy localhost token is replaced by the real routable endpoint
+    assert runner.commands == [
+        ["sbx", "policy", "allow", "network", "--sandbox", "danno-app", "10.0.1.9:11434"]
+    ]
+
+
+def test_configure_proxy_sbx_warns_when_ollama_unroutable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DANNO_SANDBOX_CLI", "sbx")
+    warnings: list[str] = []
+    monkeypatch.setattr(sb, "log_warn", lambda msg: warnings.append(msg))
+    runner = RecordingRunner()
+    sb.configure_proxy(runner, "danno-app")  # default ollama_url = host.docker.internal
+    assert warnings and "host.docker.internal" in warnings[0]
+
+
+def test_configure_proxy_docker_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DANNO_SANDBOX_CLI", "docker")
+    runner = RecordingRunner()
+    sb.configure_proxy(runner, "danno-app")
+    assert runner.commands == [
+        [
+            "docker",
+            "sandbox",
+            "network",
+            "proxy",
+            "danno-app",
+            "--policy",
+            "allow",
+            "--allow-host",
+            "localhost:11434",
+        ]
     ]
 
 
