@@ -69,6 +69,17 @@ is an unmatchable link-local `fe80::1`). Verified `200/403/403/403` through
 fail-loud; and **verify the boundary by reading allow/deny signals (HTTP 403), not
 proxy-tool exit codes.**
 
+**Declared workarounds (config knobs, not silent hacks).** The two current sbx
+accommodations are toggleable and grep-findable so they don't become OBE cruft — see
+[`sbx-workarounds.md`](sbx-workarounds.md): `[sandbox].cli` (backend, SBX-TRANSITION)
+and `[sandbox].resolve_ollama_host` (local-alias→IP resolution, SBX-WORKAROUND #263).
+**Auto-detect caveat (confirmed live):** `resolve_ollama_host` picks the host's
+default-route IP, which on a **VPN/multi-homed host is the wrong interface** (seen:
+`utun6`=`10.5.0.2` chosen over wifi `10.0.1.9`). It's logged loudly; the reliable
+override is a **concrete Ollama base_url** (passed through literally). Remaining before
+un-drafting #76: thread the *resolved* endpoint into the **harness config** too
+(opencode.jsonc / OLLAMA_BASE_URL) so the agent dials the same IP the allow-rule permits.
+
 **Deferred (follow-ups, not blockers):**
 - **D4 / `sbx secret`** — the migration keeps the working `--env-file` cloud-auth
   path (H4 unchanged). Adopting `sbx secret` (proxy-injected, never-exposed) is the

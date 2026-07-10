@@ -19,20 +19,36 @@ import shutil
 
 _ENV = "DANNO_SANDBOX_CLI"
 
+# SBX-TRANSITION(docker-sandbox-deprecation): explicit backend chosen by the CLI
+# layer from `[sandbox].cli` / `--sandbox-cli` (flag>env>config resolved there).
+# None leaves auto-detection. This whole selection machinery — and the `docker`
+# branch of every builder — is removable once `docker sandbox` is gone.
+_override: str | None = None
+
+
+def set_backend(value: str | None) -> None:
+    """Set the sandbox backend from `[sandbox].cli` / `--sandbox-cli` ('auto'|'sbx'|
+    'docker'). 'auto' / None / unknown leaves auto-detection in place. Called once by
+    the CLI layer before provisioning; `resolve_backend` returns it."""
+    global _override
+    _override = value if value in ("sbx", "docker") else None
+
 
 def resolve_backend() -> str:
-    """`'sbx'` or `'docker'`. `DANNO_SANDBOX_CLI` overrides; else auto-prefer `sbx`.
+    """`'sbx'` or `'docker'`. Precedence: env `DANNO_SANDBOX_CLI` (debug/ad-hoc) >
+    `set_backend()` (the CLI layer's flag>config) > auto-prefer `sbx` when installed.
 
-    Fails loud (ValueError) on an invalid override so a typo can't silently pick a
+    Fails loud (ValueError) on an invalid env value so a typo can't silently pick a
     backend. Absence of both CLIs is NOT checked here — argv construction must work
-    in advise mode where nothing is installed; `doctor` is where availability is
-    surfaced.
+    in advise mode where nothing is installed; `doctor` surfaces availability.
     """
-    override = os.environ.get(_ENV, "").strip().lower()
-    if override in ("sbx", "docker"):
-        return override
-    if override:
-        raise ValueError(f"{_ENV}={override!r} is invalid — use 'sbx' or 'docker'.")
+    env = os.environ.get(_ENV, "").strip().lower()
+    if env in ("sbx", "docker"):
+        return env
+    if env:
+        raise ValueError(f"{_ENV}={env!r} is invalid — use 'sbx' or 'docker'.")
+    if _override in ("sbx", "docker"):
+        return _override
     return "sbx" if shutil.which("sbx") else "docker"
 
 

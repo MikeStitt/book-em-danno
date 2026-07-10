@@ -79,15 +79,61 @@ def test_configure_proxy_sbx_allows_ollama_ip_from_url(monkeypatch: pytest.Monke
     ]
 
 
-def test_configure_proxy_sbx_warns_when_ollama_unroutable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_configure_proxy_sbx_resolves_local_alias_to_ip(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DANNO_SANDBOX_CLI", "sbx")
+    monkeypatch.setattr(sb, "_host_routable_ip", lambda: "10.0.1.9")
+    runner = RecordingRunner()
+    sb.configure_proxy(runner, "danno-app")  # default ollama_url = host.docker.internal
+    assert runner.commands == [
+        ["sbx", "policy", "allow", "network", "--sandbox", "danno-app", "10.0.1.9:11434"]
+    ]
+
+
+def test_configure_proxy_sbx_warns_when_resolve_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DANNO_SANDBOX_CLI", "sbx")
     warnings: list[str] = []
     monkeypatch.setattr(sb, "log_warn", lambda msg: warnings.append(msg))
     runner = RecordingRunner()
-    sb.configure_proxy(runner, "danno-app")  # default ollama_url = host.docker.internal
-    assert warnings and "host.docker.internal" in warnings[0]
+    sb.configure_proxy(runner, "danno-app", resolve_ollama_host=False)
+    assert warnings and "resolve_ollama_host" in warnings[0]
+
+
+def test_set_backend_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DANNO_SANDBOX_CLI", raising=False)
+    sandbox_cli.set_backend("sbx")
+    assert sandbox_cli.resolve_backend() == "sbx"
+    sandbox_cli.set_backend("docker")
+    assert sandbox_cli.resolve_backend() == "docker"
+
+
+def test_env_beats_set_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DANNO_SANDBOX_CLI", "docker")
+    sandbox_cli.set_backend("sbx")
+    assert sandbox_cli.resolve_backend() == "docker"  # env is the highest override
+
+
+def test_resolve_ollama_hostport_concrete_is_literal() -> None:
+    assert sb.resolve_ollama_hostport("10.0.1.9:11434", resolve=True) == ("10.0.1.9:11434", None)
+
+
+def test_resolve_ollama_hostport_alias_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sb, "_host_routable_ip", lambda: "10.0.1.9")
+    assert sb.resolve_ollama_hostport("host.docker.internal:11434", resolve=True) == (
+        "10.0.1.9:11434",
+        None,
+    )
+
+
+def test_resolve_ollama_hostport_alias_no_resolve_warns() -> None:
+    hp, warn = sb.resolve_ollama_hostport("host.docker.internal:11434", resolve=False)
+    assert hp == "host.docker.internal:11434"
+    assert warn and "resolve_ollama_host" in warn
+
+
+def test_resolve_ollama_hostport_offline_warns(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sb, "_host_routable_ip", lambda: None)
+    _, warn = sb.resolve_ollama_hostport("localhost:11434", resolve=True)
+    assert warn and "routable" in warn
 
 
 def test_configure_proxy_docker_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:

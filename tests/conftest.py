@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from book_em_danno.commands import sandbox_cli
 from book_em_danno.core.exec import Runner
 
 
@@ -13,6 +14,7 @@ def _pin_sandbox_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     deterministic regardless of whether `sbx` is installed on the host. Tests that
     exercise the sbx backend override with `monkeypatch.setenv("DANNO_SANDBOX_CLI",
     "sbx")` (or `delenv(..., raising=False)` to test auto-detection)."""
+    sandbox_cli.set_backend(None)  # reset the module-level override between tests
     monkeypatch.setenv("DANNO_SANDBOX_CLI", "docker")
 
 
