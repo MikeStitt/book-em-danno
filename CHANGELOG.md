@@ -3,6 +3,28 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.13.0] - 2026-07-09
+
+### Bug Fixes
+
+- *(bench)* Warm models just-in-time so multi-model matrices survive VRAM eviction
+
+### Documentation
+
+- Note pre-warm + load-timing plot in aider cross-harness record
+- Record SWE-bench + Aider grading-fidelity investigation
+- Plan for testing danno on Windows (WSL2, cmd, PowerShell)
+- Broaden Windows test plan to cross-platform (add Linux + CI matrix)
+- Fill in cross-platform plan body (two-tier content)
+
+### Features
+
+- *(bench)* Pre-warm local models + plot first-call load latency
+
+### Testing
+
+- *(portability)* Add cross-platform danno probe + run instructions
+
 ## [0.12.0] - 2026-07-08
 
 ### Bug Fixes
