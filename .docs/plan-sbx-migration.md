@@ -73,12 +73,16 @@ proxy-tool exit codes.**
 accommodations are toggleable and grep-findable so they don't become OBE cruft — see
 [`sbx-workarounds.md`](sbx-workarounds.md): `[sandbox].cli` (backend, SBX-TRANSITION)
 and `[sandbox].resolve_ollama_host` (local-alias→IP resolution, SBX-WORKAROUND #263).
-**Auto-detect caveat (confirmed live):** `resolve_ollama_host` picks the host's
-default-route IP, which on a **VPN/multi-homed host is the wrong interface** (seen:
-`utun6`=`10.5.0.2` chosen over wifi `10.0.1.9`). It's logged loudly; the reliable
-override is a **concrete Ollama base_url** (passed through literally). Remaining before
-un-drafting #76: thread the *resolved* endpoint into the **harness config** too
-(opencode.jsonc / OLLAMA_BASE_URL) so the agent dials the same IP the allow-rule permits.
+**Same-host reachability = loopback through the host proxy (verified).** An sbx
+sandbox reaches a same-host Ollama at `127.0.0.1:port` **forced through the host-side
+proxy** (the proxy's loopback is the host's): allowed→200, unallowed→403, other-port
+→403. So `resolve_ollama_host` maps local aliases to `127.0.0.1` — network-independent
+(no LAN IP, no VPN-interface guessing, works offline); a concrete/remote host stays
+literal. (This replaced an earlier LAN-IP auto-detect that misfired on a VPN default
+route — `utun6`.) **Phase-2, remaining before un-drafting #76:** the harness must route
+`127.0.0.1` through the proxy — set `OLLAMA_BASE_URL=http://127.0.0.1:port` and drop
+`127.0.0.1`/`localhost` from the harness `NO_PROXY` (keep `gateway.docker.internal`);
+claurst keeps its own in-sandbox `127.0.0.1` relay. Verify a real turn per harness.
 
 **Deferred (follow-ups, not blockers):**
 - **D4 / `sbx secret`** — the migration keeps the working `--env-file` cloud-auth

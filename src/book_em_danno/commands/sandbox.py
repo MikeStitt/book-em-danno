@@ -373,10 +373,16 @@ def _ollama_hostport(url: str) -> str:
     return urllib.parse.urlparse(url).netloc or url
 
 
-# SBX-WORKAROUND(OpenShell#263): local-host Ollama aliases that sbx cannot route
-# (no host.docker.internal→localhost rewrite; the alias is a link-local address the
-# egress policy can't match). For sbx these are swapped for the host's routable LAN
-# IP (see `resolve_ollama_hostport`). Remove with the resolver once sbx routes them.
+# SBX-WORKAROUND(OpenShell#263): local-host Ollama aliases. sbx has no
+# host.docker.internal→localhost rewrite (docker sandbox did) and reaches a SAME-HOST
+# Ollama via 127.0.0.1 forced through its host-side proxy. Verified 2026-07-09: with
+# `127.0.0.1:11434` allowed, a request routed through the proxy returns 200 (the proxy
+# is host-side, so its loopback is the host's); an unallowed rule/port returns 403.
+# So for sbx these aliases resolve to loopback (network-independent: no LAN IP, no VPN,
+# works offline); a concrete/remote host is used literally. NOTE: the harness must
+# ROUTE 127.0.0.1 through the proxy (drop it from NO_PROXY) — the Phase-2 harness-env
+# wiring; claurst keeps its own in-sandbox 127.0.0.1 relay instead. Remove this whole
+# resolver once sbx routes host.docker.internal.
 _LOCAL_OLLAMA_ALIASES = (
     "localhost",
     "127.0.0.1",
@@ -385,47 +391,29 @@ _LOCAL_OLLAMA_ALIASES = (
     "host.docker.internal",
     "gateway.docker.internal",
 )
-
-
-def _host_routable_ip() -> str | None:
-    """The host's primary routable IPv4 (the source IP of the default route), or None
-    when the host has no route (offline). No packets are sent — the UDP `connect` only
-    selects the outbound interface. Portable across macOS/Linux/Windows."""
-    import socket
-
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.connect(("8.8.8.8", 80))
-            ip: str = sock.getsockname()[0]
-    except OSError:
-        return None
-    return ip if ip and not ip.startswith("127.") else None
+_SBX_LOOPBACK = "127.0.0.1"
 
 
 def resolve_ollama_hostport(hostport: str, *, resolve: bool) -> tuple[str, str | None]:
     """Resolve an Ollama `host:port` for the sbx egress allow-rule (and the harness
-    URL, so the two stay consistent). A LOCAL alias host is swapped for the host's
-    routable IP when `resolve`; a concrete IP/hostname is returned unchanged. Returns
-    `(hostport, warning)` — a non-None warning is a fail-loud message for when the
-    endpoint won't be reachable from an sbx sandbox. SBX-WORKAROUND(OpenShell#263)."""
+    URL, kept consistent). A LOCAL alias resolves to `127.0.0.1:<port>` — an sbx
+    sandbox reaches a same-host Ollama via loopback forced through the host proxy,
+    which is network-independent (no LAN IP, no VPN, works offline). A concrete
+    IP/hostname (a remote Ollama) is returned unchanged. Returns `(hostport, warning)`;
+    a non-None warning is a fail-loud message. SBX-WORKAROUND(OpenShell#263)."""
     host, sep, port = hostport.rpartition(":")
     if not sep:
         host, port = hostport, "11434"
     host = host.strip("[]")  # tolerate bracketed IPv6
     if host not in _LOCAL_OLLAMA_ALIASES:
-        return hostport, None  # concrete address -> used literally
+        return hostport, None  # concrete / remote address -> used literally
     if not resolve:
         return hostport, (
-            f"sbx: Ollama at '{host}' is a local alias sbx cannot route. Set the Ollama "
-            "base_url to the host's LAN IP, or set [sandbox].resolve_ollama_host = true."
+            f"sbx: Ollama at '{host}' is a local alias. sbx reaches a same-host Ollama via "
+            "127.0.0.1 through its host proxy — enable [sandbox].resolve_ollama_host, or set "
+            "a concrete remote base_url."
         )
-    ip = _host_routable_ip()
-    if ip is None:
-        return hostport, (
-            f"sbx: cannot resolve local Ollama alias '{host}' to a routable host IP "
-            "(offline?). An sbx sandbox cannot reach a local Ollama with no LAN IP."
-        )
-    return f"{ip}:{port}", None
+    return f"{_SBX_LOOPBACK}:{port}", None  # local -> loopback via the host proxy
 
 
 def configure_proxy(
@@ -439,11 +427,11 @@ def configure_proxy(
     """Set the egress hole: allow ONLY the Ollama endpoint; host/LAN otherwise denied.
 
     docker: its egress proxy rewrites `host.docker.internal`→`localhost`, so the
-    default `allow_hosts` (`localhost:11434`) is the correct token — used as-is. sbx
-    has no such rewrite, so the allow must be the host's ROUTABLE `IP:port`, derived
-    from `ollama_url` via `resolve_ollama_hostport` (SBX-WORKAROUND(OpenShell#263),
-    gated by `[sandbox].resolve_ollama_host`). A non-routable endpoint WARNS loudly
-    rather than silently shipping a broken — or, if widened, an insecure — policy.
+    default `allow_hosts` (`localhost:11434`) is correct — used as-is. sbx has no such
+    rewrite; a LOCAL Ollama is reached at `127.0.0.1:port` through the host proxy, so
+    `resolve_ollama_hostport` maps local aliases to loopback (SBX-WORKAROUND
+    (OpenShell#263), gated by `[sandbox].resolve_ollama_host`); a concrete remote host
+    is used literally. Fail-loud WARN when a local alias is left unresolved.
     """
     effective = allow_hosts
     if sandbox_cli.resolve_backend() == "sbx":
@@ -453,9 +441,6 @@ def configure_proxy(
         if warning:
             log_warn(warning)
         else:
-            # Surface the chosen endpoint: on a multi-homed host the auto-detected IP
-            # can be a VPN/virtual interface Ollama isn't on — visible here so a wrong
-            # pick is caught, not silent (set a concrete Ollama base_url to override).
             log_info(f"sbx egress: allowing Ollama at {hostport}; host/LAN otherwise denied")
         # Swap the docker-proxy localhost token for the real endpoint; keep any other
         # allow_hosts (e.g. a capture proxy).
