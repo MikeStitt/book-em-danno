@@ -24,29 +24,42 @@ agent_home = "group:team-a"        # non-default agent_home (the keyword path is
 [backends.ollama]
 kind           = "ollama"
 base_url       = "http://host.docker.internal:11434/v1"
-context_budget = 32000
-output_limit   = 8192
 
 [backends.nvidia]                  # generic OpenAI-compatible endpoint (NVIDIA NIM)
 kind        = "openai"
 base_url    = "https://integrate.api.nvidia.com/v1"
 api_key_env = "NVIDIA_API_KEY"     # emitted as {env:NVIDIA_API_KEY}; secret never written
-context_budget = 1000000
-output_limit   = 8192
 
 [backends.llamacpp]                # declared but unused (stubbed runtime)
 kind     = "llamacpp"
 base_url = "http://host.docker.internal:8080/v1"
 
-# --- Models on the two non-stub local/openai-compatible backends. ---
+# --- Models on the two non-stub local/openai-compatible backends. context_budget and
+#     output_limit are MODEL-level (required on ollama/openai models; forbidden on
+#     inert/llamacpp). ---
 [models.gemma3-27b]
 backend          = "ollama"
 tag              = "gemma3:27b"
+context_budget   = 32000
+output_limit     = 8192
 reasoning_effort = "none"
 
 [models.nemotron-ultra]
-backend   = "nvidia"
-tag       = "nvidia/nemotron-3-ultra-550b-a55b"
+backend        = "nvidia"
+tag            = "nvidia/nemotron-3-ultra-550b-a55b"
+context_budget = 1000000
+output_limit   = 8192
+
+# Per-model escape hatch: raw keys deep-merged into this model's generated block for a
+# harness. Here, an arbitrary opencode.jsonc model option danno does not otherwise model
+# (reasoningEffort, if any, is preserved alongside).
+[models.nemotron-ultra.overrides.opencode.options]
+max_completion_tokens = 1000000
+
+# Per-backend escape hatch: swap the provider's npm package (the native OpenAI SDK for an
+# o-series endpoint, say), overriding danno's hardcoded @ai-sdk/openai-compatible.
+[backends.nvidia.overrides.opencode]
+npm = "@ai-sdk/openai"
 
 # --- Agents: a raw inline cloud ref plus ollama and nvidia [models] entries. pm is
 #     the default_agent. ---
@@ -78,3 +91,10 @@ setup   = ["curl -fsSL https://plannotator.ai/install.sh | bash"]
 [npm.config]
 workflow       = "plan-agent"
 planningAgents = ["plan"]
+
+# --- Agent-general environment: KEY=value injected into the env-file of every
+#     config-driven harness (opencode/claurst/occ — NOT claude). Values MAY embed
+#     {env:VAR} host indirection, resolved at launch (see assemble_harness_env). ---
+[env]
+CLAUDE_CODE_API_TIMEOUT = "3600000"
+NVIDIA_API_KEY          = "{env:NVIDIA_API_KEY}"

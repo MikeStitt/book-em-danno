@@ -73,6 +73,8 @@ def _config(*, reasoning: bool) -> DannoConfig:
                 backend="ollama",
                 tag=MODEL,
                 reasoning_effort="none" if reasoning else None,
+                context_budget=32000,
+                output_limit=8192,
             )
         },
         agents={"build": "gemma"},

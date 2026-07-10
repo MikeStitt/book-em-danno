@@ -21,13 +21,10 @@ agent_home = "per-project"
 [backends.danno-ollama]                  # IMPLEMENTED
 kind           = "ollama"
 base_url       = "http://host.docker.internal:11434/v1"   # use http://localhost:11434/v1 for host-only runs
-context_budget = 32000   # OpenCode's CLIENT-SIDE belief of the window (models.<tag>.limit.context);
-                         #   used to trim/compact. It does NOT set Ollama's real window: under /v1
-                         #   Ollama loads the model at its FULL context (a body num_ctx is ignored).
-                         #   The real window / RAM lever is an Ollama Modelfile variant, not set here.
-output_limit   = 8192    # tokens OpenCode reserves for the reply (usable input ≈ context_budget - output_limit)
-# Note: there is no stream/thinking knob — opencode always streams, and those keys
-# never reached Ollama. Reasoning control is per-model (see reasoning_effort below).
+# Note: the client-side context/output budget is PER-MODEL (context_budget/output_limit
+# under each [models.*] below), required on ollama/openai models. There is no
+# stream/thinking knob — opencode always streams, and those keys never reached Ollama.
+# Reasoning control is also per-model (see reasoning_effort below).
 
 # Cloud models need NO backend or [models] entry: OpenCode knows them via its
 # built-in catalog and launch-time auth. Reference one inline in [agents] as a raw
@@ -72,13 +69,14 @@ base_url    = "https://integrate.api.nvidia.com/v1"
 api_key_env = "NVIDIA_API_KEY"     # emitted as {env:NVIDIA_API_KEY}; the secret is NEVER
                                    #   written here — inject it at launch with
                                    #   `danno sandbox start --env NVIDIA_API_KEY=nvapi-...`
-context_budget = 1000000
-output_limit   = 8192
+# context_budget/output_limit are per-model (see each [models.*] below).
 
 # --- Models: a named (backend, tag) pair. ---
 [models.qwen3-coder-next]
 backend          = "danno-ollama"
 tag              = "qwen3-coder-next"    # local models MUST support tool-calling (gemma3:1b does NOT)
+context_budget   = 32000           # OpenCode's client-side window belief (see README knobs)
+output_limit     = 8192            # tokens reserved for the reply; required on ollama/openai models
 reasoning_effort = "none"          # forwarded as model-level options.reasoningEffort into the /v1
                                    #   body. "none" disables the thinking trace — faster for
                                    #   high-volume local agents, and sidesteps opencode hang #21903.
@@ -89,6 +87,8 @@ reasoning_effort = "none"          # forwarded as model-level options.reasoningE
 [models.quen3p6-27b-q4_K_M]
 backend          = "danno-ollama"
 tag              = "qwen3.6:27b-q4_K_M"    # local models MUST support tool-calling (gemma3:1b does NOT)
+context_budget   = 32000
+output_limit     = 8192
 reasoning_effort = "medium"          # forwarded as model-level options.reasoningEffort into the /v1
                                    #   body. "none" disables the thinking trace — faster for
                                    #   high-volume local agents, and sidesteps opencode hang #21903.
@@ -99,6 +99,8 @@ reasoning_effort = "medium"          # forwarded as model-level options.reasonin
 [models.gpt-oss-20b]
 backend          = "danno-ollama"
 tag              = "gpt-oss:20b"    # local models MUST support tool-calling (gemma3:1b does NOT)
+context_budget   = 32000
+output_limit     = 8192
 reasoning_effort = "none"          # forwarded as model-level options.reasoningEffort into the /v1
                                    #   body. "none" disables the thinking trace — faster for
                                    #   high-volume local agents, and sidesteps opencode hang #21903.
@@ -109,33 +111,47 @@ reasoning_effort = "none"          # forwarded as model-level options.reasoningE
 
 # --- NVIDIA NIM model via the openai-compatible backend above. ---
 [models.nemotron-ultra-danno]
-backend   = "danno-nvidia"
-tag       = "nvidia/nemotron-3-ultra-550b-a55b"   # the model id the endpoint expects
+backend        = "danno-nvidia"
+context_budget = 1000000
+output_limit   = 8192
+tag      = "nvidia/nemotron-3-ultra-550b-a55b"   # the model id the endpoint expects
 
 [models.3p3-nemotron-super-49b-danno]
-backend   = "danno-nvidia"
-tag       = "nvidia/llama-3.3-nemotron-super-49b-v1.5"   # the model id the endpoint expects
+backend        = "danno-nvidia"
+context_budget = 1000000
+output_limit   = 8192
+tag      = "nvidia/llama-3.3-nemotron-super-49b-v1.5"   # the model id the endpoint expects
 
 [models.deepseek-v4-pro-danno]
-backend   = "danno-nvidia"
-tag       = "deepseek-ai/deepseek-v4-pro"   # the model id the endpoint expects
+backend        = "danno-nvidia"
+context_budget = 1000000
+output_limit   = 8192
+tag      = "deepseek-ai/deepseek-v4-pro"   # the model id the endpoint expects
 
 [models.deepseek-v4-flash-danno]
-backend   = "danno-nvidia"
-tag       = "deepseek-ai/deepseek-v4-flash"   # the model id the endpoint expects
+backend        = "danno-nvidia"
+context_budget = 1000000
+output_limit   = 8192
+tag      = "deepseek-ai/deepseek-v4-flash"   # the model id the endpoint expects
 
 [models.qwen3-next-80b-a3b-instruct-danno]
-backend   = "danno-nvidia"
-tag       = "qwen/qwen3-next-80b-a3b-instruct"   # the model id the endpoint expects
+backend        = "danno-nvidia"
+context_budget = 1000000
+output_limit   = 8192
+tag      = "qwen/qwen3-next-80b-a3b-instruct"   # the model id the endpoint expects
 
 
 [models.mistral-large-3-675b-instruct-2512-danno]
-backend   = "danno-nvidia"
-tag       = "mistralai/mistral-large-3-675b-instruct-2512"   # the model id the endpoint expects
+backend        = "danno-nvidia"
+context_budget = 1000000
+output_limit   = 8192
+tag      = "mistralai/mistral-large-3-675b-instruct-2512"   # the model id the endpoint expects
 
 [models.glm-5p1-danno]
-backend   = "danno-nvidia"
-tag       = "z-ai/glm-5.1"   # the model id the endpoint expects
+backend        = "danno-nvidia"
+context_budget = 1000000
+output_limit   = 8192
+tag      = "z-ai/glm-5.1"   # the model id the endpoint expects
 
 # --- Smaller NVIDIA NIM models for easy aider tasks where tool-calling RELIABILITY
 #     — not raw coding skill — is the binding constraint. These three were LIVE
@@ -145,16 +161,22 @@ tag       = "z-ai/glm-5.1"   # the model id the endpoint expects
 #     — e.g. mistralai/mistral-nemotron (500) and mistralai/codestral-22b (404 entitlement).
 #     Tool-call format differs and is itself worth benchmarking per harness (see below). ---
 [models.llama31-8b-danno]                # META 8B dense — emits clean OpenAI tool_calls, fastest (~0.8s ttfb)
-backend   = "danno-nvidia"
-tag       = "meta/llama-3.1-8b-instruct"
+backend        = "danno-nvidia"
+context_budget = 1000000
+output_limit   = 8192
+tag      = "meta/llama-3.1-8b-instruct"
 
 [models.ministral-14b-danno]             # MISTRAL 14B dense (2512) — clean tool_calls, steady small "real coder"
-backend   = "danno-nvidia"
-tag       = "mistralai/ministral-14b-instruct-2512"
+backend        = "danno-nvidia"
+context_budget = 1000000
+output_limit   = 8192
+tag      = "mistralai/ministral-14b-instruct-2512"
 
 [models.nemotron-nano-9b-danno]          # NVIDIA 9B hybrid reasoning — emits <TOOLCALL> in content, not a
-backend   = "danno-nvidia"               #   structured tool_calls array; stresses each harness's tool-parse path
-tag       = "nvidia/nvidia-nemotron-nano-9b-v2"
+backend        = "danno-nvidia"          #   structured tool_calls array; stresses each harness's tool-parse path
+context_budget = 1000000
+output_limit   = 8192
+tag            = "nvidia/nvidia-nemotron-nano-9b-v2"
 
 # --- Agent -> model. A value WITHOUT "/" names a [models] entry above; a value WITH
 #     "/" is a raw OpenCode ref passed through verbatim (built-in cloud model, no

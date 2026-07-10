@@ -71,6 +71,7 @@ def test_dangling_agent_reference_fails_loud(tmp_path: Path) -> None:
         "[backends.ollama]\nkind = 'ollama'\n"
         "base_url = 'http://host.docker.internal:11434/v1'\n"
         "[models.gemma]\nbackend = 'ollama'\ntag = 'gemma3:27b'\n"
+        "context_budget = 32000\noutput_limit = 8192\n"
         "[agents]\npm = 'does-not-exist'\n",
         encoding="utf-8",
     )

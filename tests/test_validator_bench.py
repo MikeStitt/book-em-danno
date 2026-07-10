@@ -28,7 +28,11 @@ from danno_validator.suites.config import BenchmarksConfig
 def _config() -> DannoConfig:
     return DannoConfig(
         backends={"ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1")},
-        models={"qwen": Model(backend="ollama", tag="qwen3:latest")},
+        models={
+            "qwen": Model(
+                backend="ollama", tag="qwen3:latest", context_budget=32000, output_limit=8192
+            )
+        },
         agents={"build": "qwen"},
     )
 
@@ -45,8 +49,15 @@ def _cloud_config() -> DannoConfig:
             ),
         },
         models={
-            "qwen": Model(backend="ollama", tag="qwen3:latest"),
-            "nemo": Model(backend="nv", tag="nvidia/nemotron-super-49b"),
+            "qwen": Model(
+                backend="ollama", tag="qwen3:latest", context_budget=32000, output_limit=8192
+            ),
+            "nemo": Model(
+                backend="nv",
+                tag="nvidia/nemotron-super-49b",
+                context_budget=128000,
+                output_limit=8192,
+            ),
         },
         agents={"build": "qwen"},
     )
@@ -79,7 +90,11 @@ def test_build_bench_env_files_occ_carries_knob_defaults_overridable(tmp_path: P
     # occ's level-4 loop-ceiling knobs seed the file; danno.toml [env] composes on top.
     cfg = DannoConfig(
         backends={"ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1")},
-        models={"qwen": Model(backend="ollama", tag="qwen3:latest")},
+        models={
+            "qwen": Model(
+                backend="ollama", tag="qwen3:latest", context_budget=32000, output_limit=8192
+            )
+        },
         env={"CLAUDE_CODE_MAX_RECURSION_DEPTH": "5"},  # [env] lowers the generous default
     )
     opts = bench.BenchOptions(target=tmp_path, harness="occ")
@@ -224,7 +239,9 @@ def _claude_config() -> DannoConfig:
             "claude": InertBackend(kind="inert"),
         },
         models={
-            "qwen": Model(backend="ollama", tag="qwen3:latest"),  # not claude's to run
+            "qwen": Model(
+                backend="ollama", tag="qwen3:latest", context_budget=32000, output_limit=8192
+            ),  # not claude's to run
             "opus": Model(backend="claude", tag="claude-opus-4-8"),
             "sonnet": Model(backend="claude", tag="claude-sonnet-4-6"),
         },
@@ -428,8 +445,18 @@ def _dial_config() -> DannoConfig:
             ),
         },
         models={
-            "qwen": Model(backend="danno-ollama", tag="qwen3-coder-next"),
-            "nemo": Model(backend="nv", tag="nvidia/nemotron-super-49b"),
+            "qwen": Model(
+                backend="danno-ollama",
+                tag="qwen3-coder-next",
+                context_budget=32000,
+                output_limit=8192,
+            ),
+            "nemo": Model(
+                backend="nv",
+                tag="nvidia/nemotron-super-49b",
+                context_budget=128000,
+                output_limit=8192,
+            ),
         },
         agents={"build": "qwen"},
     )
