@@ -2,6 +2,11 @@
 
 **Date:** 2026-07-09 · **Status:** **IMPLEMENTED (P1–P5), gate green, sbx default
 live-verified on macOS** · **Branch base:** `main`.
+**2026-07-10 update:** an independent review refuted the "sbx has no
+`host.docker.internal` rewrite" premise (see
+[`sbx-egress-model.md`](sbx-egress-model.md) §0) — the Phase-2 section below was
+**rewritten** accordingly; passages marked *[REFUTED 2026-07-10]* are kept as the
+historical record of what shipped.
 
 ## Implementation status (2026-07-09) — SHIPPED
 
@@ -21,7 +26,9 @@ All phases landed; `ninja check` green (571 passed); `danno doctor` live-shows
   **NEVER `"**"`.** The sbx allow must be the host's **routable LAN IP** (e.g.
   `10.0.1.9:11434`): `host.docker.internal` resolves to a link-local `fe80::1`
   inside the sandbox that the policy can't match (`docker sandbox` had a
-  proxy-rewrite; sbx does not). `configure_proxy` derives it from the Ollama
+  proxy-rewrite; sbx does not). *[REFUTED 2026-07-10: sbx has the same rewrite; the
+  correct sbx token is `localhost:11434`, identical to docker — see the corrected
+  Phase-2 below.]* `configure_proxy` derives it from the Ollama
   base_url and WARNS loudly if it's still a non-routable alias. Cloud auth stays on
   `--env-file` (works on `sbx exec` too — clean rename). **Verified end-to-end
   through `provision()` (2026-07-09):** `200` to the allowed Ollama, `403` to
@@ -80,27 +87,111 @@ proxy** (the proxy's loopback is the host's): allowed→200, unallowed→403, ot
 (no LAN IP, no VPN-interface guessing, works offline); a concrete/remote host stays
 literal. (This replaced an earlier LAN-IP auto-detect that misfired on a VPN default
 route — `utun6`.)
+*[REFUTED 2026-07-10: the mechanism is real, but the workaround is unnecessary AND
+harmful — sbx rewrites `host.docker.internal`→`localhost` exactly as docker did, and
+the `127.0.0.1:11434` token 403s that documented path (matching is literal on the
+post-rewrite string). Workaround #2's removal trigger has FIRED; W1 below retires
+it. The `#263` citation was a mis-cite (NVIDIA/OpenShell — a different project).]*
 
-**Phase-2 plan (remaining before un-drafting #76) — verified mechanism findings first:**
-- `sbx exec --env-file NO_PROXY` is **overridden by sbx** (resolves to sbx's value) — can't
-  set it that way. An in-shell `export` works, but **must set BOTH `NO_PROXY` and
-  `no_proxy`** (lowercase; clients honor either) — setting only upper → `000`.
-- The `NO_PROXY`-env route only helps clients that honor `HTTP_PROXY`: **curl yes; the
-  harness clients no** — opencode (Node), claurst (Rust), occ (Node) all bypass it. That is
-  precisely why claurst+occ already dial danno's **in-sandbox relay** at `127.0.0.1:11434`.
-- **So the universal fix is the relay, not env vars.** The relay
-  (`driver.py:_OLLAMA_RELAY_SOURCE`) forwards to `UPSTREAM=host.docker.internal:11434`,
-  which is broken on sbx. Changes:
-  1. Add `DANNO_RELAY_UPSTREAM_HOST` (default `host.docker.internal`); the claurst/occ
-     launchers set it to `127.0.0.1` on sbx.
-  2. In the relay, when a proxy is set, **clear `no_proxy`/`NO_PROXY`** so urllib's
-     `ProxyHandler` forces even `127.0.0.1` through the proxy (else it bypasses to the
-     sandbox's own loopback = the relay → loop). No-op on docker (upstream isn't loopback).
-  3. **opencode** doesn't use the relay (it relies on the docker proxy-rewrite). On sbx,
-     route it through the relay too (base_url `http://127.0.0.1:11434/v1` + launch the relay),
-     or confirm opencode honors `HTTP_PROXY` (unlikely) — decide with a real turn.
-- **Verify a real turn per harness** (occ/claurst first — smallest change — then opencode):
-  a model turn returns output, and the boundary still shows `example.com`/LAN → 403.
+## Phase 2 — CORRECTED (2026-07-10; supersedes the withdrawn relay-based plan)
+
+A second independent session re-verified the mechanism against the official docs, a
+fresh live matrix, and **real harness turns** (full record:
+[`sbx-egress-model.md`](sbx-egress-model.md) §0; legacy re-verification in W7 below).
+The findings that reshape Phase 2:
+
+- **sbx rewrites `host.docker.internal`→`localhost` before policy matching**
+  (officially documented + live 200). The correct sbx egress config is therefore
+  **identical to the docker one**: allow token `localhost:11434`, harness baseURL
+  `http://host.docker.internal:11434/v1`. No resolver, no LAN IP, no loopback token.
+- **opencode needs NOTHING**: a real `opencode run` turn (gemma4:26b) succeeded
+  under sbx with the normal config, boundary 403s intact — Bun fetch honors the
+  injected proxy env. sbx also injects `NODE_USE_ENV_PROXY=1` (Node fetch verified
+  200) and **accepts CONNECT to an allowed non-443 port** (verified 200/403), so
+  occ's undici path works on sbx too.
+- **The relay works on sbx UNCHANGED** under the `localhost:11434` token (its exact
+  `ProxyHandler`-opener pattern verified in-sandbox → 200): upstream stays
+  `host.docker.internal`, urllib env-proxies it, no `no_proxy` surgery, no loop risk.
+- **Legacy `docker sandbox` re-verified** with danno's exact flags: contract holds
+  (internet 200 · LAN 403 · unallowed host ports blocked · Ollama hole 200) — but
+  its denials are **HTTP 500 with a policy body**, not 403 (W7).
+- **Loopback-only host services are reachable through BOTH proxies when allowed**
+  (an allowed port reached a `127.0.0.1`-bound host server → 200): the
+  `OLLAMA_HOST=0.0.0.0` prerequisite looks obsolete and is the less-safe option (S3).
+
+### Work items (before un-drafting #76)
+
+- **W1 — retire workaround #2 (the loopback resolver).** On sbx, local Ollama
+  aliases use the default `localhost:11434` token — the same `DEFAULT_ALLOW_HOSTS`
+  path docker uses. Delete `resolve_ollama_hostport`, `_LOCAL_OLLAMA_ALIASES`,
+  `_SBX_LOOPBACK`, `[sandbox].resolve_ollama_host` (schema + tests); a concrete
+  **remote** `host:port` stays a literal passthrough (unchanged, §7 of the egress
+  doc). Scrub the refuted claims + `OpenShell#263` mis-cite from
+  `sandbox.py`/`sandbox_cli.py` docstrings and the workarounds ledger (row 2).
+- **W2 — per-harness verification gates on sbx** (a real model turn returns output
+  AND the boundary probe still denies `example.com`/LAN/other host ports):
+  **opencode** ✅ probe-verified 2026-07-10 — re-run through danno's own
+  `provision()` + `validate --only <local model> --max-level 1` after W1;
+  **claude** — expected no-op (`api.anthropic.com` is in `balanced`'s
+  `default-ai-services`), verify one turn; **claurst + occ local** — via the
+  unchanged relay first (W3/W4 then remove it where possible).
+- **W3 — relay-free claurst on BOTH backends** (after spike S1): danno sets
+  `OLLAMA_HOST=http://host.docker.internal:11434` and drops the relay bracket from
+  the claurst launchers (`driver._claurst_script` callers, interactive
+  `sandbox start --harness claurst`). Works on legacy too — reqwest absolute-URI
+  plain-`http` forwarding is the same lane curl used in the legacy re-verification.
+- **W4 — relay-free occ on sbx ONLY**: `OPENAI_BASE_URL=
+  http://host.docker.internal:11434/v1` + the fork's undici `EnvHttpProxyAgent`
+  dispatcher (plumbing already exists) — after spike S2. **The relay stays for
+  occ-on-legacy** (squid rejects CONNECT to `:11434`, spike-verified 2026-07-02, and
+  undici cannot absolute-URI-forward): declare it in the workarounds ledger as a
+  **legacy shim, removal trigger = legacy backend retirement**. Do NOT hand-roll
+  absolute-URI forwarding in the occ fork — that re-implements the relay in a worse
+  place.
+- **W5 — timeout parity on relay-free paths.** They lose `DANNO_RELAY_TIMEOUT`'s
+  3600 s upstream-read ceiling; ensure claurst `provider_stall_timeout`/reqwest
+  timeout (fork Bug1 made it configurable) and occ `CLAUDE_CODE_API_TIMEOUT` cover
+  the slowest local prefill before deleting the relay from a path.
+- **W6 — capture rewiring.** Relay-free paths point `OLLAMA_HOST` /
+  `OPENAI_BASE_URL` directly at the recording proxy (the same base_url-rewrite lane
+  opencode's `--capture` uses) instead of swapping the relay upstream — simplifies
+  `capture/wiring.py`; the buffered-streaming caveat is unchanged.
+- **W7 — backend-aware deny detection.** sbx denies = **403**; legacy denies =
+  **500** with body `connection to <host> blocked by network policy` (or a
+  `dial tcp … connection refused` body when nothing listens — the legacy proxy
+  connects-then-blocks: data never flows, but a listener's existence is detectable,
+  a small port-scan side channel inherent to the deprecated proxy). Any automated
+  boundary gate must judge **status + body per backend**, never exit codes or 403
+  alone.
+- **W8 — docs.** README network model split per backend (done on this branch);
+  `sbx-egress-model.md` §0 corrections (done); ledger row 2 retired with W1;
+  `--capture` README section updated with W6.
+
+### Research spikes
+
+- **S1 — claurst local-Ollama proxy honoring (gates W3).** In a sandbox:
+  `OLLAMA_HOST=http://host.docker.internal:11434`, no relay, one real local-model
+  turn on sbx AND legacy. Expected to pass — the 2026-06 spike already proved
+  claurst's reqwest honors `HTTPS_PROXY` on the NVIDIA path, and reqwest
+  absolute-URI-forwards plain `http`; the risk is the Ollama code path using a
+  proxy-blind client (the in-code "ignores HTTP(S)_PROXY" note). If it fails: the
+  smallest fork patch (env-proxy on that client) + upstream PR draft #7 in
+  `.docs/upstream-claurst-prs/`.
+- **S2 — occ direct on sbx (gates W4).** `OPENAI_BASE_URL` to
+  `host.docker.internal` + `EnvHttpProxyAgent` dispatcher; one real turn; boundary
+  gate. (CONNECT-to-allowed-port on sbx already verified with `curl --proxytunnel`.)
+- **S3 — loopback-only Ollama end-to-end.** Run the full danno flow
+  (`doctor → install --apply → validate --max-level 1`) against an Ollama bound to
+  the default `127.0.0.1`, on both backends. On pass: flip `doctor`'s
+  loopback-only WARN and the README prerequisite — recommending loopback-only is a
+  **security improvement** (`0.0.0.0` exposes Ollama to the whole LAN).
+- **S4 — egress-posture decision (owner: user).** Legacy `--policy allow` = full
+  public internet; sbx `balanced` = curated default-deny (`example.com` → 403 on
+  sbx, 200 on legacy — both verified). The sandbox is a leg of the benchmarked
+  triple, so the divergence is a **measured config dimension**: README now documents
+  it; decide whether `danno.toml` grows a declared `[sandbox].extra_allow_hosts`
+  (specific hosts only — the `"**"` prohibition stands) and whether bench
+  `provenance.json` should record the backend + posture per run.
 
 **Deferred (follow-ups, not blockers):**
 - **D4 / `sbx secret`** — the migration keeps the working `--env-file` cloud-auth
