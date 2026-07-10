@@ -27,8 +27,10 @@ danno serves **two purposes** with these harnesses:
 
 The `--target` folder defaults to `.` which is the `cwd` for the sandboxed harness. The
 sandboxed harness shares the `--target` folder and a local host `ollama` server,
-accesses the **internet**, but is sandboxed from the rest of the host and the host
-**intranet**.
+accesses the **internet** (scope depends on the sandbox backend — under `sbx` it is
+a curated allowlist, see
+[Network model](#network-model-sbx-and-the-legacy-docker-sandbox)), but is
+sandboxed from the rest of the host and the host **intranet**.
 
 From the sandbox, `claude` uses its normal cast of AI Reasoning models; while `danno`
 uses `danno.toml` to configure `opencode` (and the other harnesses) to use local or
@@ -575,43 +577,71 @@ Each candidate carries its own model (in its opencode.jsonc), so no `-m` overrid
 is applied. Your project and real `danno.toml` are never touched — `danno.toml` is
 read only for sandbox/env setup.
 
-## Network model (Docker sandbox)
+## Network model (`sbx` and the legacy `docker sandbox`)
 
 The agents run in a Docker **microVM** — its own kernel, filesystem, and network.
 Only the target project is mounted in; the rest of your Mac's filesystem is
-invisible to them. Egress is governed by the sandbox proxy, which `danno sandbox`
-configures as **`--policy allow --allow-host localhost:11434`**.
+invisible to them. **All egress flows through a host-side HTTP(S) proxy** that
+checks every request against a policy. The two sandbox backends configure that
+policy differently:
+
+- **`sbx` (auto-preferred):** danno initializes the one-time global base policy
+  **`balanced`** — **default-deny** with Docker's curated allowlists (AI provider
+  APIs, package registries, code hosts) — then adds one per-sandbox rule:
+  `sbx policy allow network --sandbox <name> localhost:11434`. Any domain outside
+  the curated lists is **denied** (even `example.com`).
+- **legacy `docker sandbox`:** danno runs
+  `docker sandbox network proxy <name> --policy allow --allow-host localhost:11434` —
+  **public internet broadly allowed**; the LAN and host ports are denied by the
+  legacy proxy's built-ins, with the `--allow-host` rule as the single host hole.
 
 ```text
                   ┌──────────────────── your Mac (host) ────────────────────┐
-  internet  ◀─allow─▶                                   Ollama :11434 (0.0.0.0)
+  internet¹ ◀─────▶                                     Ollama :11434
   cloud API ◀─allow─▶   Docker microVM ── allow ───────▶ (agent dials
-                    │     OpenCode + agents                host.docker.internal,
+                    │     harness + agents                 host.docker.internal,
                     │        │                             proxy rewrites→localhost)
   your LAN  ──DENY──│        └─ project mount (rw)                              │
   other host ports ─DENY                                                       │
                     └──────────────────────────────────────────────────────────┘
+  ¹ backend-dependent: legacy = any domain; sbx balanced = curated lists only
 ```
 
-**What the sandbox allows and denies** (verified empirically):
+**What each backend allows and denies** (both columns live-verified 2026-07-10):
 
-| Target | Policy |
-| --- | --- |
-| Public **internet** (any domain) | ✅ allow — research, npm/pip, cloud model APIs |
-| **Host Ollama** at `host.docker.internal:11434` | ✅ allow — the single host hole |
-| **Other host services** (any other localhost port, e.g. SSH) | ❌ deny |
-| **Your LAN / local network** (10.x, 172.16.x, 192.168.x) | ❌ deny |
-| **Host filesystem** outside the mounted project | ❌ not present (microVM) |
+| Target | `sbx` (`balanced` + Ollama rule) | legacy `docker sandbox` |
+| --- | --- | --- |
+| **AI provider APIs, package registries, code hosts** | ✅ allow (curated `balanced` lists) | ✅ allow |
+| Public **internet** — any other domain (e.g. `example.com`) | ❌ **deny (403)** | ✅ allow |
+| **Host Ollama** at `host.docker.internal:11434` | ✅ allow — the single host hole | ✅ allow |
+| **Other host services** (any other host port, e.g. SSH) | ❌ deny (403) | ❌ deny (500, see below) |
+| **Your LAN / local network** (10.x, 172.16.x, 192.168.x) | ❌ deny (403) | ❌ deny (403) |
+| **Host filesystem** outside the mounted project | ❌ not present (microVM) | ❌ not present (microVM) |
 
-**Why the allow-rule is `localhost:11434`, not `host.docker.internal`:** the proxy
-rewrites `host.docker.internal` → `localhost` before matching the allow-list, so
-the rule must name `localhost:11434`. The agent's config baseURL still uses
-`http://host.docker.internal:11434/v1` — that's the address it dials.
+**Why the allow-rule is `localhost:11434`, not `host.docker.internal` — on BOTH
+backends:** each proxy rewrites `host.docker.internal` → `localhost` *before*
+matching the allow-list ([documented for sbx](https://docs.docker.com/ai/sandboxes/usage/)),
+and matching is literal on the post-rewrite string — so the rule must name
+`localhost:11434` (a `127.0.0.1:11434` rule would **not** match). The agent's
+config baseURL still uses `http://host.docker.internal:11434/v1` — that's the
+address it dials.
 
-**Prerequisite:** host Ollama must listen on `0.0.0.0` (`OLLAMA_HOST=0.0.0.0:11434`),
-not the default `127.0.0.1`, or the VM can't reach it. **Local models must be
-tool-capable** — every agent uses tools, and a model like `gemma3:1b` that cannot
-tool-call is unusable for an agent (keep `context_budget ≈ 32000`).
+**How a denial looks differs by backend — judge by HTTP status and body, never a
+tool's exit code** (`curl` exits 0 on a denial): `sbx` returns a clean **403**;
+the legacy proxy returns **500** with a body of `connection to <host> blocked by
+network policy` — or a `dial tcp … connection refused` body when nothing is
+listening on that host port (it connects before it blocks, so no data ever flows,
+but whether a host port is listening is detectable from inside).
+
+**Prerequisite:** danno's current guidance is host Ollama on `0.0.0.0`
+(`OLLAMA_HOST=0.0.0.0:11434`) and `doctor` WARNs on loopback-only. (Because both
+proxies dial from the host itself, a loopback-only Ollama is reachable at the
+wire — verified 2026-07-10 — and is the safer binding since `0.0.0.0` exposes
+Ollama to your LAN; flipping the recommendation is planned pending an end-to-end
+spike, see [`.docs/plan-sbx-migration.md`](.docs/plan-sbx-migration.md) S3.)
+**Local models must be tool-capable** — every agent uses tools, and a model like
+`gemma3:1b` that cannot tool-call is unusable for an agent (keep
+`context_budget ≈ 32000`).
 
 ## Sandboxed agents: repo, agent-home, auth
 
