@@ -3,6 +3,14 @@
 Branch: `fix/ollama-context-window-fallback` (commit `edfc2bd`, off `upstream/main` 59c397f)
 File: `src-rust/crates/tui/src/app.rs`
 
+> **⚠️ DEPENDS ON BUG 8 — do not submit standalone.** This patch edits the same
+> `refresh_context_window_size` fallback arm that Bug 8's provenance flag must touch, and
+> semantically it shrinks the auto-compact denominator: with usage flowing (Bug 5) and an
+> unlatched trigger, an 8 K guess makes the ≥ 99% condition permanently true → unprompted
+> compact turns after every turn (observed live 2026-07-10). Re-parent this branch onto
+> `fix/auto-compact-safety` and declare the dependency in the PR text. See
+> [bug8-auto-compact-unsafe-trigger.md](bug8-auto-compact-unsafe-trigger.md) and README.
+
 ---
 
 ## Bug report (→ GitHub issue)

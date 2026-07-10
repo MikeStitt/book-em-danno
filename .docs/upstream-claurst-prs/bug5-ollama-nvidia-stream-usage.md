@@ -7,6 +7,15 @@ File: `src-rust/crates/api/src/providers/openai_compat_providers.rs`
 > (`claurst-linux-arm64`) and a tarball. EXCLUDE those from the upstream PR.** Cherry-pick
 > only the source change below (`openai_compat_providers.rs`).
 
+> **⚠️ DEPENDS ON BUG 8 — do not submit standalone.** Making usage flow for local
+> providers is precisely what *arms* the auto-compact trigger: today the frozen-at-0
+> meter is (accidentally) the only thing keeping the ≥ 99% livelock dormant for
+> Ollama/NIM. With this patch and an unlatched trigger, any session whose real usage
+> crosses 99% of the (possibly fallback-guessed — Bug 4) window dispatches unprompted
+> compact turns forever (observed live 2026-07-10). Re-parent this branch onto
+> `fix/auto-compact-safety` and declare the dependency in the PR text. See
+> [bug8-auto-compact-unsafe-trigger.md](bug8-auto-compact-unsafe-trigger.md) and README.
+
 ---
 
 ## Bug report (→ GitHub issue)
