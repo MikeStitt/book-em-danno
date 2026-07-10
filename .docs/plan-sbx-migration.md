@@ -79,10 +79,28 @@ proxy** (the proxy's loopback is the host's): allowed→200, unallowed→403, ot
 →403. So `resolve_ollama_host` maps local aliases to `127.0.0.1` — network-independent
 (no LAN IP, no VPN-interface guessing, works offline); a concrete/remote host stays
 literal. (This replaced an earlier LAN-IP auto-detect that misfired on a VPN default
-route — `utun6`.) **Phase-2, remaining before un-drafting #76:** the harness must route
-`127.0.0.1` through the proxy — set `OLLAMA_BASE_URL=http://127.0.0.1:port` and drop
-`127.0.0.1`/`localhost` from the harness `NO_PROXY` (keep `gateway.docker.internal`);
-claurst keeps its own in-sandbox `127.0.0.1` relay. Verify a real turn per harness.
+route — `utun6`.)
+
+**Phase-2 plan (remaining before un-drafting #76) — verified mechanism findings first:**
+- `sbx exec --env-file NO_PROXY` is **overridden by sbx** (resolves to sbx's value) — can't
+  set it that way. An in-shell `export` works, but **must set BOTH `NO_PROXY` and
+  `no_proxy`** (lowercase; clients honor either) — setting only upper → `000`.
+- The `NO_PROXY`-env route only helps clients that honor `HTTP_PROXY`: **curl yes; the
+  harness clients no** — opencode (Node), claurst (Rust), occ (Node) all bypass it. That is
+  precisely why claurst+occ already dial danno's **in-sandbox relay** at `127.0.0.1:11434`.
+- **So the universal fix is the relay, not env vars.** The relay
+  (`driver.py:_OLLAMA_RELAY_SOURCE`) forwards to `UPSTREAM=host.docker.internal:11434`,
+  which is broken on sbx. Changes:
+  1. Add `DANNO_RELAY_UPSTREAM_HOST` (default `host.docker.internal`); the claurst/occ
+     launchers set it to `127.0.0.1` on sbx.
+  2. In the relay, when a proxy is set, **clear `no_proxy`/`NO_PROXY`** so urllib's
+     `ProxyHandler` forces even `127.0.0.1` through the proxy (else it bypasses to the
+     sandbox's own loopback = the relay → loop). No-op on docker (upstream isn't loopback).
+  3. **opencode** doesn't use the relay (it relies on the docker proxy-rewrite). On sbx,
+     route it through the relay too (base_url `http://127.0.0.1:11434/v1` + launch the relay),
+     or confirm opencode honors `HTTP_PROXY` (unlikely) — decide with a real turn.
+- **Verify a real turn per harness** (occ/claurst first — smallest change — then opencode):
+  a model turn returns output, and the boundary still shows `example.com`/LAN → 403.
 
 **Deferred (follow-ups, not blockers):**
 - **D4 / `sbx secret`** — the migration keeps the working `--env-file` cloud-auth
