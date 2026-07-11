@@ -99,10 +99,19 @@ def install_claurst(runner: Runner, sandbox: str) -> list[str]:
         # already present keeps an upgrade from re-running `apt-get update`, whose index
         # refresh can fail (e.g. a third-party repo's clock skew) and would otherwise
         # abort the whole install under `set -e` before the claurst download.
+        # A fresh `shell` VM runs a boot-time apt (its first `exec` auto-starts the VM),
+        # which races this install for /var/lib/apt/lists/lock (exit 100, "Could not get
+        # lock … held by process N"). `DPkg::Lock::Timeout` covers only the dpkg lock, not
+        # the `update` lists lock, so first WAIT (bounded, ~240s) for boot apt to release
+        # every apt/dpkg lock via `fuser`, then run with the dpkg-lock timeout as a
+        # backstop. Verified on sbx v0.34.0, 2026-07-11 (`shell` image ships fuser).
         "ldconfig -p 2>/dev/null | grep -q libasound.so.2 || { "
-        "sudo -E apt-get update -qq; "
-        "sudo -E apt-get install -y -qq libasound2t64 "
-        "|| sudo -E apt-get install -y -qq libasound2; }; "
+        "tries=0; while sudo fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock "
+        "/var/lib/dpkg/lock-frontend >/dev/null 2>&1; do tries=$((tries+1)); "
+        'if [ "$tries" -gt 120 ]; then break; fi; sleep 2; done; '
+        "sudo -E apt-get -o DPkg::Lock::Timeout=300 update -qq; "
+        "sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq libasound2t64 "
+        "|| sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq libasound2; }; "
         'd=$(mktemp -d); cd "$d"; '
         # Resume + retry: the egress proxy truncates the CDN transfer intermittently.
         "curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 -C - "
