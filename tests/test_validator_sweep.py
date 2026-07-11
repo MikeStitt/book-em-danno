@@ -25,8 +25,10 @@ def _config() -> DannoConfig:
             "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1")
         },
         models={
-            "alpha": Model(backend="ollama", tag="alpha:1b"),
-            "beta": Model(backend="ollama", tag="beta:1b"),
+            "alpha": Model(
+                backend="ollama", tag="alpha:1b", context_budget=32000, output_limit=8192
+            ),
+            "beta": Model(backend="ollama", tag="beta:1b", context_budget=32000, output_limit=8192),
         },
     )
 

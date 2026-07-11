@@ -150,9 +150,19 @@ def _config() -> DannoConfig:
             "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1"),
         },
         models={
-            "gemma3-27b": Model(backend="ollama", tag="gemma3:27b", reasoning_effort="none"),
-            "gptoss": Model(backend="ollama", tag="gpt-oss:20b"),
-            "qwen": Model(backend="ollama", tag="qwen3-coder-next"),
+            "gemma3-27b": Model(
+                backend="ollama",
+                tag="gemma3:27b",
+                reasoning_effort="none",
+                context_budget=32000,
+                output_limit=8192,
+            ),
+            "gptoss": Model(
+                backend="ollama", tag="gpt-oss:20b", context_budget=32000, output_limit=8192
+            ),
+            "qwen": Model(
+                backend="ollama", tag="qwen3-coder-next", context_budget=32000, output_limit=8192
+            ),
         },
         # coder is a raw inline cloud ref (not a [models] entry, never swept).
         agents={"plan": "gptoss", "coder": "anthropic/claude-sonnet-4-6"},
