@@ -3,7 +3,17 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
-## [0.13.0] - 2026-07-09
+## [0.14.0] - 2026-07-11
+
+### Documentation
+
+- *(config)* DoR for danno.toml harness overrides + model-level limits
+
+### Features
+
+- *(config)* Per-harness override escape hatch + model-level limits
+
+## [0.13.0] - 2026-07-10
 
 ### Bug Fixes
 
@@ -16,6 +26,7 @@ commits by [git-cliff](https://git-cliff.org).
 - Plan for testing danno on Windows (WSL2, cmd, PowerShell)
 - Broaden Windows test plan to cross-platform (add Linux + CI matrix)
 - Fill in cross-platform plan body (two-tier content)
+- *(upstream)* Restructure claurst PR drafts as a dependency graph, not independent fixes
 
 ### Features
 
