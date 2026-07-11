@@ -11,6 +11,26 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
+class Overrides(BaseModel):
+    """Per-harness escape hatch, co-located with the element it modifies.
+
+    Each `[<element>.overrides.<harness>]` payload is DEEP-MERGED (override wins;
+    objects merge, scalars/arrays replace) into that element's generated block for
+    that harness, at generation time, INSIDE the danno:managed markers — so it stays
+    idempotent, reversible (remove it → next generate reverts), and visible in the
+    diff (see `generate.deep_merge` / `generate.override_warnings`).
+
+    The payload below each harness key is intentionally OPEN (that is the hatch); the
+    harness KEYS are CLOSED — a typo or an out-of-scope harness (e.g. `occ`, which has
+    no generated config file) fails loud via `extra="forbid"`. Attached to the elements
+    whose danno.toml section maps 1:1 to a generated region: `[backends.<n>]`,
+    `[models.<n>]`, `[agents.<n>]`, `[defaults]`."""
+
+    model_config = ConfigDict(extra="forbid")
+    opencode: dict[str, Any] | None = None
+    claurst: dict[str, Any] | None = None
+
+
 class Project(BaseModel):
     model_config = ConfigDict(extra="forbid")
     target: str = "."
@@ -20,31 +40,26 @@ class Defaults(BaseModel):
     model_config = ConfigDict(extra="forbid")
     default_agent: str = "pm"
     profile: Literal["hybrid", "cloud-only", "local-only"] = "hybrid"
+    # Escape hatch for opencode.jsonc's danno-owned TOP-LEVEL keys ($schema,
+    # default_agent, model, small_model). claurst has no danno-owned top-level surface.
+    overrides: Overrides | None = None
 
 
 class OllamaBackend(BaseModel):
     """Local models via OpenCode's @ai-sdk/openai-compatible provider. IMPLEMENTED.
 
-    Field semantics (see README "Ollama context & runtime knobs"). Note what is
-    deliberately absent: there is NO knob here for Ollama's REAL context window or
-    for streaming/thinking. Under the OpenAI-compatible `/v1` API a body `num_ctx`
-    is ignored — Ollama loads the model at its FULL context — and opencode always
-    streams (it hardcodes `stream: true`). The real window / RAM lever is an Ollama
-    Modelfile variant, out of scope here. Reasoning is per-model (see Model).
-
-      context_budget -> OpenCode's CLIENT-SIDE belief of the window
-                        (models.<tag>.limit.context); used to trim/compact the
-                        conversation. It does NOT change what Ollama loads.
-      output_limit   -> tokens OpenCode reserves for the reply
-                        (models.<tag>.limit.output); usable input ≈ context_budget
-                        - output_limit.
-    """
+    Note what is deliberately absent: there is NO knob here for Ollama's REAL context
+    window or for streaming/thinking. Under the OpenAI-compatible `/v1` API a body
+    `num_ctx` is ignored — Ollama loads the model at its FULL context — and opencode
+    always streams (it hardcodes `stream: true`). The real window / RAM lever is an
+    Ollama Modelfile variant, out of scope here. The client-side context/output budget
+    (`limit.context`/`limit.output`) and reasoning are per-model (see Model)."""
 
     model_config = ConfigDict(extra="forbid")
     kind: Literal["ollama"]
     base_url: str
-    context_budget: int = 32000
-    output_limit: int = 8192
+    # opencode.jsonc `provider.<n>` / claurst registry provider-entry escape hatch.
+    overrides: Overrides | None = None
 
 
 class LlamacppBackend(BaseModel):
@@ -67,15 +82,15 @@ class OpenAIBackend(BaseModel):
     here. `api_key_env` names an environment variable; the generator emits
     `apiKey: "{env:<api_key_env>}"`, and the value is injected at launch via
     `danno sandbox start --env <api_key_env>=…` (so it lands only in the chmod-600
-    env-file, never in danno.toml or the committed opencode.jsonc). `context_budget`/
-    `output_limit` map to `limit.context`/`limit.output` as for ollama."""
+    env-file, never in danno.toml or the committed opencode.jsonc). The client-side
+    context/output budget is per-model (see Model)."""
 
     model_config = ConfigDict(extra="forbid")
     kind: Literal["openai"]
     base_url: str
     api_key_env: str
-    context_budget: int = 32000
-    output_limit: int = 8192
+    # opencode.jsonc `provider.<n>` / claurst registry provider-entry escape hatch.
+    overrides: Overrides | None = None
 
 
 class InertBackend(BaseModel):
@@ -107,6 +122,15 @@ Backend = Annotated[
 class Model(BaseModel):
     """A named (backend, tag) pair. `tag` is the model id on the backend.
 
+    `context_budget`/`output_limit` are the client-side budget the harness uses to
+    trim/compact the conversation, emitted as `limit.context`/`limit.output` (opencode
+    and claurst alike). They are REQUIRED on a model whose backend actually dials an
+    endpoint (`ollama`/`openai`) and FORBIDDEN on one that does not (`inert`/`llamacpp`,
+    which emit no limit block) — enforced in `DannoConfig._check_references`, fail loud,
+    no silent default. (`limit.context` is opencode's CLIENT-SIDE belief of the window;
+    under `/v1` it does NOT change what Ollama loads — the real window is a Modelfile
+    lever. usable input ≈ context_budget − output_limit.)
+
     `reasoning_effort` (ollama only) is emitted as the model-level camelCase
     `options.reasoningEffort`, which @ai-sdk/openai-compatible spreads raw into the
     `/v1` request body where Ollama honors it. "none" disables the thinking trace
@@ -117,7 +141,12 @@ class Model(BaseModel):
     model_config = ConfigDict(extra="forbid")
     backend: str
     tag: str | None = None
+    context_budget: int | None = None
+    output_limit: int | None = None
     reasoning_effort: Literal["none", "low", "medium", "high"] | None = None
+    # opencode.jsonc `provider.<backend>.models.<tag>` / claurst model-entry escape
+    # hatch (e.g. options.max_completion_tokens for an OpenAI o-series model).
+    overrides: Overrides | None = None
 
 
 class AgentSpec(BaseModel):
@@ -146,6 +175,10 @@ class AgentSpec(BaseModel):
     hidden: bool | None = None
     color: str | None = None
     permission: dict[str, Any] | None = None
+    # opencode.jsonc `agent.<name>` / claurst settings.json agent-entry escape hatch.
+    # Excluded from the verbatim field dump the generator emits (it is not an opencode
+    # agent field); see generate._danno_agent_fields / _danno_doc.
+    overrides: Overrides | None = None
 
 
 class Tool(BaseModel):
@@ -235,6 +268,14 @@ class DannoConfig(BaseModel):
 
     @model_validator(mode="after")
     def _check_references(self) -> DannoConfig:
+        # claurst has no danno-owned TOP-LEVEL config surface (danno owns only the
+        # `agents` key of settings.json + the models.json overlay), so a top-level
+        # claurst override would be silently ignored — reject it (Working Rule 8).
+        if self.defaults.overrides is not None and self.defaults.overrides.claurst is not None:
+            raise ValueError(
+                "[defaults.overrides.claurst] has no target: claurst has no danno-owned "
+                "top-level config. Use per-backend/model/agent overrides instead."
+            )
         # danno names never contain '/': that is the bit that disambiguates a bare
         # [models] reference from a raw OpenCode ref (e.g. anthropic/claude-sonnet-4-6)
         # in an [agents] value. Guard it at the boundary so the rule can't silently
@@ -252,6 +293,36 @@ class DannoConfig(BaseModel):
                 raise ValueError(
                     f"model '{model_name}' references unknown backend '{model.backend}'"
                 )
+            backend = self.backends[model.backend]
+            # Budgets and overrides are only meaningful for a backend that danno dials
+            # and emits a config block for (ollama/openai). Required there, forbidden
+            # elsewhere (inert/llamacpp) — fail loud either way, never a silent default
+            # nor a silently-ignored override.
+            if isinstance(backend, OllamaBackend | OpenAIBackend):
+                missing = [
+                    field_name
+                    for field_name, value in (
+                        ("context_budget", model.context_budget),
+                        ("output_limit", model.output_limit),
+                    )
+                    if value is None
+                ]
+                if missing:
+                    raise ValueError(
+                        f"model '{model_name}' on {backend.kind} backend needs "
+                        f"{' and '.join(missing)} (set them under [models.{model_name}])"
+                    )
+            else:
+                if model.context_budget is not None or model.output_limit is not None:
+                    raise ValueError(
+                        f"model '{model_name}' sets context_budget/output_limit, which is "
+                        f"meaningless on a {backend.kind} backend (it emits no limit block)"
+                    )
+                if model.overrides is not None:
+                    raise ValueError(
+                        f"model '{model_name}' sets overrides, which is meaningless on a "
+                        f"{backend.kind} backend (it emits no config block to merge into)"
+                    )
         for agent, value in self.agents.items():
             # The model ref is the string value itself, or the rich form's `model`
             # field (which may be unset — e.g. an agent that only pins mode/permission

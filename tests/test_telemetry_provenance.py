@@ -19,7 +19,11 @@ from danno_validator.telemetry import provenance
 def _config() -> DannoConfig:
     return DannoConfig(
         backends={"ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1")},
-        models={"qwen": Model(backend="ollama", tag="qwen3:latest")},
+        models={
+            "qwen": Model(
+                backend="ollama", tag="qwen3:latest", context_budget=32000, output_limit=8192
+            )
+        },
         agents={"build": "qwen"},
     )
 

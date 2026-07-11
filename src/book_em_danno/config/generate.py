@@ -22,8 +22,10 @@ from .schema import (
     DannoConfig,
     InertBackend,
     LlamacppBackend,
+    Model,
     OllamaBackend,
     OpenAIBackend,
+    Overrides,
 )
 
 _HEADER = (
@@ -86,6 +88,94 @@ class GenerateResult:
     content: str
     diff: str = ""
     warnings: list[str] = field(default_factory=list)
+
+
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Return a new dict: `override` deep-merged over `base`. Nested objects merge
+    recursively; scalars and arrays (and any non-dict) REPLACE wholesale — arrays do
+    not element-merge. This is the escape-hatch merge for `[<element>.overrides.<h>]`
+    (see schema.Overrides): danno builds a block, then the override wins on any key it
+    names, leaving danno's other keys intact."""
+    out = dict(base)
+    for key, value in override.items():
+        existing = out.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            out[key] = deep_merge(existing, value)
+        else:
+            out[key] = value
+    return out
+
+
+def _override(overrides: Overrides | None, harness: str) -> dict[str, Any] | None:
+    """The override payload for `harness` ('opencode'/'claurst'), or None if unset."""
+    if overrides is None:
+        return None
+    payload: dict[str, Any] | None = getattr(overrides, harness)
+    return payload or None
+
+
+def resolve_limits(model: Model) -> dict[str, int]:
+    """The `limit` block ({context, output}) for a model, from its model-level budget.
+
+    Model-level (not backend-level): `context_budget`/`output_limit` live on the model.
+    Validated present at config load for ollama/openai backends (schema
+    `_check_references`), so both are non-None here for any model that emits a limit."""
+    if model.context_budget is None or model.output_limit is None:
+        # Defensive: the schema validator guarantees this for limit-emitting backends.
+        raise ValueError("model missing context_budget/output_limit (should fail at load)")
+    return {"context": model.context_budget, "output": model.output_limit}
+
+
+# Override payload keys that steer egress/auth — overriding them can weaken the sandbox
+# security contract (see memory: sandbox-security-contract-fail-loud), so they get a loud
+# warning even though the override still applies (it is the developer's own diffed config).
+_SENSITIVE_OVERRIDE_KEYS = frozenset({"baseurl", "base_url", "apikey", "api_key"})
+
+
+def _sensitive_override_paths(payload: dict[str, Any], path: str = "") -> list[str]:
+    """Dotted paths in an override payload that touch egress/auth-sensitive keys."""
+    hits: list[str] = []
+    for key, value in payload.items():
+        here = f"{path}.{key}" if path else key
+        if key.lower() in _SENSITIVE_OVERRIDE_KEYS:
+            hits.append(here)
+        if isinstance(value, dict):
+            hits.extend(_sensitive_override_paths(value, here))
+    return hits
+
+
+def override_warnings(config: DannoConfig, harness: str) -> list[str]:
+    """Loud transparency (Working Rule 8) for every `[<element>.overrides.<harness>]` in
+    effect: the diff shows the resulting value, this names WHICH danno-generated block a
+    user override supersedes, and flags any egress/auth-sensitive key it touches. The
+    peer of `agent_markdown_collisions` / `claurst_agent_unmapped_warnings`; called by
+    `generate` (opencode) and `generate_claurst` (claurst)."""
+    warnings: list[str] = []
+
+    def check(overrides: Overrides | None, loc: str) -> None:
+        payload = _override(overrides, harness)
+        if payload is None:
+            return
+        keys = ", ".join(sorted(payload))
+        warnings.append(
+            f"override[{harness}] {loc}: overrides danno-generated config ({keys}) — "
+            "verify the diff; danno's own value(s) are superseded."
+        )
+        for sensitive in _sensitive_override_paths(payload):
+            warnings.append(
+                f"override[{harness}] {loc}: sets egress/auth-sensitive '{sensitive}' — "
+                "verify this does not weaken the sandbox contract."
+            )
+
+    check(config.defaults.overrides, "defaults")
+    for name, backend in config.backends.items():
+        check(getattr(backend, "overrides", None), f"backend '{name}'")
+    for name, model in config.models.items():
+        check(model.overrides, f"model '{name}'")
+    for name, value in config.agents.items():
+        if isinstance(value, AgentSpec):
+            check(value.overrides, f"agent '{name}'")
+    return warnings
 
 
 def model_ref(config: DannoConfig, model_name: str) -> str:
@@ -186,20 +276,25 @@ def generate_claurst_models(config: DannoConfig) -> dict[str, Any]:
             "id": model.tag,
             "name": name,
             "tool_call": True,
-            "limit": {"context": backend.context_budget, "output": backend.output_limit},
+            "limit": resolve_limits(model),
         }
         if model.reasoning_effort is not None and model.reasoning_effort != "none":
             entry["reasoning"] = True
-        prov = providers.setdefault(
-            provider,
-            {
+        model_ov = _override(model.overrides, "claurst")
+        if model_ov is not None:
+            entry = deep_merge(entry, model_ov)
+        if provider not in providers:
+            prov_entry: dict[str, Any] = {
                 "id": provider,
                 "name": _CLAURST_PROVIDER_NAMES.get(provider, provider),
                 "env": [],
                 "models": {},
-            },
-        )
-        prov["models"][model.tag] = entry
+            }
+            backend_ov = _override(getattr(backend, "overrides", None), "claurst")
+            if backend_ov is not None:
+                prov_entry = deep_merge(prov_entry, backend_ov)
+            providers[provider] = prov_entry
+        providers[provider]["models"][model.tag] = entry
     return providers
 
 
@@ -256,6 +351,9 @@ def generate_claurst_agents(config: DannoConfig) -> dict[str, Any]:
                 entry[claurst_field] = v
         if value.hidden is not None:
             entry["visible"] = not value.hidden
+        agent_ov = _override(value.overrides, "claurst")
+        if agent_ov is not None:
+            entry = deep_merge(entry, agent_ov)
         if entry:  # drop an agent that mapped to nothing claurst understands
             agents[agent] = entry
     return agents
@@ -319,27 +417,37 @@ def _danno_doc(
                 provider_name = model.backend
                 api_key = f"{{env:{backend.api_key_env}}}"
                 model_label = model.tag or ""
-            provider = providers.setdefault(
-                model.backend,
-                {
+            if model.backend not in providers:
+                provider: dict[str, Any] = {
                     "npm": "@ai-sdk/openai-compatible",
                     "name": provider_name,
                     "options": {"baseURL": backend.base_url, "apiKey": api_key},
                     "models": {},
-                },
-            )
+                }
+                # backend-level escape hatch: e.g. npm = "@ai-sdk/openai" for an OpenAI
+                # native (o-series) provider. Applied once, before models are attached.
+                backend_ov = _override(backend.overrides, "opencode")
+                if backend_ov is not None:
+                    provider = deep_merge(provider, backend_ov)
+                providers[model.backend] = provider
+            provider = providers[model.backend]
             entry: dict[str, Any] = {
                 "name": model_label,
                 # Fixed: the openai-compatible provider requires this capability key,
                 # and every danno-configured model must be tool-capable anyway (opencode
                 # advertises the agent's tools on every request regardless of its value).
                 "tool_call": True,
-                "limit": {"context": backend.context_budget, "output": backend.output_limit},
+                "limit": resolve_limits(model),
             }
             if model.reasoning_effort is not None:
                 # camelCase is load-bearing: @ai-sdk/openai-compatible spreads model
                 # options raw into the body, and a snake_case key gets clobbered.
                 entry["options"] = {"reasoningEffort": model.reasoning_effort}
+            # model-level escape hatch: e.g. options.max_completion_tokens (o-series).
+            # deep_merge keeps reasoningEffort while adding/overriding sibling options.
+            model_ov = _override(model.overrides, "opencode")
+            if model_ov is not None:
+                entry = deep_merge(entry, model_ov)
             provider["models"][model.tag] = entry
 
     # Each agent renders to its opencode.jsonc `agent.<name>` block. The string
@@ -354,11 +462,16 @@ def _danno_doc(
                 continue  # only carried a model; the .md now owns it → no jsonc block
             agent_block[agent] = {"model": agent_ref(config, value)}
             continue
-        entry = value.model_dump(exclude_none=True)
+        # `overrides` is danno's escape-hatch container, not an opencode agent field —
+        # exclude it from the verbatim dump and apply it as a merge below instead.
+        entry = value.model_dump(exclude_none=True, exclude={"overrides"})
         if routed:
             entry.pop("model", None)  # routed to the .md frontmatter
         elif value.model is not None:
             entry["model"] = agent_ref(config, value.model)
+        agent_ov = _override(value.overrides, "opencode")
+        if agent_ov is not None:
+            entry = deep_merge(entry, agent_ov)
         if entry:  # drop an agent left with no jsonc-side fields
             agent_block[agent] = entry
 
@@ -406,6 +519,11 @@ def _danno_doc(
         doc["plugin"] = [
             p.package if p.config is None else [p.package, p.config] for p in config.npm
         ]
+    # top-level escape hatch for opencode.jsonc's danno-owned keys ($schema,
+    # default_agent, model, small_model, or a wholly new top-level key).
+    defaults_ov = _override(config.defaults.overrides, "opencode")
+    if defaults_ov is not None:
+        doc = deep_merge(doc, defaults_ov)
     return doc
 
 
@@ -524,7 +642,8 @@ def _danno_agent_fields(value: str | AgentSpec) -> set[str]:
     shorthand sets only `model`; the rich form sets each non-None field."""
     if isinstance(value, str):
         return {"model"}
-    return set(value.model_dump(exclude_none=True))
+    # `overrides` is the escape-hatch container, not an opencode agent field.
+    return set(value.model_dump(exclude_none=True, exclude={"overrides"}))
 
 
 def agent_markdown_collisions(config: DannoConfig, md_fields: dict[str, set[str]]) -> list[str]:
@@ -638,7 +757,7 @@ def generate(
         config, _md_routed_agents(config, md_fields), disable_title=disable_title
     )
     dest = Path(target) / ".opencode" / "opencode.jsonc"
-    warnings = agent_markdown_collisions(config, md_fields)
+    warnings = agent_markdown_collisions(config, md_fields) + override_warnings(config, "opencode")
 
     if dest.is_file():
         existing = dest.read_text(encoding="utf-8")
@@ -727,8 +846,15 @@ def generate_claurst(
       danno replaces just `agents`. Unmappable [agents] fields are surfaced loud
       (`claurst_agent_unmapped_warnings`) on this result rather than silently dropped."""
     claurst_dir = Path(claurst_dir)
+    # claurst override transparency (backend/model/agent) rides the models.json result —
+    # a user-facing notice, not tied to one file's diff (see override_warnings).
     results = [
-        _emit_json(claurst_dir / _CLAURST_MODELS_FILE, generate_claurst_models(config), apply=apply)
+        _emit_json(
+            claurst_dir / _CLAURST_MODELS_FILE,
+            generate_claurst_models(config),
+            apply=apply,
+            warnings=override_warnings(config, "claurst"),
+        )
     ]
 
     settings_dest = claurst_dir / _CLAURST_SETTINGS_FILE
