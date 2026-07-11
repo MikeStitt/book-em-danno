@@ -1,7 +1,11 @@
 # Plan — migrate danno from `docker sandbox` to `sbx` (dual-CLI during transition)
 
-**Date:** 2026-07-09 · **Status:** **IMPLEMENTED (P1–P5), gate green, sbx default
-live-verified on macOS** · **Branch base:** `main`.
+**Date:** 2026-07-09 · **Status:** **IMPLEMENTED (P1–P5) + W1 + W2 DONE
+2026-07-11; gate green; all four harnesses (opencode/claude/occ/claurst)
+E2E-verified under `sbx` on macOS** (see
+[`sbx-migration-e2e-validation-2026-07-11.md`](sbx-migration-e2e-validation-2026-07-11.md)).
+Remaining: relay-free W3–W6 + spikes S1–S4 (optimizations, non-blocking) ·
+**Branch base:** `main`.
 **2026-07-10 update:** an independent review refuted the "sbx has no
 `host.docker.internal` rewrite" premise (see
 [`sbx-egress-model.md`](sbx-egress-model.md) §0) — the Phase-2 section below was
@@ -121,20 +125,24 @@ The findings that reshape Phase 2:
 
 ### Work items (before un-drafting #76)
 
-- **W1 — retire workaround #2 (the loopback resolver).** On sbx, local Ollama
-  aliases use the default `localhost:11434` token — the same `DEFAULT_ALLOW_HOSTS`
-  path docker uses. Delete `resolve_ollama_hostport`, `_LOCAL_OLLAMA_ALIASES`,
-  `_SBX_LOOPBACK`, `[sandbox].resolve_ollama_host` (schema + tests); a concrete
-  **remote** `host:port` stays a literal passthrough (unchanged, §7 of the egress
-  doc). Scrub the refuted claims + `OpenShell#263` mis-cite from
-  `sandbox.py`/`sandbox_cli.py` docstrings and the workarounds ledger (row 2).
-- **W2 — per-harness verification gates on sbx** (a real model turn returns output
-  AND the boundary probe still denies `example.com`/LAN/other host ports):
-  **opencode** ✅ probe-verified 2026-07-10 — re-run through danno's own
-  `provision()` + `validate --only <local model> --max-level 1` after W1;
-  **claude** — expected no-op (`api.anthropic.com` is in `balanced`'s
-  `default-ai-services`), verify one turn; **claurst + occ local** — via the
-  unchanged relay first (W3/W4 then remove it where possible).
+- **W1 — retire workaround #2 (the loopback resolver). ✅ DONE 2026-07-11.** On sbx,
+  local Ollama aliases use the default `localhost:11434` token — the same
+  `DEFAULT_ALLOW_HOSTS` path docker uses. Deleted `resolve_ollama_hostport`,
+  `_LOCAL_OLLAMA_ALIASES`, `_SBX_LOOPBACK`, `[sandbox].resolve_ollama_host` (schema +
+  tests); a concrete **remote** `host:port` stays a literal passthrough (now
+  backend-agnostic, §7 of the egress doc). Scrubbed the refuted claims +
+  `OpenShell#263` mis-cite from `sandbox.py`/`sandbox_cli.py` docstrings and retired
+  the workarounds ledger (row 2).
+- **W2 — per-harness verification gates on sbx. ✅ DONE 2026-07-11** — full record
+  in [`sbx-migration-e2e-validation-2026-07-11.md`](sbx-migration-e2e-validation-2026-07-11.md).
+  All four harnesses cleared L0+L1 through `danno validate` on `sbx v0.34.0` against
+  host Ollama (`gpt-oss:20b`): **opencode** (relay-free) ✓, **claude** baseline
+  (`api.anthropic.com` in `balanced`) ✓, **occ** (relay) ✓, **claurst** (relay) ✓.
+  Boundary probe held: Ollama 200; `example.com`/LAN/gateway/other host port all 403.
+  Two harness-leg issues surfaced (orthogonal to sbx): occ/claurst need the local
+  backend **named `ollama`** (PR-#68 follow-up), and claurst's install raced the
+  shell VM boot-apt lock (fixed on this branch). claurst+occ ran via the unchanged
+  relay (W3/W4 relay-free remain follow-ups).
 - **W3 — relay-free claurst on BOTH backends** (after spike S1): danno sets
   `OLLAMA_HOST=http://host.docker.internal:11434` and drops the relay bracket from
   the claurst launchers (`driver._claurst_script` callers, interactive
