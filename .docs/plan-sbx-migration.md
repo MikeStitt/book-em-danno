@@ -143,23 +143,30 @@ The findings that reshape Phase 2:
   backend **named `ollama`** (PR-#68 follow-up), and claurst's install raced the
   shell VM boot-apt lock (fixed on this branch). claurst+occ ran via the unchanged
   relay (W3/W4 relay-free remain follow-ups).
-- **W3 — relay-free claurst on BOTH backends** (after spike S1): danno sets
-  `OLLAMA_HOST=http://host.docker.internal:11434` and drops the relay bracket from
-  the claurst launchers (`driver._claurst_script` callers, interactive
-  `sandbox start --harness claurst`). Works on legacy too — reqwest absolute-URI
-  plain-`http` forwarding is the same lane curl used in the legacy re-verification.
-- **W4 — relay-free occ on sbx ONLY**: `OPENAI_BASE_URL=
-  http://host.docker.internal:11434/v1` + the fork's undici `EnvHttpProxyAgent`
-  dispatcher (plumbing already exists) — after spike S2. **The relay stays for
-  occ-on-legacy** (squid rejects CONNECT to `:11434`, spike-verified 2026-07-02, and
-  undici cannot absolute-URI-forward): declare it in the workarounds ledger as a
-  **legacy shim, removal trigger = legacy backend retirement**. Do NOT hand-roll
-  absolute-URI forwarding in the occ fork — that re-implements the relay in a worse
-  place.
-- **W5 — timeout parity on relay-free paths.** They lose `DANNO_RELAY_TIMEOUT`'s
-  3600 s upstream-read ceiling; ensure claurst `provider_stall_timeout`/reqwest
-  timeout (fork Bug1 made it configurable) and occ `CLAUDE_CODE_API_TIMEOUT` cover
-  the slowest local prefill before deleting the relay from a path.
+- **W3 — relay-free claurst on BOTH backends. ✅ DONE 2026-07-11 (PR #80).** danno
+  sets `OLLAMA_HOST=http://host.docker.internal:11434` and drops the relay bracket
+  from the claurst launchers (`driver.claurst_run`, interactive
+  `interactive_launch_script`); the relay is retained only for `--capture` (W6). Works
+  on legacy too. Live-verified: claurst L0+L1 pass on sbx and legacy.
+- **W4 — relay-free occ on sbx ONLY. ⛔ DEFERRED 2026-07-11 — occ keeps the relay.**
+  Spike S2 proved a *single* relay-free occ turn works, but implementing W4 and
+  driving the *multi-turn* L1 loop exposed **intermittent unreliability**: the exact
+  same command completes in 9–48 s manually (5/5 correct) yet the validator's capture
+  errors at variable times (56 s, 183 s). The stalls sit in occ's undici↔proxy path
+  (connection reuse / prefill variance), which the in-VM relay does not have. The
+  relay path is fast and reliable (W2). Per fail-loud/no-regression, occ retains the
+  relay on **both** backends; relay-free occ needs an undici connection-handling fix
+  in the occ fork first (follow-up). Decision: user, 2026-07-11.
+- **W5 — timeout parity on relay-free paths. ✅ VERIFIED 2026-07-11 (docs-only).**
+  Relay-free claurst (W3) relies on the fork binary's **built-in 600 s** stall +
+  reqwest timeouts, which comfortably cover the measured 98–157 s local prefills (W3
+  L0/L1 ran in <20 s), so the lost `DANNO_RELAY_TIMEOUT` 3600 s headroom is not
+  needed for realistic models. **Plan correction:** Bug 1 *hard-coded* 600 s in the
+  pinned `v0.1.6-danno1` binary — it is NOT env-configurable (the earlier
+  "fork Bug1 made it configurable" was wrong). Full env-tunable parity
+  (`CLAURST_PROVIDER_STALL_TIMEOUT_SECS`, default 600) exists only as the **uncompiled**
+  `fix/configurable-provider-stall-timeout` candidate; pinning that build is the
+  follow-up. occ `CLAUDE_CODE_API_TIMEOUT` is moot — occ kept its relay (W4 deferred).
 - **W6 — capture rewiring.** Relay-free paths point `OLLAMA_HOST` /
   `OPENAI_BASE_URL` directly at the recording proxy (the same base_url-rewrite lane
   opencode's `--capture` uses) instead of swapping the relay upstream — simplifies
