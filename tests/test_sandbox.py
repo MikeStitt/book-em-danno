@@ -183,17 +183,17 @@ def test_provision_opencode_does_not_install_claurst(
     assert not any("claurst" in c for c in r.joined())
 
 
-def test_launch_claurst_wraps_relay_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_launch_claurst_relay_free_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
     r = RecordingRunner()
     sandbox.launch(r, "probe", Path("/repo"), harness="claurst", model="ollama/gemma4:26b")
     cmd = r.commands[0]
     assert cmd[8:11] == ["probe", "bash", "-lc"]
     script = cmd[11]
     # the interactive claurst command: model passed as -m, NO -p (it must open the TUI)
-    assert "OLLAMA_HOST=http://127.0.0.1:11434 claurst -m ollama/gemma4:26b" in script
+    # W3: relay-free — claurst dials host Ollama directly through the egress proxy.
+    assert "OLLAMA_HOST=http://host.docker.internal:11434 claurst -m ollama/gemma4:26b" in script
     assert "claurst -p" not in script
-    # the relay bracket is reused from the headless path (backgrounded + reaped on exit)
-    assert "RELAY_PY" in script and "trap 'kill $DANNO_RELAY_PID" in script
+    assert "RELAY_PY" not in script  # no in-VM relay bracket
 
 
 def test_launch_claurst_forwards_passthru(monkeypatch: pytest.MonkeyPatch) -> None:

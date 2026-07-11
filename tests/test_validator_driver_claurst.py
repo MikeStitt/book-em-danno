@@ -53,19 +53,24 @@ def test_claurst_run_minimal_command(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
     driver.claurst_run(Runner(), "box", "do the thing")
     script = _script(calls)
-    assert "OLLAMA_HOST=http://127.0.0.1:11434 claurst -p --output-format stream-json" in script
+    # Relay-free (W3): claurst dials host Ollama directly through the egress proxy.
+    assert (
+        "OLLAMA_HOST=http://host.docker.internal:11434 claurst -p --output-format stream-json"
+        in script
+    )
     assert script.rstrip().endswith("'do the thing'")  # prompt is shell-quoted, last arg
 
 
-def test_claurst_run_wraps_with_ollama_relay(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The relay is written + started + readiness-probed + trap-killed inside the exec.
+def test_claurst_run_local_is_relay_free(monkeypatch: pytest.MonkeyPatch) -> None:
+    # W3: the default local turn stands up NO in-VM relay — claurst reaches host Ollama
+    # directly at host.docker.internal through the sandbox egress proxy.
     calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
     driver.claurst_run(Runner(), "box", "go")
     script = _script(calls)
-    assert "mktemp /tmp/danno-relay-" in script
-    assert "ThreadingHTTPServer" in script  # the relay source is heredoc'd in
-    assert "http://127.0.0.1:11434/api/tags" in script  # readiness probe
-    assert "trap 'kill $DANNO_RELAY_PID" in script
+    assert "OLLAMA_HOST=http://host.docker.internal:11434" in script
+    assert "mktemp /tmp/danno-relay-" not in script
+    assert "ThreadingHTTPServer" not in script
+    assert "trap 'kill $DANNO_RELAY_PID" not in script
 
 
 def test_claurst_run_model_skip_permissions_workspace_resume(
@@ -121,24 +126,20 @@ def test_claurst_run_cloud_model_skips_relay(monkeypatch: pytest.MonkeyPatch) ->
     assert not any("OLLAMA_HOST" in str(a) for a in argv)
 
 
-def test_claurst_run_default_relay_upstream_is_real_ollama(
+def test_claurst_run_capture_port_retains_relay_and_redirects_upstream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Without --capture the relay forwards to real host Ollama (port 11434).
-    calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
-    driver.claurst_run(Runner(), "box", "go")
-    assert "DANNO_RELAY_UPSTREAM_PORT=11434 " in _script(calls)
-
-
-def test_claurst_run_capture_port_redirects_relay_upstream(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # --capture points the relay at a host-side recording proxy port instead.
+    # --capture is the one local path that still stands up the in-VM relay (until W6),
+    # pointed at a host-side recording proxy port; the relay bracket is fully present.
     calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
     driver.claurst_run(Runner(), "box", "go", capture_port=54321)
     script = _script(calls)
     assert "DANNO_RELAY_UPSTREAM_PORT=54321 " in script
     assert 'python3 "$RELAY_PY" 11434' in script  # relay still LISTENS on 11434
+    assert "mktemp /tmp/danno-relay-" in script
+    assert "ThreadingHTTPServer" in script  # the relay source is heredoc'd in
+    assert "trap 'kill $DANNO_RELAY_PID" in script
+    assert "OLLAMA_HOST=http://127.0.0.1:11434" in script  # claurst points at the relay
 
 
 def test_relay_source_reads_upstream_port_from_env() -> None:

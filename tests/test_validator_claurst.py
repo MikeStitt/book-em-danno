@@ -81,12 +81,15 @@ def test_authed_claurst_run_model_override_replaces_dial_ref(
     assert captured["model"] == "ollama/llama3.2:latest"
 
 
-def test_interactive_launch_script_default_relay_upstream() -> None:
+def test_interactive_launch_script_local_is_relay_free() -> None:
+    # W3: an interactive local session dials host Ollama directly — no in-VM relay.
     argv = claurst.interactive_launch_script("ollama/qwen3-coder-next", [])
     assert argv[:2] == ["bash", "-lc"]
     script = argv[2]
-    assert "claurst -m ollama/qwen3-coder-next" in script
-    assert "DANNO_RELAY_UPSTREAM_PORT=11434 " in script  # real Ollama by default
+    assert "OLLAMA_HOST=http://host.docker.internal:11434 claurst -m ollama/qwen3-coder-next" in (
+        script
+    )
+    assert "mktemp /tmp/danno-relay-" not in script  # no relay bracket
 
 
 def test_interactive_launch_script_capture_port_redirects_relay() -> None:
