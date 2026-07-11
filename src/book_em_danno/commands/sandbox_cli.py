@@ -114,9 +114,10 @@ def policy_allow_argv(name: str, allow_hosts: tuple[str, ...]) -> list[str]:
     `sandbox-security-contract-fail-loud` memory).
 
     `allow_hosts` entries are `host:port` and are passed through VERBATIM — the
-    caller supplies the sandbox-reachable form. On `sbx` the host's own alias
-    `host.docker.internal` is a link-local `fe80::1` the policy cannot match, so the
-    caller must pass the host's ROUTABLE LAN IP:port (see `configure_proxy`).
+    caller supplies the sandbox-reachable form. Both backends' proxies rewrite
+    `host.docker.internal`→`localhost` before matching, so a same-host Ollama uses the
+    default `localhost:11434` token on both; a remote Ollama is its real IP:port (see
+    `configure_proxy`).
 
     - `sbx`: `policy allow network --sandbox N <h1,h2,…>` on the `balanced` base
       (default-deny + curated dev/AI hosts; see `ensure_policy_initialized`).

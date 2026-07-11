@@ -128,7 +128,6 @@ def run_install(
         target_abs,
         home=home,
         registry_path=registry.default_path(),
-        resolve_ollama_host=cfg.sandbox.resolve_ollama_host,
     )
     # OpenCode npm plugins install themselves from the generated opencode.jsonc;
     # only their optional in-container `setup` steps need an exec, post-create.

@@ -79,25 +79,17 @@ def test_configure_proxy_sbx_allows_ollama_ip_from_url(monkeypatch: pytest.Monke
     ]
 
 
-def test_configure_proxy_sbx_resolves_local_alias_to_loopback(
+def test_configure_proxy_sbx_same_host_uses_default_localhost_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DANNO_SANDBOX_CLI", "sbx")
     runner = RecordingRunner()
     sb.configure_proxy(runner, "danno-app")  # default ollama_url = host.docker.internal
-    # sbx reaches a same-host Ollama via 127.0.0.1 through the host proxy.
+    # sbx rewrites host.docker.internal→localhost before matching, so the default
+    # localhost:11434 token is correct — identical to the docker path.
     assert runner.commands == [
-        ["sbx", "policy", "allow", "network", "--sandbox", "danno-app", "127.0.0.1:11434"]
+        ["sbx", "policy", "allow", "network", "--sandbox", "danno-app", "localhost:11434"]
     ]
-
-
-def test_configure_proxy_sbx_warns_when_resolve_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DANNO_SANDBOX_CLI", "sbx")
-    warnings: list[str] = []
-    monkeypatch.setattr(sb, "log_warn", lambda msg: warnings.append(msg))
-    runner = RecordingRunner()
-    sb.configure_proxy(runner, "danno-app", resolve_ollama_host=False)
-    assert warnings and "resolve_ollama_host" in warnings[0]
 
 
 def test_set_backend_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -114,22 +106,27 @@ def test_env_beats_set_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     assert sandbox_cli.resolve_backend() == "docker"  # env is the highest override
 
 
-def test_resolve_ollama_hostport_concrete_is_literal() -> None:
-    assert sb.resolve_ollama_hostport("10.0.1.9:11434", resolve=True) == ("10.0.1.9:11434", None)
-
-
-def test_resolve_ollama_hostport_alias_resolves_to_loopback() -> None:
-    # every local alias -> 127.0.0.1 (loopback through the host proxy), port preserved.
-    for alias in ("host.docker.internal:11434", "localhost:11434", "0.0.0.0:9999"):
-        hp, warn = sb.resolve_ollama_hostport(alias, resolve=True)
-        assert warn is None
-        assert hp == f"127.0.0.1:{alias.rsplit(':', 1)[1]}"
-
-
-def test_resolve_ollama_hostport_alias_no_resolve_warns() -> None:
-    hp, warn = sb.resolve_ollama_hostport("host.docker.internal:11434", resolve=False)
-    assert hp == "host.docker.internal:11434"
-    assert warn and "resolve_ollama_host" in warn
+def test_configure_proxy_docker_remote_ollama_allowed_literally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Post-W1 the remote-Ollama swap is backend-agnostic: docker now allows a concrete
+    # remote IP:port literally too (§7), not just the default localhost token.
+    monkeypatch.setenv("DANNO_SANDBOX_CLI", "docker")
+    runner = RecordingRunner()
+    sb.configure_proxy(runner, "danno-app", ollama_url="http://10.0.1.9:11434/v1")
+    assert runner.commands == [
+        [
+            "docker",
+            "sandbox",
+            "network",
+            "proxy",
+            "danno-app",
+            "--policy",
+            "allow",
+            "--allow-host",
+            "10.0.1.9:11434",
+        ]
+    ]
 
 
 def test_configure_proxy_docker_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:

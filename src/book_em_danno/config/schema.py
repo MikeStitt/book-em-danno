@@ -225,13 +225,6 @@ class Sandbox(BaseModel):
     # The "docker" branch is transition support — REMOVE it and this option once
     # docker sandbox is gone everywhere danno runs. (env DANNO_SANDBOX_CLI overrides.)
     cli: Literal["auto", "sbx", "docker"] = "auto"
-    # SBX-WORKAROUND(OpenShell#263): resolve a LOCAL Ollama alias (localhost /
-    # 127.0.0.1 / ::1 / 0.0.0.0 / host.docker.internal / gateway.docker.internal) to
-    # the host's routable LAN IP for sbx, which has no host.docker.internal→localhost
-    # rewrite and can't route the link-local alias. A concrete IP/hostname is always
-    # used literally. REMOVE this option + the resolver once sbx routes
-    # host.docker.internal.
-    resolve_ollama_host: bool = True
 
     @field_validator("agent_home")
     @classmethod

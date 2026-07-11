@@ -373,47 +373,15 @@ def _ollama_hostport(url: str) -> str:
     return urllib.parse.urlparse(url).netloc or url
 
 
-# SBX-WORKAROUND(OpenShell#263): local-host Ollama aliases. sbx has no
-# host.docker.internal→localhost rewrite (docker sandbox did) and reaches a SAME-HOST
-# Ollama via 127.0.0.1 forced through its host-side proxy. Verified 2026-07-09: with
-# `127.0.0.1:11434` allowed, a request routed through the proxy returns 200 (the proxy
-# is host-side, so its loopback is the host's); an unallowed rule/port returns 403.
-# So for sbx these aliases resolve to loopback (network-independent: no LAN IP, no VPN,
-# works offline); a concrete/remote host is used literally. NOTE: the harness must
-# ROUTE 127.0.0.1 through the proxy (drop it from NO_PROXY) — the Phase-2 harness-env
-# wiring; claurst keeps its own in-sandbox 127.0.0.1 relay instead. Remove this whole
-# resolver once sbx routes host.docker.internal.
-_LOCAL_OLLAMA_ALIASES = (
-    "localhost",
-    "127.0.0.1",
-    "::1",
-    "0.0.0.0",
-    "host.docker.internal",
-    "gateway.docker.internal",
+# A same-host Ollama reached through one of these aliases uses the default
+# `localhost:11434` allow token: BOTH the sbx and legacy `docker sandbox` egress
+# proxies rewrite `host.docker.internal`→`localhost` before matching (matching is
+# literal on the post-rewrite string), so the default is correct on both backends. A
+# concrete/remote host is allowed literally by its real routable IP:port (§7 of
+# `.docs/sbx-egress-model.md`).
+_SAME_HOST_OLLAMA_ALIASES = frozenset(
+    {"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal", "gateway.docker.internal"}
 )
-_SBX_LOOPBACK = "127.0.0.1"
-
-
-def resolve_ollama_hostport(hostport: str, *, resolve: bool) -> tuple[str, str | None]:
-    """Resolve an Ollama `host:port` for the sbx egress allow-rule (and the harness
-    URL, kept consistent). A LOCAL alias resolves to `127.0.0.1:<port>` — an sbx
-    sandbox reaches a same-host Ollama via loopback forced through the host proxy,
-    which is network-independent (no LAN IP, no VPN, works offline). A concrete
-    IP/hostname (a remote Ollama) is returned unchanged. Returns `(hostport, warning)`;
-    a non-None warning is a fail-loud message. SBX-WORKAROUND(OpenShell#263)."""
-    host, sep, port = hostport.rpartition(":")
-    if not sep:
-        host, port = hostport, "11434"
-    host = host.strip("[]")  # tolerate bracketed IPv6
-    if host not in _LOCAL_OLLAMA_ALIASES:
-        return hostport, None  # concrete / remote address -> used literally
-    if not resolve:
-        return hostport, (
-            f"sbx: Ollama at '{host}' is a local alias. sbx reaches a same-host Ollama via "
-            "127.0.0.1 through its host proxy — enable [sandbox].resolve_ollama_host, or set "
-            "a concrete remote base_url."
-        )
-    return f"{_SBX_LOOPBACK}:{port}", None  # local -> loopback via the host proxy
 
 
 def configure_proxy(
@@ -422,28 +390,22 @@ def configure_proxy(
     allow_hosts: tuple[str, ...] = DEFAULT_ALLOW_HOSTS,
     *,
     ollama_url: str = DEFAULT_OLLAMA_URL,
-    resolve_ollama_host: bool = True,
 ) -> list[str]:
     """Set the egress hole: allow ONLY the Ollama endpoint; host/LAN otherwise denied.
 
-    docker: its egress proxy rewrites `host.docker.internal`→`localhost`, so the
-    default `allow_hosts` (`localhost:11434`) is correct — used as-is. sbx has no such
-    rewrite; a LOCAL Ollama is reached at `127.0.0.1:port` through the host proxy, so
-    `resolve_ollama_hostport` maps local aliases to loopback (SBX-WORKAROUND
-    (OpenShell#263), gated by `[sandbox].resolve_ollama_host`); a concrete remote host
-    is used literally. Fail-loud WARN when a local alias is left unresolved.
+    Both backends' egress proxies rewrite `host.docker.internal`→`localhost` before
+    policy matching, so a SAME-HOST Ollama uses the default `allow_hosts`
+    (`localhost:11434`) on sbx and `docker sandbox` alike — the config is identical. A
+    concrete REMOTE Ollama (a non-alias host in its base_url) is allowed literally by
+    its real routable IP:port (§7 of `.docs/sbx-egress-model.md`).
     """
     effective = allow_hosts
-    if sandbox_cli.resolve_backend() == "sbx":
-        hostport, warning = resolve_ollama_hostport(
-            _ollama_hostport(ollama_url), resolve=resolve_ollama_host
-        )
-        if warning:
-            log_warn(warning)
-        else:
-            log_info(f"sbx egress: allowing Ollama at {hostport}; host/LAN otherwise denied")
-        # Swap the docker-proxy localhost token for the real endpoint; keep any other
-        # allow_hosts (e.g. a capture proxy).
+    hostport = _ollama_hostport(ollama_url)
+    host = hostport.rpartition(":")[0].strip("[]") or hostport
+    if host not in _SAME_HOST_OLLAMA_ALIASES:
+        # Concrete/remote Ollama: swap the default localhost token for the real
+        # endpoint, keeping any other allow_hosts (e.g. a capture proxy).
+        log_info(f"egress: allowing remote Ollama at {hostport}; host/LAN otherwise denied")
         effective = tuple(hostport if h == DEFAULT_ALLOW_HOSTS[0] else h for h in allow_hosts)
         if hostport not in effective:
             effective = (hostport, *effective)
@@ -479,7 +441,6 @@ def provision(
     home: Path | None = None,
     registry_path: Path | None = None,
     ollama_url: str = DEFAULT_OLLAMA_URL,
-    resolve_ollama_host: bool = True,
 ) -> list[list[str]]:
     """Get the sandbox to 'ready': create + egress hole + stop (so the policy applies
     on next start). Does NOT launch the TUI — that's `start`."""
@@ -497,15 +458,7 @@ def provision(
     cmds = [create(runner, name, target_abs, harness, home=home, registry_path=registry_path)]
     if preexisting:
         cmds.append(ensure_running(runner, name))
-    cmds.append(
-        configure_proxy(
-            runner,
-            name,
-            allow_hosts,
-            ollama_url=ollama_url,
-            resolve_ollama_host=resolve_ollama_host,
-        )
-    )
+    cmds.append(configure_proxy(runner, name, allow_hosts, ollama_url=ollama_url))
     # The network policy only takes on a fresh VM start; stop so the next `start`
     # applies the allow-rule.
     cmds.append(stop(runner, name))
