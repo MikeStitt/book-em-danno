@@ -90,7 +90,7 @@ def run_doctor(*, ollama_host_url: str = ollama.DEFAULT_HOST_URL) -> int:
         (
             True,
             "Ollama server reachable",
-            "start it: OLLAMA_HOST=0.0.0.0:11434 ollama serve",
+            "start it: OLLAMA_HOST=127.0.0.1:11434 ollama serve",
             lambda: ollama.reachable(ollama_host_url),
         ),
         (
@@ -103,15 +103,16 @@ def run_doctor(*, ollama_host_url: str = ollama.DEFAULT_HOST_URL) -> int:
     for required, label, fix, pred in checks:
         _report(tally, required=required, label=label, fix=fix, ok=_safe(pred))
 
-    # Loopback bind is a WARN, not a hard failure: Ollama is reachable from the
-    # host but not from the sandbox VM until it rebinds to 0.0.0.0.
-    loopback = ollama.loopback_warning()
+    # Public-interface bind is a WARN, not a hard failure: a 0.0.0.0 Ollama works but
+    # exposes it to the LAN. The sandbox reaches a loopback-only server through its
+    # host proxy, so loopback-only is both reachable AND the safer binding.
+    exposure = ollama.lan_exposure_warning()
     _report(
         tally,
         required=False,
-        label="Ollama bound for sandbox access (0.0.0.0, not loopback-only)",
-        fix=(loopback or "OLLAMA_HOST=0.0.0.0:11434 ollama serve"),
-        ok=loopback is None,
+        label="Ollama bound loopback-only (not exposed to the LAN)",
+        fix=(exposure or "OLLAMA_HOST=127.0.0.1:11434 ollama serve"),
+        ok=exposure is None,
     )
 
     console.print()

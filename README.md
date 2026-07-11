@@ -76,8 +76,9 @@ docker desktop start
 # From a different terminal window, start ollama  command line.
 # Please ensure only one ollama is running.
 #
-# An example command: 
-# OLLAMA_HOST=0.0.0.0:11434 OLLAMA_KEEP_ALIVE=30m OLLAMA_KV_CACHE_TYPE=q8_0 ollama serve
+# An example command (loopback-only — the safer default; the sandbox reaches it
+# through its host proxy):
+# OLLAMA_HOST=127.0.0.1:11434 OLLAMA_KEEP_ALIVE=30m OLLAMA_KV_CACHE_TYPE=q8_0 ollama serve
 
 danno doctor
 
@@ -682,12 +683,12 @@ network policy` — or a `dial tcp … connection refused` body when nothing is
 listening on that host port (it connects before it blocks, so no data ever flows,
 but whether a host port is listening is detectable from inside).
 
-**Prerequisite:** danno's current guidance is host Ollama on `0.0.0.0`
-(`OLLAMA_HOST=0.0.0.0:11434`) and `doctor` WARNs on loopback-only. (Because both
-proxies dial from the host itself, a loopback-only Ollama is reachable at the
-wire — verified 2026-07-10 — and is the safer binding since `0.0.0.0` exposes
-Ollama to your LAN; flipping the recommendation is planned pending an end-to-end
-spike, see [`.docs/plan-sbx-migration.md`](.docs/plan-sbx-migration.md) S3.)
+**Prerequisite:** run host Ollama **loopback-only** (`OLLAMA_HOST=127.0.0.1:11434`,
+the Ollama default) — `doctor` now WARNs on a `0.0.0.0` bind. Because both sandbox
+proxies dial from the host itself, a loopback-only Ollama is fully reachable from
+the sandbox (verified end-to-end on sbx + docker, 2026-07-11 — see
+[`.docs/plan-sbx-migration.md`](.docs/plan-sbx-migration.md) S3), and it is the
+safer binding: `0.0.0.0` needlessly exposes Ollama to your whole LAN.
 **Local models must be tool-capable** — every agent uses tools, and a model like
 `gemma3:1b` that cannot tool-call is unusable for an agent (keep
 `context_budget ≈ 32000`).

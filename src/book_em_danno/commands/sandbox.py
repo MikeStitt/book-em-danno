@@ -444,7 +444,7 @@ def provision(
 ) -> list[list[str]]:
     """Get the sandbox to 'ready': create + egress hole + stop (so the policy applies
     on next start). Does NOT launch the TUI — that's `start`."""
-    ollama.announce_loopback()
+    ollama.announce_lan_exposure()
     if harness == DEFAULT_HARNESS and not (target_abs / ".opencode" / "opencode.jsonc").is_file():
         log_info(
             "[yellow]WARN[/yellow] target has no .opencode/opencode.jsonc — "

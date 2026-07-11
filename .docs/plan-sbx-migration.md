@@ -177,22 +177,23 @@ The findings that reshape Phase 2:
 
 ### Research spikes
 
-- **S1 — claurst local-Ollama proxy honoring (gates W3).** In a sandbox:
-  `OLLAMA_HOST=http://host.docker.internal:11434`, no relay, one real local-model
-  turn on sbx AND legacy. Expected to pass — the 2026-06 spike already proved
-  claurst's reqwest honors `HTTPS_PROXY` on the NVIDIA path, and reqwest
-  absolute-URI-forwards plain `http`; the risk is the Ollama code path using a
-  proxy-blind client (the in-code "ignores HTTP(S)_PROXY" note). If it fails: the
-  smallest fork patch (env-proxy on that client) + upstream PR draft #7 in
-  `.docs/upstream-claurst-prs/`.
-- **S2 — occ direct on sbx (gates W4).** `OPENAI_BASE_URL` to
-  `host.docker.internal` + `EnvHttpProxyAgent` dispatcher; one real turn; boundary
-  gate. (CONNECT-to-allowed-port on sbx already verified with `curl --proxytunnel`.)
-- **S3 — loopback-only Ollama end-to-end.** Run the full danno flow
-  (`doctor → install --apply → validate --max-level 1`) against an Ollama bound to
-  the default `127.0.0.1`, on both backends. On pass: flip `doctor`'s
-  loopback-only WARN and the README prerequisite — recommending loopback-only is a
-  **security improvement** (`0.0.0.0` exposes Ollama to the whole LAN).
+- **S1 — claurst local-Ollama proxy honoring (gates W3). ✅ PASS 2026-07-11 (both
+  backends).** Relay-free claurst (`OLLAMA_HOST=http://host.docker.internal:11434`,
+  no relay) returned a real completion on **sbx** (gateway proxy) AND **legacy**
+  (squid, absolute-URI plain-HTTP forward), exit 0. The fork build's reqwest DOES
+  honor `HTTP_PROXY` on the Ollama path — the in-code "ignores HTTP(S)_PROXY" note is
+  outdated. **No fork patch needed.** → W3 viable on both backends.
+- **S2 — occ direct on sbx (gates W4). ✅ PASS 2026-07-11 (sbx).** Relay-free occ
+  (`OPENAI_BASE_URL=http://host.docker.internal:11434/v1`) returned a real completion
+  via the fork's undici `EnvHttpProxyAgent` (`[UNDICI-EHPA]` active), exit 0. → W4
+  viable on sbx (relay stays for occ-on-legacy, as planned).
+- **S3 — loopback-only Ollama end-to-end. ✅ PASS 2026-07-11 (both backends).**
+  `validate --max-level 1` against an Ollama bound `127.0.0.1`-only cleared L0
+  (reachability) on **sbx** (L0✓ L1✓) and **legacy** (L0✓ both runs; L1✓ on re-run,
+  a small-model flake). **Flipped:** `doctor` now WARNs on a `0.0.0.0` bind and
+  PASSes loopback-only (`ollama.lan_exposure_warning`); README prerequisite +
+  command example recommend `OLLAMA_HOST=127.0.0.1:11434`. Both doctor branches
+  verified live.
 - **S4 — egress-posture decision (owner: user).** Legacy `--policy allow` = full
   public internet; sbx `balanced` = curated default-deny (`example.com` → 403 on
   sbx, 200 on legacy — both verified). The sandbox is a leg of the benchmarked
