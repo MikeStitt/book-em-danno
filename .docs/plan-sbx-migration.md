@@ -167,10 +167,20 @@ The findings that reshape Phase 2:
   (`CLAURST_PROVIDER_STALL_TIMEOUT_SECS`, default 600) exists only as the **uncompiled**
   `fix/configurable-provider-stall-timeout` candidate; pinning that build is the
   follow-up. occ `CLAUDE_CODE_API_TIMEOUT` is moot — occ kept its relay (W4 deferred).
-- **W6 — capture rewiring.** Relay-free paths point `OLLAMA_HOST` /
-  `OPENAI_BASE_URL` directly at the recording proxy (the same base_url-rewrite lane
-  opencode's `--capture` uses) instead of swapping the relay upstream — simplifies
-  `capture/wiring.py`; the buffered-streaming caveat is unchanged.
+- **W6 — capture rewiring (claurst). ✅ DONE 2026-07-11.** claurst's `--capture` path
+  now points `OLLAMA_HOST` directly at the host-side recording proxy
+  (`host.docker.internal:<capture_port>`, opened in egress by `capture_allow_hosts`)
+  instead of relaying to it — so claurst is **fully relay-free** (the relay bracket is
+  gone from both claurst launchers; `_claurst_script` + the relay constants now serve
+  only occ). Unit-verified; the relay-free mechanism is live-proven (W3, S1). occ's
+  capture stays on the relay (W4 deferred). **Finding (pre-existing, orthogonal):** the
+  validate *sweep* never threads `capture_port` to the claurst/occ `TurnFn`
+  (`make_run_turn(env_file)` → `capture_port=None`), so claurst/occ `--capture` records
+  nothing in the sweep — it routes to real Ollama regardless (true before W6 too; only
+  the interactive `sandbox start --capture` path threads a port). Wiring per-model
+  `capture_port` through the sweep is a **separate follow-up** (the port depends on the
+  turn's backend, which the once-bound `make_run_turn` can't resolve). Buffered-streaming
+  caveat unchanged.
 - **W7 — backend-aware deny detection.** sbx denies = **403**; legacy denies =
   **500** with body `connection to <host> blocked by network policy` (or a
   `dial tcp … connection refused` body when nothing listens — the legacy proxy
