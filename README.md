@@ -326,8 +326,6 @@ profile       = "hybrid"          # hybrid | cloud-only | local-only
 [backends.ollama]                 # local models (OpenAI-compatible provider)
 kind           = "ollama"
 base_url       = "http://host.docker.internal:11434/v1"
-context_budget = 32000            # OpenCode's client-side window belief; see knobs below
-output_limit   = 8192
 
 # Cloud models need NO backend or [models] entry: OpenCode knows them via its
 # built-in catalog and launch-time auth. Reference one inline in [agents] as a raw
@@ -343,11 +341,15 @@ api_key_env = "NVIDIA_API_KEY"    # emitted as {env:NVIDIA_API_KEY}; the secret 
 [models.gemma4]
 backend          = "ollama"
 tag              = "gemma4:26b"   # local models MUST be tool-capable (gemma3:1b is NOT)
+context_budget   = 32000          # OpenCode's client-side window belief; see knobs below
+output_limit     = 8192           # required on ollama/openai models; see knobs below
 reasoning_effort = "none"         # disable the thinking trace; see knobs below
 
 [models.nemotron]
-backend = "nvidia"
-tag     = "nvidia/nemotron-3-ultra-550b-a55b"   # the model id the endpoint expects
+backend        = "nvidia"
+tag            = "nvidia/nemotron-3-ultra-550b-a55b"   # the model id the endpoint expects
+context_budget = 1000000
+output_limit   = 8192
 
 [agents]                          # agent -> model. A value WITH "/" is a raw OpenCode
                                   #   ref (built-in cloud model, no backend needed); a
@@ -377,11 +379,11 @@ that will be silently ignored.
 
 ### Ollama context & runtime knobs
 
-danno translates two `[backends.ollama]` fields and one per-model field into the
-generated `opencode.jsonc`. The shape was verified at the wire (Ollama 0.30.6,
+danno translates three per-model `[models.<name>]` fields into the generated
+`opencode.jsonc`. The shape was verified at the wire (Ollama 0.30.6,
 opencode dev) — see [`docs/research/2026-06-12-ollama-thinking-and-opencode-passthrough.md`](docs/research/2026-06-12-ollama-thinking-and-opencode-passthrough.md):
 
-- **`context_budget`** (backend) → `models.<tag>.limit.context` — OpenCode's
+- **`context_budget`** (per-model) → `models.<tag>.limit.context` — OpenCode's
   *client-side belief* of the window. OpenCode uses it to trim/compact the
   conversation and show usage; it **does not** change what Ollama loads. It is *not*
   Ollama's real window: under the OpenAI-compatible `/v1` API a body `num_ctx` is
@@ -389,9 +391,11 @@ opencode dev) — see [`docs/research/2026-06-12-ollama-thinking-and-opencode-pa
   qwen3.6:27b are both 262144). The cost there is **RAM, not truncation** — at 262k,
   gemma4:26b ≈ 16.9 GiB (sliding-window attention → tiny KV) but qwen3.6:27b ≈ 31.5
   GiB. The real-window / RAM lever is an **Ollama Modelfile variant** (`num_ctx`
-  baked in via `ollama create`), not an `opencode.jsonc` key.
-- **`output_limit`** (backend) → `models.<tag>.limit.output` — tokens OpenCode
+  baked in via `ollama create`), not an `opencode.jsonc` key. **Required** on every
+  `ollama`/`openai` model (fail loud if omitted); **forbidden** on `inert`/`llamacpp`.
+- **`output_limit`** (per-model) → `models.<tag>.limit.output` — tokens OpenCode
   reserves for the reply. Usable input is roughly `context_budget − output_limit`.
+  Required/forbidden by the same rule as `context_budget`.
 - **`reasoning_effort`** (per-model, ollama only) → `models.<tag>.options.reasoningEffort`
   — forwarded **raw into the `/v1` request body**, where Ollama honors
   `none`/`low`/`medium`/`high`. `"none"` disables the model's thinking trace: it's
@@ -430,6 +434,51 @@ to edit `danno.toml`, not the generated file.** When you do hand-edit it:
   read-write at the same path, so the in-container agent reads the same file. An edit
   takes effect on the next `danno sandbox start` (the agent reads it at startup) —
   **no `rebuild` or container recreation needed.**
+
+### Overriding generated config (`[<element>.overrides.<harness>]`)
+
+danno emits a *closed, hardcoded* vocabulary into each harness's config. When a harness
+or model needs a knob danno doesn't model — an OpenAI o-series endpoint wanting the native
+`@ai-sdk/openai` provider and `max_completion_tokens`, say — the escape hatch is an
+`overrides` sub-table **co-located with the danno.toml element it modifies**. Its payload
+is **deep-merged** (override wins; objects merge, scalars/arrays replace) into that
+element's generated block, *inside* the `danno:managed` markers — so it stays idempotent,
+reversible (remove it → next `install` reverts), and visible in the diff.
+
+```toml
+[backends.danno-openai.overrides.opencode]     # → provider.danno-openai
+npm = "@ai-sdk/openai"                          # beats danno's hardcoded @ai-sdk/openai-compatible
+
+[models.o4-mini.overrides.opencode.options]     # → provider.danno-openai.models.o4-mini.options
+max_completion_tokens = 1000000                 # reasoningEffort (if any) is preserved alongside
+```
+
+The element ↔ generated-region map: `[backends.<n>]` → the provider block; `[models.<n>]`
+→ the model entry; `[agents.<n>]` → the agent block; `[defaults]` → opencode.jsonc's
+top-level keys. Harnesses: **`opencode`** and **`claurst`** (occ has no config file;
+`claude` has no generated config). The harness sub-key is a **closed set** — a typo or an
+out-of-scope harness (e.g. `occ`) **fails loud**; the payload below it is open. danno prints
+a **loud notice** for every override in effect (naming which of its own values you
+superseded) and an extra warning if an override touches an egress/auth-sensitive key
+(`baseURL`/`apiKey`) — overriding those can weaken the sandbox contract.
+
+### Agent-general environment (`[env]`)
+
+The top-level `[env]` table injects `KEY = "value"` into the chmod-600 env-file of every
+**config-driven** harness (opencode/claurst/occ — **not** claude, whose auth is injected
+separately). Values may embed `{env:VAR}` host indirection, resolved at launch; precedence
+is `--env (CLI) > exported host var > [env] literal > harness default`.
+
+```toml
+[env]
+CLAUDE_CODE_API_TIMEOUT = "3600000"       # raise a harness ceiling
+NVIDIA_API_KEY          = "{env:NVIDIA_API_KEY}"   # pull a secret from danno's own env at launch
+```
+
+`[env]` is **harness-general** (the same vars reach every config-driven harness); it is a
+different surface from `overrides` (which merges into a generated *config file*, whereas
+`[env]` sets the launch *environment*). A per-harness form `[env.<harness>]` is reserved
+but not yet implemented.
 
 ### Two install lanes: `[[tools]]` vs `[[npm]]`
 

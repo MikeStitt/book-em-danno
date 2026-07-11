@@ -45,8 +45,8 @@ def _cfg() -> DannoConfig:
             ),
         },
         models={
-            "g": Model(backend="ollama", tag="gemma3:27b"),
-            "n": Model(backend="nv", tag="nvidia/x"),
+            "g": Model(backend="ollama", tag="gemma3:27b", context_budget=32000, output_limit=8192),
+            "n": Model(backend="nv", tag="nvidia/x", context_budget=128000, output_limit=8192),
         },
         agents={"build": "g", "pm": "anthropic/claude-sonnet-4-6"},
     )
@@ -112,7 +112,7 @@ def test_claurst_relay_capture_port_none_fails_loud(tmp_path: Path) -> None:
                 kind="openai", base_url="https://integrate.api.nvidia.com/v1", api_key_env="K"
             )
         },
-        models={"n": Model(backend="nv", tag="nvidia/x")},
+        models={"n": Model(backend="nv", tag="nvidia/x", context_budget=128000, output_limit=8192)},
         agents={"build": "n"},
     )
     _, targets = plan_capture(cfg, tmp_path / "caps")
@@ -127,7 +127,10 @@ def test_claurst_relay_capture_port_ambiguous_fails_loud(tmp_path: Path) -> None
             "o1": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1"),
             "o2": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434"),
         },
-        models={"a": Model(backend="o1", tag="x"), "b": Model(backend="o2", tag="y")},
+        models={
+            "a": Model(backend="o1", tag="x", context_budget=32000, output_limit=8192),
+            "b": Model(backend="o2", tag="y", context_budget=32000, output_limit=8192),
+        },
         agents={"build": "a"},
     )
     _, targets = plan_capture(cfg, tmp_path / "caps")

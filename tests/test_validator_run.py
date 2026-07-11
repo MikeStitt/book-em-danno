@@ -116,8 +116,12 @@ def _config() -> DannoConfig:
             "ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1"),
         },
         models={
-            "gptoss": Model(backend="ollama", tag="gpt-oss:20b"),
-            "gemma": Model(backend="ollama", tag="gemma3:27b"),
+            "gptoss": Model(
+                backend="ollama", tag="gpt-oss:20b", context_budget=32000, output_limit=8192
+            ),
+            "gemma": Model(
+                backend="ollama", tag="gemma3:27b", context_budget=32000, output_limit=8192
+            ),
         },
         # cloud agents are raw inline refs (not swept [models]); pm exercises that path
         agents={"pm": "anthropic/claude-sonnet-4-6"},

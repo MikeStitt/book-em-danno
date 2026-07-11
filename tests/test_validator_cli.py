@@ -19,10 +19,14 @@ base_url = "http://host.docker.internal:11434/v1"
 [models.gptoss]
 backend = "ollama"
 tag = "gpt-oss:20b"
+context_budget = 32000
+output_limit = 8192
 
 [models.gemma]
 backend = "ollama"
 tag = "gemma3:27b"
+context_budget = 32000
+output_limit = 8192
 """
 
 

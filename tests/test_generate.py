@@ -106,8 +106,12 @@ def test_all_defined_ollama_models_emitted_even_when_unassigned() -> None:
             "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1")
         },
         models={
-            "assigned": Model(backend="ollama", tag="gemma3:27b"),
-            "spare": Model(backend="ollama", tag="qwen3-coder-next"),
+            "assigned": Model(
+                backend="ollama", tag="gemma3:27b", context_budget=32000, output_limit=8192
+            ),
+            "spare": Model(
+                backend="ollama", tag="qwen3-coder-next", context_budget=32000, output_limit=8192
+            ),
         },
         agents={"pm": "assigned"},  # 'spare' is defined but unassigned
     )
@@ -131,11 +135,13 @@ def test_ollama_context_and_output_budget() -> None:
             "ollama": OllamaBackend(
                 kind="ollama",
                 base_url="http://host.docker.internal:11434/v1",
-                context_budget=262144,
-                output_limit=4096,
             )
         },
-        models={"gemma": Model(backend="ollama", tag="gemma4:26b")},
+        models={
+            "gemma": Model(
+                backend="ollama", tag="gemma4:26b", context_budget=262144, output_limit=4096
+            )
+        },
         agents={"pm": "gemma"},
     )
     doc = json.loads(_strip_comments(render_config(cfg)))
@@ -152,7 +158,15 @@ def test_reasoning_effort_emitted_as_camelcase_when_set() -> None:
         backends={
             "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1")
         },
-        models={"gemma": Model(backend="ollama", tag="gemma4:26b", reasoning_effort="none")},
+        models={
+            "gemma": Model(
+                backend="ollama",
+                tag="gemma4:26b",
+                reasoning_effort="none",
+                context_budget=32000,
+                output_limit=8192,
+            )
+        },
         agents={"pm": "gemma"},
     )
     rendered = render_config(cfg)
@@ -176,10 +190,16 @@ def test_openai_backend_emits_env_substituted_api_key() -> None:
                 kind="openai",
                 base_url="https://integrate.api.nvidia.com/v1",
                 api_key_env="NVIDIA_API_KEY",
-                context_budget=128000,
             )
         },
-        models={"nemotron": Model(backend="nvidia", tag="nvidia/nemotron-3-ultra-550b-a55b")},
+        models={
+            "nemotron": Model(
+                backend="nvidia",
+                tag="nvidia/nemotron-3-ultra-550b-a55b",
+                context_budget=128000,
+                output_limit=8192,
+            )
+        },
         agents={"plan": "nemotron"},
     )
     doc = json.loads(_strip_comments(render_config(cfg)))
@@ -202,7 +222,9 @@ def _inert_cfg() -> DannoConfig:
             "claude": InertBackend(kind="inert"),
         },
         models={
-            "qwen": Model(backend="ollama", tag="qwen3:latest"),
+            "qwen": Model(
+                backend="ollama", tag="qwen3:latest", context_budget=32000, output_limit=8192
+            ),
             "opus": Model(backend="claude", tag="claude-opus-4-8"),
             "sonnet": Model(backend="claude", tag="claude-sonnet-4-6"),
         },
@@ -247,20 +269,28 @@ def _claurst_cfg() -> DannoConfig:
             "danno-ollama": OllamaBackend(
                 kind="ollama",
                 base_url="http://host.docker.internal:11434/v1",
-                context_budget=65536,
-                output_limit=8192,
             ),
             "danno-nvidia": OpenAIBackend(
                 kind="openai",
                 base_url="https://integrate.api.nvidia.com/v1",
                 api_key_env="NVIDIA_API_KEY",
-                context_budget=262144,
-                output_limit=32768,
             ),
         },
         models={
-            "coder": Model(backend="danno-ollama", tag="qwen3-coder-next", reasoning_effort="none"),
-            "glm": Model(backend="danno-nvidia", tag="z-ai/glm-5.1", reasoning_effort="medium"),
+            "coder": Model(
+                backend="danno-ollama",
+                tag="qwen3-coder-next",
+                reasoning_effort="none",
+                context_budget=65536,
+                output_limit=8192,
+            ),
+            "glm": Model(
+                backend="danno-nvidia",
+                tag="z-ai/glm-5.1",
+                reasoning_effort="medium",
+                context_budget=262144,
+                output_limit=32768,
+            ),
         },
         agents={"build": "coder"},
     )
@@ -305,7 +335,9 @@ def test_claurst_models_unmapped_openai_host_raises() -> None:
                 kind="openai", base_url="https://api.example.com/v1", api_key_env="X_KEY"
             )
         },
-        models={"m": Model(backend="other", tag="some-model")},
+        models={
+            "m": Model(backend="other", tag="some-model", context_budget=32000, output_limit=8192)
+        },
         agents={"build": "m"},
     )
     with pytest.raises(NotImplementedError, match="no claurst provider mapping"):
@@ -548,7 +580,11 @@ def _ollama_cfg(agents: dict, **kw: object) -> DannoConfig:
         backends={
             "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1")
         },
-        models={"local": Model(backend="ollama", tag="qwen3-coder-next")},
+        models={
+            "local": Model(
+                backend="ollama", tag="qwen3-coder-next", context_budget=32000, output_limit=8192
+            )
+        },
         agents=agents,
         **kw,  # type: ignore[arg-type]
     )

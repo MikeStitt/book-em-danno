@@ -23,8 +23,12 @@ def _config() -> DannoConfig:
             ),
         },
         models={
-            "gemma": Model(backend="ollama", tag="gemma3:27b"),
-            "nemotron": Model(backend="nvidia", tag="nvidia/nemotron"),
+            "gemma": Model(
+                backend="ollama", tag="gemma3:27b", context_budget=32000, output_limit=8192
+            ),
+            "nemotron": Model(
+                backend="nvidia", tag="nvidia/nemotron", context_budget=128000, output_limit=8192
+            ),
         },
         # cloud agents are raw inline refs and are NOT swept (not [models] entries).
         agents={"pm": "anthropic/claude-sonnet-4-6"},

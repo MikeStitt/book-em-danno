@@ -246,9 +246,13 @@ def _claurst_cfg() -> DannoConfig:
             ),
         },
         models={
-            "gemma4": Model(backend="ollama", tag="gemma4:26b"),
-            "nemotron": Model(backend="nvidia", tag="nvidia/nemotron"),
-            "exotic": Model(backend="other", tag="exo-1"),
+            "gemma4": Model(
+                backend="ollama", tag="gemma4:26b", context_budget=32000, output_limit=8192
+            ),
+            "nemotron": Model(
+                backend="nvidia", tag="nvidia/nemotron", context_budget=128000, output_limit=8192
+            ),
+            "exotic": Model(backend="other", tag="exo-1", context_budget=128000, output_limit=8192),
         },
     )
 
@@ -328,7 +332,8 @@ def test_resolve_model_for_harness_rejects_non_claurst(tmp_path: Path) -> None:
 def test_resolve_model_for_harness_claurst_loads_and_resolves(tmp_path: Path) -> None:
     (tmp_path / "danno.toml").write_text(
         '[backends.ollama]\nkind = "ollama"\nbase_url = "http://h:11434/v1"\n'
-        '[models.gemma4]\nbackend = "ollama"\ntag = "gemma4:26b"\n',
+        '[models.gemma4]\nbackend = "ollama"\ntag = "gemma4:26b"\n'
+        "context_budget = 32000\noutput_limit = 8192\n",
         encoding="utf-8",
     )
     assert sandbox.resolve_model_for_harness(tmp_path, "claurst", "gemma4") == "ollama/gemma4:26b"
@@ -337,7 +342,8 @@ def test_resolve_model_for_harness_claurst_loads_and_resolves(tmp_path: Path) ->
 def test_resolve_claurst_start_local_returns_ref_no_env(tmp_path: Path) -> None:
     (tmp_path / "danno.toml").write_text(
         '[backends.ollama]\nkind = "ollama"\nbase_url = "http://h:11434/v1"\n'
-        '[models.gemma4]\nbackend = "ollama"\ntag = "gemma4:26b"\n',
+        '[models.gemma4]\nbackend = "ollama"\ntag = "gemma4:26b"\n'
+        "context_budget = 32000\noutput_limit = 8192\n",
         encoding="utf-8",
     )
     ref, env_lines = sandbox.resolve_claurst_start(tmp_path, "claurst", "gemma4")
@@ -352,7 +358,8 @@ def test_resolve_claurst_start_cloud_returns_ref_and_key(
     (tmp_path / "danno.toml").write_text(
         '[backends.nvidia]\nkind = "openai"\n'
         'base_url = "https://integrate.api.nvidia.com/v1"\napi_key_env = "NVIDIA_API_KEY"\n'
-        '[models.nemotron]\nbackend = "nvidia"\ntag = "nvidia/nemotron"\n',
+        '[models.nemotron]\nbackend = "nvidia"\ntag = "nvidia/nemotron"\n'
+        "context_budget = 128000\noutput_limit = 8192\n",
         encoding="utf-8",
     )
     ref, env_lines = sandbox.resolve_claurst_start(tmp_path, "claurst", "nemotron")
@@ -364,6 +371,7 @@ def test_emit_claurst_config_writes_overlay_and_settings(tmp_path: Path) -> None
     (tmp_path / "danno.toml").write_text(
         '[backends.ollama]\nkind = "ollama"\nbase_url = "http://h:11434/v1"\n'
         '[models.gemma4]\nbackend = "ollama"\ntag = "gemma4:26b"\n'
+        "context_budget = 32000\noutput_limit = 8192\n"
         '[agents]\nbuild = "gemma4"\n',
         encoding="utf-8",
     )
@@ -389,8 +397,12 @@ def _occ_cfg() -> DannoConfig:
             ),
         },
         models={
-            "gemma4": Model(backend="ollama", tag="gemma4:26b"),
-            "nemotron": Model(backend="nvidia", tag="nvidia/nemotron"),
+            "gemma4": Model(
+                backend="ollama", tag="gemma4:26b", context_budget=32000, output_limit=8192
+            ),
+            "nemotron": Model(
+                backend="nvidia", tag="nvidia/nemotron", context_budget=128000, output_limit=8192
+            ),
         },
     )
 
@@ -513,7 +525,8 @@ def test_occ_cloud_env_lines_missing_key_fails_loud(monkeypatch: pytest.MonkeyPa
 def test_resolve_start_dispatches_occ_local(tmp_path: Path) -> None:
     (tmp_path / "danno.toml").write_text(
         '[backends.ollama]\nkind = "ollama"\nbase_url = "http://h:11434/v1"\n'
-        '[models.gemma4]\nbackend = "ollama"\ntag = "gemma4:26b"\n',
+        '[models.gemma4]\nbackend = "ollama"\ntag = "gemma4:26b"\n'
+        "context_budget = 32000\noutput_limit = 8192\n",
         encoding="utf-8",
     )
     ref, env_lines = sandbox.resolve_start(tmp_path, "occ", "gemma4")
@@ -528,7 +541,8 @@ def test_resolve_start_dispatches_occ_cloud(
     (tmp_path / "danno.toml").write_text(
         '[backends.nvidia]\nkind = "openai"\n'
         'base_url = "https://integrate.api.nvidia.com/v1"\napi_key_env = "NVIDIA_API_KEY"\n'
-        '[models.nemotron]\nbackend = "nvidia"\ntag = "nvidia/nemotron"\n',
+        '[models.nemotron]\nbackend = "nvidia"\ntag = "nvidia/nemotron"\n'
+        "context_budget = 128000\noutput_limit = 8192\n",
         encoding="utf-8",
     )
     ref, env_lines = sandbox.resolve_start(tmp_path, "occ", "nemotron")
@@ -542,7 +556,8 @@ def test_resolve_start_dispatches_occ_cloud(
 def test_resolve_model_for_harness_accepts_occ(tmp_path: Path) -> None:
     (tmp_path / "danno.toml").write_text(
         '[backends.ollama]\nkind = "ollama"\nbase_url = "http://h:11434/v1"\n'
-        '[models.gemma4]\nbackend = "ollama"\ntag = "gemma4:26b"\n',
+        '[models.gemma4]\nbackend = "ollama"\ntag = "gemma4:26b"\n'
+        "context_budget = 32000\noutput_limit = 8192\n",
         encoding="utf-8",
     )
     assert sandbox.resolve_model_for_harness(tmp_path, "occ", "gemma4") == "ollama/gemma4:26b"
