@@ -1,10 +1,17 @@
 # Bug 9 — ESC doesn't cancel the running query; after ESC, Ctrl+C can't either, and Enter double-spawns
 
-Branch: _none yet_ — issue-first: mechanism fully root-caused, fix direction below, code
-not yet written. Independent of the context-meter cluster, but the second half of the
-"unprompted turns you can't stop" failure (see Bug 8).
+Branch: `fix/esc-cancels-query` (commit `1c1ad5d`, off `upstream/main` 59c397f). Code
+written 2026-07-12; compiles (`cargo check -p claurst`). Behavioral re-verification against
+a live session still pending. Independent of the context-meter cluster, but the second half
+of the "unprompted turns you can't stop" failure (see Bug 8).
 Files: `src-rust/crates/tui/src/app.rs` (ESC handler ~3979),
 `src-rust/crates/cli/src/main.rs` (`handle_exit_key` ~343, submit path ~2658).
+
+**As implemented:** intercept `KeyCode::Esc` in the `main.rs` event loop and `ct.cancel()`
+when `current_query.is_some()` before falling through to the TUI handler; change
+`handle_exit_key` to take a `query_active: bool` and gate its Ctrl+C cancel on that instead
+of `app.is_streaming`; branch the Enter queue-vs-submit decision on `current_query` rather
+than `app.is_streaming` so a live query can't be double-spawned.
 
 ---
 
