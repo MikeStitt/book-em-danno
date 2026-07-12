@@ -3,6 +3,15 @@
 Branch: _none yet_ — issue-first: mechanism understood, fix direction below, code not yet
 written. **Depends on Bug 8** (`fix/auto-compact-safety`): split out of that fix to keep the
 base PR small. Bug 8 makes auto-compact *safe* (no livelock); Bug 10 makes it *effective*.
+
+> ⚠️ **Scope under review — read `.docs/claurst-auto-compaction-findings.md` first.**
+> Investigation found claurst has **four** compaction surfaces, and the real pruning
+> function (`compact_conversation`) is already **live** via `run_query_loop` (System A) — it
+> is *not* dead code. This bug is really "the interactive/TUI auto-compact (System B) and
+> `/compact` (System C) don't prune, and System A is misconfigured for local models." The
+> minimal fix (E1: route B/C through the live compactor) vs. the deeper fix (E2: fix System
+> A's window source and retire B) is an **open decision pending review** of the findings doc.
+> The single-system framing below is the pre-investigation view.
 Files: `src-rust/crates/cli/src/main.rs` (auto-compact dispatch + turn-complete handler),
 `src-rust/crates/tui/src/app.rs` (message list / context accounting).
 
