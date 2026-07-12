@@ -1,10 +1,13 @@
 # Plan — migrate danno from `docker sandbox` to `sbx` (dual-CLI during transition)
 
-**Date:** 2026-07-09 · **Status:** **IMPLEMENTED (P1–P5) + W1 + W2 DONE
-2026-07-11; gate green; all four harnesses (opencode/claude/occ/claurst)
+**Date:** 2026-07-09 · **Status:** **IMPLEMENTED (P1–P5) + W1, W2, W3, W5, W6, W7
+DONE; W4 DEFERRED; spikes S1–S3 PASS (2026-07-11); gate green; all four harnesses
 E2E-verified under `sbx` on macOS** (see
 [`sbx-migration-e2e-validation-2026-07-11.md`](sbx-migration-e2e-validation-2026-07-11.md)).
-Remaining: relay-free W3–W6 + spikes S1–S4 (optimizations, non-blocking) ·
+Stacked PRs: #76 (base: W1/W2/S3-flip) ← #80 (W3) ← #81 (W5) ← #82 (W6) ← W7.
+**W4 (relay-free occ) deferred** — unreliable multi-turn; occ keeps its relay.
+Remaining follow-ups: S4 (user), `sbx secret` (D4), the configurable-claurst-timeout
+build, the sweep `capture_port` wiring, and relay-free occ (undici fix). ·
 **Branch base:** `main`.
 **2026-07-10 update:** an independent review refuted the "sbx has no
 `host.docker.internal` rewrite" premise (see
@@ -167,17 +170,33 @@ The findings that reshape Phase 2:
   (`CLAURST_PROVIDER_STALL_TIMEOUT_SECS`, default 600) exists only as the **uncompiled**
   `fix/configurable-provider-stall-timeout` candidate; pinning that build is the
   follow-up. occ `CLAUDE_CODE_API_TIMEOUT` is moot — occ kept its relay (W4 deferred).
-- **W6 — capture rewiring.** Relay-free paths point `OLLAMA_HOST` /
-  `OPENAI_BASE_URL` directly at the recording proxy (the same base_url-rewrite lane
-  opencode's `--capture` uses) instead of swapping the relay upstream — simplifies
-  `capture/wiring.py`; the buffered-streaming caveat is unchanged.
-- **W7 — backend-aware deny detection.** sbx denies = **403**; legacy denies =
-  **500** with body `connection to <host> blocked by network policy` (or a
-  `dial tcp … connection refused` body when nothing listens — the legacy proxy
-  connects-then-blocks: data never flows, but a listener's existence is detectable,
-  a small port-scan side channel inherent to the deprecated proxy). Any automated
-  boundary gate must judge **status + body per backend**, never exit codes or 403
-  alone.
+- **W6 — capture rewiring (claurst). ✅ DONE 2026-07-11.** claurst's `--capture` path
+  now points `OLLAMA_HOST` directly at the host-side recording proxy
+  (`host.docker.internal:<capture_port>`, opened in egress by `capture_allow_hosts`)
+  instead of relaying to it — so claurst is **fully relay-free** (the relay bracket is
+  gone from both claurst launchers; `_claurst_script` + the relay constants now serve
+  only occ). Unit-verified; the relay-free mechanism is live-proven (W3, S1). occ's
+  capture stays on the relay (W4 deferred). **Finding (pre-existing, orthogonal):** the
+  validate *sweep* never threads `capture_port` to the claurst/occ `TurnFn`
+  (`make_run_turn(env_file)` → `capture_port=None`), so claurst/occ `--capture` records
+  nothing in the sweep — it routes to real Ollama regardless (true before W6 too; only
+  the interactive `sandbox start --capture` path threads a port). Wiring per-model
+  `capture_port` through the sweep is a **separate follow-up** (the port depends on the
+  turn's backend, which the once-bound `make_run_turn` can't resolve). Buffered-streaming
+  caveat unchanged.
+- **W7 — backend-aware deny detection. ✅ DONE 2026-07-11 (no code — guidance
+  captured).** sbx denies = **403**; legacy denies = **500** with body `connection to
+  <host> blocked by network policy` (or a `dial tcp … connection refused` body when
+  nothing listens — the legacy proxy connects-then-blocks: data never flows, but a
+  listener's existence is detectable, a small port-scan side channel inherent to the
+  deprecated proxy). Any automated boundary gate must judge **status + body per
+  backend**, never exit codes or 403 alone. **danno has no automated boundary gate to
+  make backend-aware** (the migration's boundary checks were done by hand — reading
+  HTTP codes, e.g. the W2 probe), so this is a documented guardrail for any *future*
+  gate, not a code change; adding an uncalled helper now would be speculative. The rule
+  lives in three places: the README network-model section ("judge by HTTP status and
+  body, never a tool's exit code"), this item, and the `sandbox-security-contract-
+  fail-loud` memory (the verify-by-HTTP-403-not-exit-code lesson).
 - **W8 — docs.** README network model split per backend (done on this branch);
   `sbx-egress-model.md` §0 corrections (done); ledger row 2 retired with W1;
   `--capture` README section updated with W6.

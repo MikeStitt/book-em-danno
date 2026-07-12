@@ -92,9 +92,11 @@ def test_interactive_launch_script_local_is_relay_free() -> None:
     assert "mktemp /tmp/danno-relay-" not in script  # no relay bracket
 
 
-def test_interactive_launch_script_capture_port_redirects_relay() -> None:
-    # --capture points the interactive session's relay at the recording proxy port.
+def test_interactive_launch_script_capture_dials_recording_proxy_relay_free() -> None:
+    # W6: --capture points OLLAMA_HOST directly at the host-side recording proxy
+    # (host.docker.internal:<capture_port>) through the egress proxy — no in-VM relay.
     argv = claurst.interactive_launch_script("ollama/x", ["--foo"], capture_port=40404)
     script = argv[2]
-    assert "DANNO_RELAY_UPSTREAM_PORT=40404 " in script
+    assert "OLLAMA_HOST=http://host.docker.internal:40404 claurst" in script
+    assert "mktemp /tmp/danno-relay-" not in script  # no relay bracket
     assert "--foo" in script  # passthru args preserved

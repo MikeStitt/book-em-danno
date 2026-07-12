@@ -31,11 +31,9 @@ from book_em_danno.commands.sandbox import exec_in_container
 from book_em_danno.core.exec import Runner
 from danno_validator.driver import (
     CLAURST_MODEL_FLAG,
-    CLAURST_OLLAMA_HOST,
-    CLAURST_RELAY_FREE_OLLAMA_HOST,
     Turn,
     TurnFn,
-    _claurst_script,
+    _claurst_ollama_host,
     claurst_run,
 )
 
@@ -156,13 +154,10 @@ def interactive_launch_script(
     if not is_local:
         # Cloud: no Ollama relay; claurst reaches the provider via HTTPS_PROXY directly.
         return argv
-    if capture_port is not None:
-        # --capture still rides the in-VM relay (pointed at the recording proxy) until W6.
-        claurst_cmd = f"OLLAMA_HOST={CLAURST_OLLAMA_HOST} {shlex.join(argv)}"
-        return ["bash", "-lc", _claurst_script(claurst_cmd, upstream_port=capture_port)]
-    # Relay-free (W3): claurst honors the egress proxy; dial host Ollama directly.
-    claurst_cmd = f"OLLAMA_HOST={CLAURST_RELAY_FREE_OLLAMA_HOST} {shlex.join(argv)}"
-    return ["bash", "-lc", claurst_cmd]
+    # Relay-free (W3 + W6): claurst dials host Ollama — or, under --capture, the host-side
+    # recording proxy — directly through the egress proxy. No in-VM relay.
+    ollama_host = _claurst_ollama_host(capture_port)
+    return ["bash", "-lc", f"OLLAMA_HOST={ollama_host} {shlex.join(argv)}"]
 
 
 def authed_claurst_run(
