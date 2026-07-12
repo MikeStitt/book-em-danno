@@ -72,13 +72,23 @@ this restructure (`v0.1.6-danno2`) must be cut from a `danno-integration` re-mer
 includes Bug 8 (and ideally Bug 9) — until then, interactive claurst-under-danno sessions
 will keep exhibiting the unprompted-compact behavior.
 
-## ⚠️ Before opening any PR
-The `fix/ollama-nvidia-stream-usage` branch on the fork **accidentally committed a built
-binary** (`claurst-linux-arm64`) and a release tarball. **Exclude those from the upstream
-PR** — cherry-pick only the `openai_compat_providers.rs` change (commit `f384b57`,
-source-only). The diffs reproduced in these drafts already filter the binary out.
-When re-parenting Bugs 4/5 onto `fix/auto-compact-safety`, that is the natural moment to
-drop the binary from history.
+## ✅ RESOLVED (2026-07-12) — fork branch is now clean
+The `fix/ollama-nvidia-stream-usage` branch had **accidentally committed a built binary**
+(`claurst-linux-arm64`, ~30 MB) alongside the Bug 5 source fix, because the loose binary at
+repo root was never gitignored. On inspection there was **only the binary — no release
+tarball** (this section previously overstated it).
+
+Rather than force-push, the branch was **rebuilt clean**: a fresh branch rooted on the
+original base `59c397f` carries only the `openai_compat_providers.rs` change (new commit
+`26aeb09`, byte-identical source diff to the old `f384b57`), the old binary-carrying branch
+was deleted locally and on origin, and the clean branch was pushed under the same name.
+`origin/fix/ollama-nvidia-stream-usage` is now one source-only commit past base with no
+binary in its tree — ready to PR as-is.
+
+Recurrence is blocked: `danno-integration` (the only other branch that tracked the blob) was
+scrubbed with `git rm --cached` + a `claurst-linux-*` `.gitignore` rule (commit `dafbde1`).
+The blob still exists in each branch's *history* (not purged) but no branch tree tracks it,
+so GitHub PR diffs are clean.
 
 ## Verification status (danno fork, NVIDIA NIM + Ollama, 2026-06-26 → 2026-07-10)
 - Bug 1 fix confirmed: 600s default lets large-context prefills (98–157s measured) complete.
