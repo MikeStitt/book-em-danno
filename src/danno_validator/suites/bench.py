@@ -26,7 +26,7 @@ from book_em_danno.capture.wiring import (
     plan_capture,
     uncaptured_cloud_refs,
 )
-from book_em_danno.commands import ollama
+from book_em_danno.commands import ollama, sandbox_cli
 from book_em_danno.commands import sandbox as sb
 from book_em_danno.config.generate import generate
 from book_em_danno.config.schema import DannoConfig, InertBackend
@@ -136,8 +136,8 @@ def _sandbox_name(target: Path, suffix: str) -> str:
 def _teardown(runner: Runner, name: str, *, keep: bool) -> None:
     if keep:
         return
-    runner.advise(["docker", "sandbox", "stop", name], why=f"stop bench sandbox '{name}'")
-    runner.advise(["docker", "sandbox", "rm", name], why=f"remove bench sandbox '{name}'")
+    runner.advise([*sandbox_cli.base(), "stop", name], why=f"stop bench sandbox '{name}'")
+    runner.advise(sandbox_cli.rm_argv(name), why=f"remove bench sandbox '{name}'")
 
 
 def _variant_cloud_env_lines(harness: str, config: DannoConfig, model_name: str) -> list[str]:

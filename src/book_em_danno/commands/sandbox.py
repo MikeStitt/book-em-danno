@@ -19,6 +19,7 @@ import re
 import subprocess
 import tempfile
 import tomllib
+import urllib.parse
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -45,7 +46,7 @@ from ..config.loader import DannoConfigError, load_config
 from ..config.schema import DannoConfig, NpmPlugin, OllamaBackend, OpenAIBackend, Sandbox
 from ..core import registry
 from ..core.exec import CommandFailedError, Runner, log_info, log_warn
-from . import ollama
+from . import ollama, sandbox_cli
 
 DEFAULT_OLLAMA_URL = "http://host.docker.internal:11434/v1"
 DEFAULT_ALLOW_HOSTS = ("localhost:11434",)
@@ -108,19 +109,49 @@ def default_name(target_abs: Path, harness: str = DEFAULT_HARNESS) -> str:
 
 
 def live_sandbox_names() -> set[str]:
-    """The set of sandbox names `docker sandbox ls` reports (empty if unavailable)."""
+    """The set of sandbox names the active CLI reports (empty if unavailable).
+
+    `sbx ls -q` emits one bare name per line (empty when none); legacy
+    `docker sandbox ls` is a header + table (skip row 0, first column)."""
+    argv, quiet = sandbox_cli.ls_names_argv()
     try:
-        out = subprocess.run(
-            ["docker", "sandbox", "ls"], capture_output=True, text=True, check=False
-        ).stdout
+        out = subprocess.run(argv, capture_output=True, text=True, check=False).stdout
     except (FileNotFoundError, OSError):
         return set()
+    if quiet:
+        return {line.strip() for line in out.splitlines() if line.strip()}
     return {line.split()[0] for line in out.splitlines()[1:] if line.split()}
 
 
 def sandbox_exists(name: str) -> bool:
-    """True if a sandbox named `name` is listed by `docker sandbox ls`."""
+    """True if a sandbox named `name` is listed by the active CLI's `ls`."""
     return name in live_sandbox_names()
+
+
+def _sbx_policy_initialized() -> bool:
+    """True if the sbx global network policy is initialized (`sbx policy ls`
+    succeeds). Treated as True/absent for docker (no such requirement)."""
+    try:
+        return (
+            subprocess.run(
+                sandbox_cli.policy_ls_argv(), capture_output=True, text=True, check=False
+            ).returncode
+            == 0
+        )
+    except (FileNotFoundError, OSError):
+        return False
+
+
+def ensure_policy_initialized(runner: Runner) -> None:
+    """sbx requires a one-time global network-policy init before `create`; the
+    legacy `docker sandbox` has no such step. If the active backend is sbx and the
+    policy is not yet initialized, advise `sbx policy init balanced` (under --apply
+    it runs). No-op for docker and when already initialized (init is not
+    idempotent, so we gate on `sbx policy ls`)."""
+    init_argv = sandbox_cli.policy_init_argv()
+    if init_argv is None or _sbx_policy_initialized():
+        return
+    runner.advise(init_argv, why="initialize the sbx global network policy (one-time)")
 
 
 def _live(runner: Runner) -> bool:
@@ -308,6 +339,8 @@ def create(
     otherwise) and a loud warning fires if `name` already maps elsewhere.
     Idempotent under --apply: an already-existing sandbox is left in place.
     """
+    ensure_policy_initialized(runner)  # sbx needs a one-time global policy init before create
+
     if registry_path is not None:
         existing = registry.lookup(registry_path, name)
         if existing is not None and existing.get("target") != str(target_abs):
@@ -316,7 +349,7 @@ def create(
                 f"for {target_abs} would collide — pass --name to disambiguate."
             )
 
-    cmd = ["docker", "sandbox", "create", "--name", name, _docker_image(harness), str(target_abs)]
+    cmd = [*sandbox_cli.base(), "create", "--name", name, _docker_image(harness), str(target_abs)]
     if home is not None:
         cmd.append(str(home))
 
@@ -335,21 +368,56 @@ def create(
     return cmd
 
 
+def _ollama_hostport(url: str) -> str:
+    """The `host:port` the sandbox dials for Ollama, parsed from a base URL."""
+    return urllib.parse.urlparse(url).netloc or url
+
+
+# A same-host Ollama reached through one of these aliases uses the default
+# `localhost:11434` allow token: BOTH the sbx and legacy `docker sandbox` egress
+# proxies rewrite `host.docker.internal`→`localhost` before matching (matching is
+# literal on the post-rewrite string), so the default is correct on both backends. A
+# concrete/remote host is allowed literally by its real routable IP:port (§7 of
+# `.docs/sbx-egress-model.md`).
+_SAME_HOST_OLLAMA_ALIASES = frozenset(
+    {"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal", "gateway.docker.internal"}
+)
+
+
 def configure_proxy(
-    runner: Runner, name: str, allow_hosts: tuple[str, ...] = DEFAULT_ALLOW_HOSTS
+    runner: Runner,
+    name: str,
+    allow_hosts: tuple[str, ...] = DEFAULT_ALLOW_HOSTS,
+    *,
+    ollama_url: str = DEFAULT_OLLAMA_URL,
 ) -> list[str]:
-    """Open general internet egress but keep host/LAN denied except the Ollama hole."""
-    cmd = ["docker", "sandbox", "network", "proxy", name, "--policy", "allow"]
-    for host in allow_hosts:
-        cmd += ["--allow-host", host]
+    """Set the egress hole: allow ONLY the Ollama endpoint; host/LAN otherwise denied.
+
+    Both backends' egress proxies rewrite `host.docker.internal`→`localhost` before
+    policy matching, so a SAME-HOST Ollama uses the default `allow_hosts`
+    (`localhost:11434`) on sbx and `docker sandbox` alike — the config is identical. A
+    concrete REMOTE Ollama (a non-alias host in its base_url) is allowed literally by
+    its real routable IP:port (§7 of `.docs/sbx-egress-model.md`).
+    """
+    effective = allow_hosts
+    hostport = _ollama_hostport(ollama_url)
+    host = hostport.rpartition(":")[0].strip("[]") or hostport
+    if host not in _SAME_HOST_OLLAMA_ALIASES:
+        # Concrete/remote Ollama: swap the default localhost token for the real
+        # endpoint, keeping any other allow_hosts (e.g. a capture proxy).
+        log_info(f"egress: allowing remote Ollama at {hostport}; host/LAN otherwise denied")
+        effective = tuple(hostport if h == DEFAULT_ALLOW_HOSTS[0] else h for h in allow_hosts)
+        if hostport not in effective:
+            effective = (hostport, *effective)
+    cmd = sandbox_cli.policy_allow_argv(name, effective)
     return runner.advise(
-        cmd, why="set the egress policy (internet allowed; host/LAN denied except Ollama)"
+        cmd, why="set the egress policy (host/LAN denied except the Ollama endpoint)"
     )
 
 
 def stop(runner: Runner, name: str) -> list[str]:
     """Stop the sandbox VM (also how a fresh network policy is made to take effect)."""
-    return runner.advise(["docker", "sandbox", "stop", name], why=f"stop sandbox '{name}'")
+    return runner.advise([*sandbox_cli.base(), "stop", name], why=f"stop sandbox '{name}'")
 
 
 def ensure_running(runner: Runner, name: str) -> list[str]:
@@ -358,7 +426,7 @@ def ensure_running(runner: Runner, name: str) -> list[str]:
     `network proxy`, which 400s ("not running") against a stopped VM — the case hit
     when re-provisioning an existing sandbox left stopped by a prior provision."""
     return runner.advise(
-        ["docker", "sandbox", "exec", name, "true"],
+        [*sandbox_cli.base(), "exec", name, "true"],
         why=f"ensure sandbox '{name}' is running before configuring its network",
     )
 
@@ -372,10 +440,11 @@ def provision(
     allow_hosts: tuple[str, ...] = DEFAULT_ALLOW_HOSTS,
     home: Path | None = None,
     registry_path: Path | None = None,
+    ollama_url: str = DEFAULT_OLLAMA_URL,
 ) -> list[list[str]]:
     """Get the sandbox to 'ready': create + egress hole + stop (so the policy applies
     on next start). Does NOT launch the TUI — that's `start`."""
-    ollama.announce_loopback()
+    ollama.announce_lan_exposure()
     if harness == DEFAULT_HARNESS and not (target_abs / ".opencode" / "opencode.jsonc").is_file():
         log_info(
             "[yellow]WARN[/yellow] target has no .opencode/opencode.jsonc — "
@@ -389,7 +458,7 @@ def provision(
     cmds = [create(runner, name, target_abs, harness, home=home, registry_path=registry_path)]
     if preexisting:
         cmds.append(ensure_running(runner, name))
-    cmds.append(configure_proxy(runner, name, allow_hosts))
+    cmds.append(configure_proxy(runner, name, allow_hosts, ollama_url=ollama_url))
     # The network policy only takes on a fresh VM start; stop so the next `start`
     # applies the allow-rule.
     cmds.append(stop(runner, name))
@@ -918,8 +987,7 @@ def _exec_session(
     log_info(f"injecting {injected} via a chmod-600 --env-file")
     env_path = _build_env_file(env_path_lines, env_path_pairs, env_path_files)
     cmd = [
-        "docker",
-        "sandbox",
+        *sandbox_cli.base(),
         "exec",
         "-it",
         "-w",
@@ -1207,7 +1275,7 @@ def exec_in_container(runner: Runner, name: str, command: str, *, why: str) -> l
     Non-tty (`bash -lc`, no `-it`) so it works headless / under --apply. `exec`
     auto-starts a created-but-stopped sandbox, so this needs no explicit `start`.
     """
-    return runner.advise(["docker", "sandbox", "exec", name, "bash", "-lc", command], why=why)
+    return runner.advise([*sandbox_cli.base(), "exec", name, "bash", "-lc", command], why=why)
 
 
 def run_npm_setup(runner: Runner, name: str, plugins: list[NpmPlugin]) -> list[list[str]]:
@@ -1313,9 +1381,7 @@ def rebuild(
     if not _live(runner) or sandbox_exists(name):
         # Stop first so rm doesn't trip on a running VM, then remove.
         cmds.append(stop(runner, name))
-        cmds.append(
-            runner.advise(["docker", "sandbox", "rm", name], why=f"remove sandbox '{name}'")
-        )
+        cmds.append(runner.advise(sandbox_cli.rm_argv(name), why=f"remove sandbox '{name}'"))
     cmds += provision(
         runner,
         name,
@@ -1341,7 +1407,7 @@ def update(runner: Runner, name: str, harness: str = DEFAULT_HARNESS) -> list[st
             "`danno sandbox rebuild --harness claude` after updating Docker Desktop."
         )
         return runner.advise(
-            ["docker", "sandbox", "exec", name, "claude", "update"],
+            [*sandbox_cli.base(), "exec", name, "claude", "update"],
             why=f"update Claude Code inside sandbox '{name}'",
         )
     log_info(
@@ -1349,6 +1415,6 @@ def update(runner: Runner, name: str, harness: str = DEFAULT_HARNESS) -> list[st
         "`danno sandbox rebuild` after updating Docker Desktop."
     )
     return runner.advise(
-        ["docker", "sandbox", "exec", name, "opencode", "upgrade"],
+        [*sandbox_cli.base(), "exec", name, "opencode", "upgrade"],
         why=f"update OpenCode inside sandbox '{name}'",
     )

@@ -36,6 +36,7 @@ from book_em_danno.capture.wiring import (
     uncaptured_cloud_refs,
 )
 from book_em_danno.commands import sandbox as sb
+from book_em_danno.commands import sandbox_cli
 from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import CommandFailedError, Runner, log_info, log_warn
 from danno_validator import claurst, occ
@@ -264,7 +265,7 @@ def _setup_capture(
 def _teardown(runner: Runner, name: str) -> None:
     """Stop and remove a disposable validator sandbox (best effort under --apply)."""
     sb.stop(runner, name)
-    runner.advise(["docker", "sandbox", "rm", name], why=f"remove validator sandbox '{name}'")
+    runner.advise(sandbox_cli.rm_argv(name), why=f"remove validator sandbox '{name}'")
 
 
 def run_validate(

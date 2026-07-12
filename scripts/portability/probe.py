@@ -99,8 +99,27 @@ def check_ollama(base_url: str, timeout: int = 10) -> dict[str, object]:
     return {"url": url, "reachable": True, "error": None, "models": models}
 
 
+def classify_bash() -> tuple[str | None, str]:
+    """Resolve `bash` on PATH and classify it: git-bash | wsl-shim | other | absent.
+
+    On Windows the distinction is load-bearing: Git Bash actually runs POSIX
+    scripts, but `C:\\Windows\\System32\\bash.exe` is the WSL launcher -> danno's
+    host `bash` subprocess (tools.py:107) would run INSIDE the WSL distro.
+    """
+    path = shutil.which("bash")
+    if not path:
+        return None, "absent"
+    low = path.lower()
+    if "system32" in low:
+        return path, "wsl-shim"
+    if "\\git\\" in low or "/git/" in low:
+        return path, "git-bash"
+    return path, "other"
+
+
 def collect_env(shell_label: str, hints: dict[str, str]) -> dict[str, object]:
-    tools = ("danno", "uv", "docker", "git", "bash", "ollama")
+    tools = ("danno", "uv", "docker", "sbx", "git", "bash", "ollama")
+    bash_path, bash_kind = classify_bash()
     return {
         "timestamp_utc": datetime.now(UTC).isoformat(),
         "shell_label": shell_label,
@@ -113,7 +132,8 @@ def collect_env(shell_label: str, hints: dict[str, str]) -> dict[str, object]:
         "python_exe": sys.executable,
         "cwd": str(Path.cwd()),
         "which": {t: shutil.which(t) for t in tools},
-        "git_bash": shutil.which("bash") if sys.platform == "win32" else None,
+        "bash_path": bash_path,
+        "bash_kind": bash_kind,
         "danno_toml_in_cwd": Path("danno.toml").is_file(),
     }
 
@@ -138,31 +158,68 @@ def probe_surfaces(danno: list[str], has_toml: bool, timeout: int) -> list[dict[
 
 
 def preflight(ollama_host: str, timeout: int) -> dict[str, object]:
-    """Run-leg prerequisites: docker, the docker-sandbox subcommand, Ollama."""
+    """Run-leg prerequisites: the sandbox CLI (`sbx` or legacy `docker sandbox`),
+    docker (info only — `sbx` is standalone), and Ollama reachability."""
     docker = run_cmd(["docker", "version", "--format", "{{.Server.Version}}"], timeout)
-    sandbox = run_cmd(["docker", "sandbox", "--help"], timeout)
+    sbx = run_cmd(["sbx", "version"], timeout)
+    legacy = run_cmd(["docker", "sandbox", "--help"], timeout)
     ollama = check_ollama(ollama_host)
-    ready = bool(docker["ok"]) and bool(sandbox["ok"]) and bool(ollama["reachable"])
+    sandbox_cli = "sbx" if sbx["ok"] else ("docker sandbox" if legacy["ok"] else None)
+    ready = bool(sandbox_cli) and bool(ollama["reachable"])
     return {
         "docker": docker,
-        "docker_sandbox": sandbox,
+        "sbx": sbx,
+        "docker_sandbox_legacy": legacy,
+        "sandbox_cli": sandbox_cli,
         "ollama": ollama,
         "run_leg_ready": ready,
     }
 
 
+def capture_sbx(timeout: int) -> dict[str, object] | None:
+    """Capture `sbx` help surfaces for the migration (investigations I1-I4/I6).
+
+    None when `sbx` is absent. Full outputs land in the JSON so the sbx->danno
+    command mapping (exec `--env-file`/`-it`, `policy allow` syntax, `create`
+    blueprints, `secret` model) can be resolved from the real CLI.
+    """
+    if not shutil.which("sbx"):
+        return None
+    probes = {
+        "version": ["sbx", "version"],
+        "create --help": ["sbx", "create", "--help"],
+        "exec --help": ["sbx", "exec", "--help"],
+        "policy --help": ["sbx", "policy", "--help"],
+        "secret --help": ["sbx", "secret", "--help"],
+    }
+    return {key: run_cmd(cmd, timeout) for key, cmd in probes.items()}
+
+
 def hazard_notes(env: dict[str, object]) -> list[str]:
     notes: list[str] = []
     if env["platform"] == "win32":
-        git_bash = env["git_bash"]
-        if git_bash:
+        kind = env["bash_kind"]
+        path = env["bash_path"]
+        if kind == "git-bash":
             notes.append(
-                f"H1 MASKED: Git Bash present ({git_bash}) -> danno's host bash subprocess "
-                "(tools.py:107) will SUCCEED. This is a cmd+GitBash result, NOT pristine cmd."
+                f"H1: `bash` -> Git Bash ({path}). danno's host bash subprocess (tools.py:107) "
+                "is FOUND (no OS not-found error), but Git-Bash path translation / docker interop "
+                "under it is UNVERIFIED — not a clean pass, verify the run leg."
             )
-        else:
+        elif kind == "wsl-shim":
             notes.append(
-                "H1 will FIRE: no bash on PATH -> danno's host bash subprocess "
+                f"H1 WARNING: `bash` -> the WSL shim ({path}), NOT Git Bash. danno's host bash "
+                "subprocess (tools.py:107) would run the installer INSIDE your WSL distro against "
+                "/mnt/c paths (cross-environment) — likely misbehaves."
+            )
+        elif kind == "other":
+            notes.append(
+                f"H1: `bash` -> {path} (unclassified). Verify it can run danno's host installer "
+                "script (tools.py:107)."
+            )
+        else:  # absent
+            notes.append(
+                "H1 will FIRE: no `bash` on PATH -> danno's host bash subprocess "
                 "(tools.py:107, `install --apply`) fails at the OS level."
             )
         notes.append(
@@ -187,6 +244,7 @@ def render_markdown(report: dict[str, object]) -> str:
     lines.append(f"- **platform / arch:** `{env['platform']}` / `{env['arch']}`  ")
     lines.append(f"- **os:** {env['os']} {env['os_release']}")
     lines.append(f"- **python:** {env['python']} (`{env['python_exe']}`)")
+    lines.append(f"- **bash:** {env['bash_kind']} (`{env['bash_path'] or 'absent'}`)")
     lines.append(f"- **cwd:** `{env['cwd']}`")
     lines.append(f"- **danno.toml in cwd:** {env['danno_toml_in_cwd']}")
     lines.append("")
@@ -209,20 +267,34 @@ def render_markdown(report: dict[str, object]) -> str:
         )
     lines.append("")
     pf = report["preflight"]
-    dk, sb, oll = pf["docker"], pf["docker_sandbox"], pf["ollama"]
+    dk, oll = pf["docker"], pf["ollama"]
+    sbx_v, legacy = pf["sbx"], pf["docker_sandbox_legacy"]
     oll_status = "✅ reachable" if oll["reachable"] else f"❌ {oll['error']}"
     lines.append("## Run-leg preflight (Tier 1, P3+)")
     lines.append("")
-    lines.append(f"- **docker:** {'✅' if dk['ok'] else '❌'} (exit {dk['returncode']})")
+    lines.append(f"- **active sandbox CLI:** {pf['sandbox_cli'] or '**none**'} — R1/I5 signal")
+    lines.append(f"- **sbx:** {'✅' if sbx_v['ok'] else '❌'} (exit {sbx_v['returncode']})")
     lines.append(
-        f"- **docker sandbox subcommand:** {'✅' if sb['ok'] else '❌'} "
-        f"(exit {sb['returncode']}) — R1/I5 signal"
+        f"- **docker sandbox (legacy, deprecated):** {'✅' if legacy['ok'] else '❌'} "
+        f"(exit {legacy['returncode']})"
     )
+    lines.append(f"- **docker daemon:** {'✅' if dk['ok'] else '❌'} (exit {dk['returncode']})")
     lines.append(f"- **ollama {oll['url']}:** {oll_status}")
     if oll["reachable"]:
         lines.append(f"  - models: {', '.join(oll['models']) or '(none pulled)'}")
     lines.append(f"- **run-leg ready:** {'✅ yes' if pf['run_leg_ready'] else '❌ no'}")
     lines.append("")
+    sbx_cap = report.get("sbx")
+    if sbx_cap:
+        lines.append("## sbx help capture (migration I1-I4)")
+        lines.append("")
+        for key, res in sbx_cap.items():
+            lines.append(f"### `sbx {key}`")
+            lines.append("")
+            lines.append("```")
+            lines.append((res.get("stdout") or res.get("error") or "").strip() or "(no output)")
+            lines.append("```")
+            lines.append("")
     if report["hazards"]:
         lines.append("## Hazard notes")
         lines.append("")
@@ -261,6 +333,7 @@ def main() -> int:
         "danno_invocation": danno,
         "surfaces": surfaces,
         "preflight": preflight(args.ollama_host, args.timeout),
+        "sbx": capture_sbx(args.timeout),
         "hazards": hazard_notes(env),
     }
 
@@ -271,9 +344,10 @@ def main() -> int:
     (out_dir / f"{slug}.md").write_text(render_markdown(report), encoding="utf-8")
 
     passed = sum(1 for s in surfaces if s["ok"])
+    pf = report["preflight"]
     print(
         f"[probe] {env['os']} / {shell_label} — surfaces {passed}/{len(surfaces)} ok; "
-        f"run-leg ready: {report['preflight']['run_leg_ready']}"
+        f"sandbox CLI: {pf['sandbox_cli']}; run-leg ready: {pf['run_leg_ready']}"
     )
     for note in report["hazards"]:
         print(f"[probe] hazard: {note.splitlines()[0]}")

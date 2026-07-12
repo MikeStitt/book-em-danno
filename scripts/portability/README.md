@@ -8,9 +8,11 @@ with minimal typing — the same one command in every shell.
 
 **What it does:** `danno --help`, `danno doctor`, `danno install --help` (+ `--dry-run`
 if a `danno.toml` is in the cwd); detects OS / shell / arch / Python and `which`
-danno·uv·docker·git·bash·ollama; flags **Git Bash presence** (the H1-masking signal);
-and preflights the run leg (`docker`, the `docker sandbox` subcommand, and Ollama
-reachability). **What it does NOT do:** never `install --apply`, never a bench, no target
+danno·uv·docker·sbx·git·bash·ollama; **classifies `bash`** (git-bash vs WSL-shim vs
+absent — the H1 signal); preflights the run leg (the active sandbox CLI — **`sbx`** or the
+deprecated **`docker sandbox`** — plus Ollama reachability); and, when `sbx` is present,
+**captures `sbx {version,create,exec,policy,secret} --help`** for the sbx-migration
+investigation. **What it does NOT do:** never `install --apply`, never a bench, no target
 repo is touched. The run leg itself (P3–P5) stays manual per the plan.
 
 ## Run it (identical command in every shell)
@@ -60,8 +62,11 @@ matrix + fix backlog can be filled in one place.
 ## Reading a report
 
 - **Surfaces table** — `✅/❌` + exit code + first error line per danno command.
-- **Run-leg preflight** — whether `docker`, the `docker sandbox` subcommand (the **R1/I5**
-  signal — is it available on this OS?), and Ollama are all ready.
-- **Hazard notes (Windows)** — whether **H1 is masked** (Git Bash on PATH → danno's host
-  `bash` subprocess will succeed, so it's a *cmd+GitBash* result, **not** pristine cmd) and
-  the **H4** secret-permissions caveat. Record these honestly when judging cmd/PowerShell.
+- **Run-leg preflight** — the **active sandbox CLI** (`sbx` preferred, else the deprecated
+  `docker sandbox`; the **R1/I5** signal), docker, and Ollama.
+- **sbx help capture** — the raw `sbx … --help` outputs (only when `sbx` is installed) that
+  feed the sbx-migration plan's investigations (exec `--env-file`/`-it`, `policy allow`
+  syntax, `create` blueprints, `secret` model).
+- **Hazard notes (Windows)** — the **H1** classification: `git-bash` (found, but path/docker
+  interop unverified), **`wsl-shim`** (⚠️ `bash` is `System32\bash.exe` → danno's host bash
+  would run *inside WSL*), or absent (H1 fires); plus the **H4** secret-permissions caveat.

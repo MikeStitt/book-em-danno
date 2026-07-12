@@ -31,11 +31,9 @@ from book_em_danno.commands.sandbox import exec_in_container
 from book_em_danno.core.exec import Runner
 from danno_validator.driver import (
     CLAURST_MODEL_FLAG,
-    CLAURST_OLLAMA_HOST,
-    CLAURST_RELAY_DEFAULT_UPSTREAM_PORT,
     Turn,
     TurnFn,
-    _claurst_script,
+    _claurst_ollama_host,
     claurst_run,
 )
 
@@ -99,10 +97,20 @@ def install_claurst(runner: Runner, sandbox: str) -> list[str]:
         # already present keeps an upgrade from re-running `apt-get update`, whose index
         # refresh can fail (e.g. a third-party repo's clock skew) and would otherwise
         # abort the whole install under `set -e` before the claurst download.
+        # A fresh `shell` VM runs a boot-time apt (its first `exec` auto-starts the VM),
+        # which races this install for /var/lib/apt/lists/lock (exit 100, "Could not get
+        # lock … held by process N"). `DPkg::Lock::Timeout` does NOT cover the `apt-get
+        # update` lists lock, and a one-shot lock-wait still loses a TOCTOU race (boot apt
+        # frees the lock, we check, it re-grabs before we acquire), so RETRY each apt step
+        # until the lock clears — bounded ~5 min, then fail loud. `apt_get` returns on the
+        # first success; set -e is preserved (the failing `apt-get` is not the last command
+        # in the `&&`). Verified reliable on sbx v0.34.0, 2026-07-11.
         "ldconfig -p 2>/dev/null | grep -q libasound.so.2 || { "
-        "sudo -E apt-get update -qq; "
-        "sudo -E apt-get install -y -qq libasound2t64 "
-        "|| sudo -E apt-get install -y -qq libasound2; }; "
+        "apt_get() { for _ in $(seq 1 60); do "
+        'sudo -E apt-get -o DPkg::Lock::Timeout=300 "$@" && return 0; sleep 5; done; '
+        "return 1; }; "
+        "apt_get update -qq; "
+        "apt_get install -y -qq libasound2t64 || apt_get install -y -qq libasound2; }; "
         'd=$(mktemp -d); cd "$d"; '
         # Resume + retry: the egress proxy truncates the CDN transfer intermittently.
         "curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 -C - "
@@ -124,23 +132,20 @@ def interactive_launch_script(
     """`container_argv` for an INTERACTIVE claurst session — the `danno sandbox start
     --agent claurst` counterpart of headless `claurst_run`.
 
-    Returns `["bash", "-lc", <script>]` where the script is the SAME Ollama-relay
-    bracket the headless path uses (`driver._claurst_script`: relay backgrounded on
-    127.0.0.1:11434, reaped via `trap … EXIT`) wrapped around a TTY claurst run — no
-    `-p`, so claurst opens its interactive UI. The relay lives exactly as long as this
-    single long-running `docker sandbox exec` (the whole session), which is why no
-    persistent daemon is needed; the headless per-turn path is reused unchanged.
+    Returns `["bash", "-lc", <script>]` running a TTY claurst (no `-p`, so it opens
+    its interactive UI). A LOCAL Ollama ref runs RELAY-FREE (plan W3): claurst dials
+    host Ollama at `host.docker.internal:11434` directly through the sandbox egress
+    proxy, mirroring the headless `claurst_run` path.
 
     `model_ref` is claurst's `-m <provider>/<tag>` (already resolved + checked by the
-    caller); `passthru` is the agent's `--`-forwarded args, verbatim. A LOCAL Ollama ref
-    (`ollama/…`, or None for claurst's default) is run inside the relay bracket as above.
-    A CLOUD ref (e.g. `nvidia/…`) needs no relay: claurst dials the provider directly
-    through the sandbox egress proxy (`HTTPS_PROXY` is in the env-file, and the fork build
-    honors it), with the provider key injected by `start` — so the command is a plain
-    `claurst` argv, no `OLLAMA_HOST`. `capture_port`, when set (`--capture`), points the
-    relay at a host-side recording proxy so claurst's Ollama wire traffic is recorded
-    (buffered, so live token-streaming is lost); it applies only to the local relay path,
-    not cloud."""
+    caller); `passthru` is the agent's `--`-forwarded args, verbatim. A CLOUD ref (e.g.
+    `nvidia/…`) likewise dials the provider directly through the sandbox egress proxy
+    (`HTTPS_PROXY` is in the env-file, honored by the fork build), with the provider key
+    injected by `start` — a plain `claurst` argv, no `OLLAMA_HOST`. `capture_port`, when
+    set (`--capture`), is the one case that still stands up the in-VM relay
+    (`driver._claurst_script`, backgrounded on 127.0.0.1:11434, reaped via `trap … EXIT`)
+    pointed at a host-side recording proxy so Ollama wire traffic is recorded (buffered,
+    so live token-streaming is lost); W6 will make capture relay-free too."""
     argv = ["claurst"]
     if model_ref is not None:
         argv += [CLAURST_MODEL_FLAG, model_ref]
@@ -149,9 +154,10 @@ def interactive_launch_script(
     if not is_local:
         # Cloud: no Ollama relay; claurst reaches the provider via HTTPS_PROXY directly.
         return argv
-    claurst_cmd = f"OLLAMA_HOST={CLAURST_OLLAMA_HOST} {shlex.join(argv)}"
-    upstream_port = CLAURST_RELAY_DEFAULT_UPSTREAM_PORT if capture_port is None else capture_port
-    return ["bash", "-lc", _claurst_script(claurst_cmd, upstream_port=upstream_port)]
+    # Relay-free (W3 + W6): claurst dials host Ollama — or, under --capture, the host-side
+    # recording proxy — directly through the egress proxy. No in-VM relay.
+    ollama_host = _claurst_ollama_host(capture_port)
+    return ["bash", "-lc", f"OLLAMA_HOST={ollama_host} {shlex.join(argv)}"]
 
 
 def authed_claurst_run(
