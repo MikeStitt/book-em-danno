@@ -96,7 +96,7 @@ def test_configure_proxy_opens_ollama_hole() -> None:
 
 
 def test_provision_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ollama, "loopback_warning", lambda **kw: None)
+    monkeypatch.setattr(ollama, "lan_exposure_warning", lambda **kw: None)
     r = RecordingRunner()
     sandbox.provision(r, "probe", tmp_path)
     assert r.joined() == [
@@ -112,7 +112,7 @@ def test_provision_existing_sandbox_starts_before_proxy(
     # Re-provision under --apply when the sandbox already exists (stopped): create is
     # skipped, and the VM is started before `network proxy` (which 400s on a stopped
     # VM). Order must be ensure-running → proxy → stop.
-    monkeypatch.setattr(ollama, "loopback_warning", lambda **kw: None)
+    monkeypatch.setattr(ollama, "lan_exposure_warning", lambda **kw: None)
     monkeypatch.setattr(sandbox, "sandbox_exists", lambda name: True)
     r = RecordingRunner()
     r.apply = True
@@ -161,7 +161,7 @@ def test_provision_claurst_installs_after_stop(
 ) -> None:
     # Same create(shell)/proxy/stop order as opencode, plus a trailing install exec —
     # placed after `stop` so it auto-starts the VM with the egress allow-policy armed.
-    monkeypatch.setattr(ollama, "loopback_warning", lambda **kw: None)
+    monkeypatch.setattr(ollama, "lan_exposure_warning", lambda **kw: None)
     r = RecordingRunner()
     sandbox.provision(r, "probe", tmp_path, harness="claurst")
     joined = r.joined()
@@ -177,23 +177,23 @@ def test_provision_claurst_installs_after_stop(
 def test_provision_opencode_does_not_install_claurst(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(ollama, "loopback_warning", lambda **kw: None)
+    monkeypatch.setattr(ollama, "lan_exposure_warning", lambda **kw: None)
     r = RecordingRunner()
     sandbox.provision(r, "probe", tmp_path)  # default opencode
     assert not any("claurst" in c for c in r.joined())
 
 
-def test_launch_claurst_wraps_relay_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_launch_claurst_relay_free_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
     r = RecordingRunner()
     sandbox.launch(r, "probe", Path("/repo"), harness="claurst", model="ollama/gemma4:26b")
     cmd = r.commands[0]
     assert cmd[8:11] == ["probe", "bash", "-lc"]
     script = cmd[11]
     # the interactive claurst command: model passed as -m, NO -p (it must open the TUI)
-    assert "OLLAMA_HOST=http://127.0.0.1:11434 claurst -m ollama/gemma4:26b" in script
+    # W3: relay-free — claurst dials host Ollama directly through the egress proxy.
+    assert "OLLAMA_HOST=http://host.docker.internal:11434 claurst -m ollama/gemma4:26b" in script
     assert "claurst -p" not in script
-    # the relay bracket is reused from the headless path (backgrounded + reaped on exit)
-    assert "RELAY_PY" in script and "trap 'kill $DANNO_RELAY_PID" in script
+    assert "RELAY_PY" not in script  # no in-VM relay bracket
 
 
 def test_launch_claurst_forwards_passthru(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -423,7 +423,7 @@ def test_create_occ_uses_shell_image(tmp_path: Path) -> None:
 
 def test_provision_occ_installs_after_stop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Same create(shell)/proxy/stop order as claurst, plus a trailing clone/patch exec.
-    monkeypatch.setattr(ollama, "loopback_warning", lambda **kw: None)
+    monkeypatch.setattr(ollama, "lan_exposure_warning", lambda **kw: None)
     r = RecordingRunner()
     sandbox.provision(r, "probe", tmp_path, harness="occ")
     joined = r.joined()
@@ -439,7 +439,7 @@ def test_provision_occ_installs_after_stop(tmp_path: Path, monkeypatch: pytest.M
 def test_provision_opencode_does_not_install_occ(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(ollama, "loopback_warning", lambda **kw: None)
+    monkeypatch.setattr(ollama, "lan_exposure_warning", lambda **kw: None)
     r = RecordingRunner()
     sandbox.provision(r, "probe", tmp_path)  # default opencode
     assert not any("git clone" in c for c in r.joined())
@@ -645,7 +645,7 @@ def test_shell_fails_loud_when_not_provisioned(
 def test_shell_provisions_under_apply(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Under --apply, shell provisions first (create/proxy/stop) then opens the shell,
     # exactly as start provisions then launches.
-    monkeypatch.setattr(ollama, "loopback_warning", lambda **kw: None)
+    monkeypatch.setattr(ollama, "lan_exposure_warning", lambda **kw: None)
     monkeypatch.setattr(sandbox, "sandbox_exists", lambda name: False)
     r = RecordingRunner()
     r.apply = True
@@ -683,7 +683,7 @@ def test_rebuild_stops_and_removes_without_force_flag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # `docker sandbox rm` has no -f flag; rebuild must stop-then-rm (no force).
-    monkeypatch.setattr(ollama, "loopback_warning", lambda **kw: None)
+    monkeypatch.setattr(ollama, "lan_exposure_warning", lambda **kw: None)
     r = RecordingRunner()
     sandbox.rebuild(r, "probe", tmp_path)
     assert r.joined() == [

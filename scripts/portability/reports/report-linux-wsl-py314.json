@@ -1,0 +1,133 @@
+{
+  "env": {
+    "timestamp_utc": "2026-07-09T20:43:50.376428+00:00",
+    "shell_label": "wsl",
+    "shell_hints": {
+      "WSL_DISTRO_NAME": "Ubuntu"
+    },
+    "platform": "linux",
+    "os": "Linux",
+    "os_release": "6.6.87.2-microsoft-standard-WSL2",
+    "arch": "x86_64",
+    "python": "3.14.3",
+    "python_exe": "/mnt/c/projects/try-danno/wsl/book-em-danno/.venv/bin/python3",
+    "cwd": "/mnt/c/projects/try-danno/wsl/book-em-danno",
+    "which": {
+      "danno": "/mnt/c/projects/try-danno/wsl/book-em-danno/.venv/bin/danno",
+      "uv": "/home/mike/.local/bin/uv",
+      "docker": "/mnt/c/Program Files/Docker/Docker/resources/bin/docker",
+      "git": "/usr/bin/git",
+      "bash": "/usr/bin/bash",
+      "ollama": null
+    },
+    "git_bash": null,
+    "danno_toml_in_cwd": false
+  },
+  "danno_invocation": [
+    "danno"
+  ],
+  "surfaces": [
+    {
+      "cmd": [
+        "danno",
+        "--help"
+      ],
+      "ok": true,
+      "returncode": 0,
+      "stdout": "Usage: danno [OPTIONS] COMMAND [ARGS]...                                                                                                                  \n                                                                                                                                                           \n Declarative, transparent setup of OpenCode in a Docker Sandbox, driven by danno.toml.                                                                     \n                                                                                                                                                           \n\u256d\u2500 Options \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 --version                     Show the danno version and exit.                                                                                          \u2502\n\u2502 --install-completion          Install completion for the current shell.                                                                                 \u2502\n\u2502 --show-completion             Show completion for the current shell, to copy it or customize the installation.                                          \u2502\n\u2502 --help                        Show this message and exit.                                                                                               \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n\u256d\u2500 Commands \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 install    Provision a target project: config + Ollama models + tools + sandbox.                                                                        \u2502\n\u2502 doctor     Read-only preflight: report environment readiness with copy-paste fixes.                                            \n... [truncated]",
+      "stderr": "",
+      "error": null,
+      "surface": "S0 danno --help"
+    },
+    {
+      "cmd": [
+        "danno",
+        "doctor",
+        "--help"
+      ],
+      "ok": true,
+      "returncode": 0,
+      "stdout": "Usage: danno doctor [OPTIONS]                                                                                                                             \n                                                                                                                                                           \n Read-only preflight: report environment readiness with copy-paste fixes.                                                                                  \n                                                                                                                                                           \n\u256d\u2500 Options \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 --help          Show this message and exit.                                                                                                             \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f",
+      "stderr": "",
+      "error": null,
+      "surface": "S0 danno doctor --help"
+    },
+    {
+      "cmd": [
+        "danno",
+        "doctor"
+      ],
+      "ok": false,
+      "returncode": 1,
+      "stdout": "danno doctor \u2014 preflight\n\nRuntime (required to provision and run the sandbox):\n  PASS  Python >= 3.13\n  PASS  git on PATH\n  FAIL  Docker daemon running\n        fix: start Docker Desktop\n  FAIL  docker sandbox subcommand\n        fix: update Docker Desktop (the sandbox feature must be present)\n  FAIL  ollama installed\n        fix: brew install ollama  (or see https://ollama.com)\n  FAIL  Ollama server reachable\n        fix: start it: OLLAMA_HOST=0.0.0.0:11434 ollama serve\n  FAIL  an Ollama model pulled\n        fix: pull a tool-capable model: ollama pull gemma4:26b\n  PASS  Ollama bound for sandbox access (0.0.0.0, not loopback-only)\n\n5 required check(s) failed; 0 warning(s).",
+      "stderr": "",
+      "error": null,
+      "surface": "S1 danno doctor"
+    },
+    {
+      "cmd": [
+        "danno",
+        "install",
+        "--help"
+      ],
+      "ok": true,
+      "returncode": 0,
+      "stdout": "Usage: danno install [OPTIONS]                                                                                                                            \n                                                                                                                                                           \n Provision a target project: config + Ollama models + tools + sandbox.                                                                                     \n                                                                                                                                                           \n Default prints the host/Docker commands to run yourself; `--apply` executes.                                                                              \n Stops before the TUI \u2014 launch with `danno sandbox start`.                                                                                                 \n                                                                                                                                                           \n\u256d\u2500 Options \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 --target             PATH  Target project. [default: .]                                                                                                 \u2502\n\u2502 --ados-repo          TEXT  ADOS checkout to install from (else auto-detected).                                                                          \u2502\n\u2502 --config             PATH  Path to danno.toml. [default: danno.toml]                                                                                    \u2502\n\u2502 --apply                    Execute host/Docker/Ollama commands instead of only printing them.                                                           \u2502\n\u2502 --verbose    -v            Debug output.                                                                                       \n... [truncated]",
+      "stderr": "",
+      "error": null,
+      "surface": "S2 danno install --help"
+    }
+  ],
+  "preflight": {
+    "docker": {
+      "cmd": [
+        "docker",
+        "version",
+        "--format",
+        "{{.Server.Version}}"
+      ],
+      "ok": false,
+      "returncode": 1,
+      "stdout": "The command 'docker' could not be found in this WSL 2 distro.\nWe recommend to activate the WSL integration in Docker Desktop settings.\n\nFor details about using Docker Desktop with WSL 2, visit:\n\nhttps://docs.docker.com/go/wsl2/",
+      "stderr": "",
+      "error": null
+    },
+    "docker_sandbox": {
+      "cmd": [
+        "docker",
+        "sandbox",
+        "--help"
+      ],
+      "ok": false,
+      "returncode": 1,
+      "stdout": "The command 'docker' could not be found in this WSL 2 distro.\nWe recommend to activate the WSL integration in Docker Desktop settings.\n\nFor details about using Docker Desktop with WSL 2, visit:\n\nhttps://docs.docker.com/go/wsl2/",
+      "stderr": "",
+      "error": null
+    },
+    "ollama": {
+      "url": "http://192.168.1.5:11434/api/tags",
+      "reachable": true,
+      "error": null,
+      "models": [
+        "qwen3-coder-next-65k:latest",
+        "gpt-qwen3-coder-next:latest",
+        "qwen3-coder-next-ud-q4-65k:latest",
+        "Qwen3-Coder-Next-GGUF:UD-Q4_K_M",
+        "hf.co/unsloth/Qwen3-Coder-Next-GGUF:UD-Q4_K_M",
+        "qwen3-coder-next:latest",
+        "gpt-oss:20b",
+        "gemma3:27b",
+        "qwen3.6:27b-q4_K_M",
+        "gemma4:26b",
+        "gemma4:31b-mlx",
+        "gemma4:26b-mlx",
+        "gemma3:1b",
+        "llama3.3:latest",
+        "llama3.2:latest",
+        "llama2:13b"
+      ]
+    },
+    "run_leg_ready": false
+  },
+  "hazards": []
+}

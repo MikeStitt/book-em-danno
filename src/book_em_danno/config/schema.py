@@ -220,6 +220,11 @@ class Sandbox(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     agent_home: str = "per-project"
+    # SBX-TRANSITION(docker-sandbox-deprecation): which sandbox CLI to drive.
+    # "auto" prefers `sbx` when installed, else the deprecated `docker sandbox`.
+    # The "docker" branch is transition support — REMOVE it and this option once
+    # docker sandbox is gone everywhere danno runs. (env DANNO_SANDBOX_CLI overrides.)
+    cli: Literal["auto", "sbx", "docker"] = "auto"
 
     @field_validator("agent_home")
     @classmethod

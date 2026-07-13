@@ -14,7 +14,7 @@ from ..config.loader import DannoConfigError
 from ..config.schema import DannoConfig, OllamaBackend
 from ..core import registry
 from ..core.exec import CommandFailedError, Runner, log_err, log_info, log_warn
-from . import ollama, sandbox, tools
+from . import ollama, sandbox, sandbox_cli, tools
 
 
 class InstallError(Exception):
@@ -81,6 +81,9 @@ def run_install(
     """Run the full provisioning happy path. Validation already happened in the
     loader; this orchestrates config, models, tools, and sandbox creation."""
     target_abs = _resolve_target(target)
+    # SBX-TRANSITION: pick the sandbox CLI from [sandbox].cli (env DANNO_SANDBOX_CLI
+    # still overrides in resolve_backend).
+    sandbox_cli.set_backend(cfg.sandbox.cli)
     name = sandbox.default_name(target_abs)
     # Resolve the agent home the same way `sandbox start` does, so install creates
     # the sandbox with the home mount already in place — otherwise a later `start`
@@ -119,7 +122,13 @@ def run_install(
         )
 
     log_info("step 4/5 — sandbox")
-    sandbox.provision(runner, name, target_abs, home=home, registry_path=registry.default_path())
+    sandbox.provision(
+        runner,
+        name,
+        target_abs,
+        home=home,
+        registry_path=registry.default_path(),
+    )
     # OpenCode npm plugins install themselves from the generated opencode.jsonc;
     # only their optional in-container `setup` steps need an exec, post-create.
     sandbox.run_npm_setup(runner, name, cfg.npm)

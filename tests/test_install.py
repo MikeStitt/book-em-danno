@@ -37,7 +37,7 @@ def _config() -> DannoConfig:
 
 
 def test_install_orchestration_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ollama, "loopback_warning", lambda **k: None)
+    monkeypatch.setattr(ollama, "lan_exposure_warning", lambda **k: None)
     # Deterministic: pretend no models are present so every tag is pulled.
     monkeypatch.setattr(ollama, "installed_tags", lambda **k: set())
     # Keep agent-home + registry off real host state (tmp_path has no danno.toml,
@@ -82,7 +82,7 @@ def test_install_skips_already_present_ollama_models(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A model already in `ollama list` is not re-pulled; an absent one is.
-    monkeypatch.setattr(ollama, "loopback_warning", lambda **k: None)
+    monkeypatch.setattr(ollama, "lan_exposure_warning", lambda **k: None)
     monkeypatch.setattr(sandbox, "_agent_home_root", lambda: tmp_path / "agent-home")
     monkeypatch.setattr(registry, "default_path", lambda: tmp_path / "sandboxes.json")
     # gemma4:26b is the only defined ollama model; mark it present (bare tag → :latest
@@ -103,7 +103,7 @@ def test_install_fails_loud_when_a_tool_fails(
 ) -> None:
     # A failed tool installer must raise (no silent "ready") and must abort before
     # the sandbox is provisioned.
-    monkeypatch.setattr(ollama, "loopback_warning", lambda **k: None)
+    monkeypatch.setattr(ollama, "lan_exposure_warning", lambda **k: None)
     monkeypatch.setattr(ollama, "installed_tags", lambda **k: set())
 
     def _boom(*a: object, **k: object) -> None:

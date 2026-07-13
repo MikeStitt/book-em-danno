@@ -217,12 +217,15 @@ def tool_call_probe(tag: str, *, host_url: str = DEFAULT_HOST_URL, num_ctx: int 
         return False
 
 
-def loopback_warning(*, port: int = 11434) -> str | None:
-    """If Ollama is bound to 127.0.0.1 only, return the fix advice, else None.
+def lan_exposure_warning(*, port: int = 11434) -> str | None:
+    """If Ollama is bound to a public interface (0.0.0.0 / *), return advice to
+    rebind loopback-only, else None.
 
-    A loopback-bound server is unreachable from the sandbox VM; the fix is to
-    rebind to 0.0.0.0. Uses `lsof`; returns None if lsof is unavailable or the
-    port isn't listening (no false alarms).
+    Both sandbox backends' egress proxies run as host processes and dial the host's
+    own loopback, so a loopback-only Ollama (`127.0.0.1`) is fully reachable from the
+    sandbox — and is the SAFER binding: `0.0.0.0` exposes Ollama to the whole LAN.
+    (Verified end-to-end on sbx + docker, 2026-07-11.) Uses `lsof`; returns None if
+    lsof is unavailable or the port isn't listening (no false alarms).
     """
     try:
         out = subprocess.run(
@@ -235,18 +238,18 @@ def loopback_warning(*, port: int = 11434) -> str | None:
         return None
     if not out.strip():
         return None
-    bound = f"127.0.0.1:{port}"
     public = (f"0.0.0.0:{port}", f"*:{port}")
-    if bound in out and not any(p in out for p in public):
+    if any(p in out for p in public):
         return (
-            f"Host Ollama is bound to {bound} only — the sandbox VM cannot reach it. "
-            f"Restart it with: OLLAMA_HOST=0.0.0.0:{port} ollama serve"
+            f"Host Ollama is bound to a public interface — this exposes it to your "
+            f"whole LAN. The sandbox reaches a loopback-only server through its host "
+            f"proxy, so rebind safely with: OLLAMA_HOST=127.0.0.1:{port} ollama serve"
         )
     return None
 
 
-def announce_loopback(*, port: int = 11434) -> None:
-    """Print the loopback warning if one applies (shared by sandbox + doctor)."""
-    msg = loopback_warning(port=port)
+def announce_lan_exposure(*, port: int = 11434) -> None:
+    """Print the LAN-exposure warning if one applies (shared by sandbox + doctor)."""
+    msg = lan_exposure_warning(port=port)
     if msg:
         log_info(f"[yellow]WARN[/yellow] {msg}")

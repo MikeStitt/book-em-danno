@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from book_em_danno.commands import sandbox_cli
 from book_em_danno.core.exec import CaptureResult, CommandFailedError, Runner
 
 # Dropped into every validator-owned workspace; the gate that lets reset_workspace
@@ -82,14 +83,27 @@ CLAURST_RESUME_FLAG = "--resume"
 CLAURST_SKIP_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
 CLAURST_CWD_FLAG = "--cwd"
 
-# Claurst's Rust HTTP client ignores HTTP(S)_PROXY, and the sandbox blocks direct
-# egress + rejects CONNECT tunnels, so claurst cannot reach host Ollama itself. It
-# CAN reach 127.0.0.1 (in NO_PROXY). This relay listens there and re-issues each
-# request to host Ollama THROUGH the squid proxy (a regular proxied HTTP forward,
-# which it allows). Claurst points at it via `OLLAMA_HOST`. Because execs reap
-# their children, the relay is launched INSIDE every claurst exec and dies with it
-# (see `claurst_run`). Verified 2026-06-23; mirrors `scratch/.../ollama_relay.py`.
-CLAURST_OLLAMA_HOST = "http://127.0.0.1:11434"
+# Relay-free local Ollama (plan W3, verified S1 2026-07-11 on sbx AND legacy): the
+# danno fork build's reqwest DOES honor the sandbox egress proxy, so claurst reaches
+# host Ollama directly at `host.docker.internal:11434` (rewritten to `localhost` by
+# both proxies) — no in-VM relay. (The old "Rust client ignores HTTP(S)_PROXY" note
+# was outdated for the fork build.)
+CLAURST_RELAY_FREE_OLLAMA_HOST = "http://host.docker.internal:11434"
+
+# The in-VM relay (listens on 127.0.0.1:11434, re-issues THROUGH the egress proxy) is now
+# used ONLY by occ-on-legacy / occ-under-capture (see `occ_run` + `OCC_LOCAL_OPENAI_ENV`);
+# claurst is fully relay-free (W3 + W6). See `_claurst_script`.
+
+
+def _claurst_ollama_host(capture_port: int | None) -> str:
+    """The relay-free `OLLAMA_HOST` for a LOCAL claurst turn (W3 + W6). Normally host
+    Ollama at `host.docker.internal:11434`; under `--capture` the host-side recording
+    proxy at `host.docker.internal:<capture_port>` (allowed in egress by
+    `capture_allow_hosts`). Both are reached through the sandbox egress proxy — no relay."""
+    if capture_port is None:
+        return CLAURST_RELAY_FREE_OLLAMA_HOST
+    return f"http://host.docker.internal:{capture_port}"
+
 
 # Under `--capture` the relay forwards to a host-side recording proxy (capture/proxy.py)
 # instead of host Ollama directly, so claurst's wire traffic is recorded with the same
@@ -287,7 +301,7 @@ def capture_exec(runner: Runner, name: str, command: str, *, check: bool = False
     inspect rather than streamed. `exec` auto-starts a stopped VM, so no explicit
     start is needed.
     """
-    return runner.capture(["docker", "sandbox", "exec", name, "bash", "-lc", command], check=check)
+    return runner.capture([*sandbox_cli.base(), "exec", name, "bash", "-lc", command], check=check)
 
 
 @dataclass
@@ -460,7 +474,7 @@ def opencode_run(
     non-zero HUT exit, since a stalled/errored agent turn is the signal the battery
     is measuring.
     """
-    cmd = ["docker", "sandbox", "exec"]
+    cmd = [*sandbox_cli.base(), "exec"]
     if workspace is not None:
         cmd += ["-w", str(workspace)]
     if env_file is not None:
@@ -702,7 +716,7 @@ def claude_run(
     non-zero exit, since a stalled/errored turn is the signal the battery
     measures.
     """
-    cmd = ["docker", "sandbox", "exec"]
+    cmd = [*sandbox_cli.base(), "exec"]
     if workspace is not None:
         cmd += ["-w", str(workspace)]
     if env_file is not None:
@@ -885,15 +899,14 @@ def claurst_run(
     `--resume` (a no-op in practice — claurst exposes no session id, M0). `agent` is
     accepted for interface parity but ignored (claurst has no opencode `--agent`).
 
-    For a LOCAL Ollama model the turn is wrapped in a `bash -lc` script that stands
-    up the Ollama relay for the duration of the exec (see `_claurst_script`), since
-    claurst's proxy-ignoring client cannot otherwise reach host Ollama. A CLOUD model
-    (`nvidia/…`) skips the relay entirely and runs as a plain argv: claurst dials the
-    provider directly through the sandbox `HTTPS_PROXY` (honored by the fork build),
-    with the provider key supplied via `env_file`. `env_file` is forwarded to
-    `docker sandbox exec` either way (local Ollama needs none). `capture_port`, when
-    set, points the relay at a `--capture` recording proxy (see `_claurst_script`) so
-    the turn's Ollama wire traffic is recorded; it applies only to the local relay path.
+    For a LOCAL Ollama model the turn runs RELAY-FREE (plan W3 + W6): claurst dials host
+    Ollama at `host.docker.internal:11434` directly through the sandbox egress proxy,
+    which the fork build's client honors (verified S1, sbx + legacy). Under `--capture`
+    it dials the host-side recording proxy the same way
+    (`host.docker.internal:<capture_port>`, opened in egress by `capture_allow_hosts`) —
+    still no in-VM relay. A CLOUD model (`nvidia/…`) likewise dials the provider directly
+    through `HTTPS_PROXY`, with the provider key supplied via `env_file`. `env_file` is
+    forwarded to the sandbox exec either way (local Ollama needs none).
 
     Returns the parsed events alongside the raw capture — never raises on a non-zero
     exit, since a stalled/errored turn is the signal the battery measures.
@@ -908,22 +921,20 @@ def claurst_run(
     if session is not None:
         argv += [CLAURST_RESUME_FLAG, session]
     argv.append(prompt)
-    cmd = ["docker", "sandbox", "exec"]
+    cmd = [*sandbox_cli.base(), "exec"]
     if env_file is not None:
         cmd += ["--env-file", str(env_file)]
-    # A LOCAL Ollama model (`ollama/…`, or claurst's default when `model` is None) needs
-    # the in-VM relay because claurst's client ignores the egress proxy and cannot reach
-    # host Ollama otherwise. A CLOUD model (`nvidia/…`) needs no relay: claurst routes by
-    # the provider prefix and dials the provider directly through `HTTPS_PROXY` (honored by
-    # the fork build), with the key supplied via `env_file` — so it runs as a plain argv,
-    # no `bash -lc` wrapper and no `OLLAMA_HOST`. `capture_port` only applies to the relay.
+    # A LOCAL Ollama model (`ollama/…`, or claurst's default when `model` is None) is now
+    # fully RELAY-FREE (plan W3 + W6): claurst honors the egress proxy, so it dials host
+    # Ollama at host.docker.internal directly — and under `--capture` it dials the host-side
+    # recording proxy the same way (`host.docker.internal:<capture_port>`, allowed in egress
+    # by `capture_allow_hosts`), no in-VM relay. A CLOUD model (`nvidia/…`) dials the
+    # provider directly through `HTTPS_PROXY` (honored by the fork build), with the key
+    # supplied via `env_file` — a plain argv, no `bash -lc`, no `OLLAMA_HOST`.
     is_local = model is None or model.startswith("ollama/")
     if is_local:
-        claurst_cmd = f"OLLAMA_HOST={CLAURST_OLLAMA_HOST} {shlex.join(argv)}"
-        upstream_port = (
-            CLAURST_RELAY_DEFAULT_UPSTREAM_PORT if capture_port is None else capture_port
-        )
-        cmd += [name, "bash", "-lc", _claurst_script(claurst_cmd, upstream_port=upstream_port)]
+        ollama_host = _claurst_ollama_host(capture_port)
+        cmd += [name, "bash", "-lc", f"OLLAMA_HOST={ollama_host} {shlex.join(argv)}"]
     else:
         cmd += [name, *argv]
     result = runner.capture(cmd)
@@ -1099,7 +1110,7 @@ def occ_run(
         node_argv += [OCC_MODEL_FLAG, m_value]
     node_argv += [OCC_MAX_TURNS_FLAG, str(max_turns), OCC_PRINT_FLAG, prompt]
 
-    cmd = ["docker", "sandbox", "exec"]
+    cmd = [*sandbox_cli.base(), "exec"]
     if workspace is not None:
         cmd += ["-w", str(workspace)]
     if env_file is not None:

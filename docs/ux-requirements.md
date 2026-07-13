@@ -105,7 +105,7 @@ executing.
   project even though ADOS is declared `install_to = "sandbox"` (the project IS the
   mount).
 
-Full diagram + allow/deny table: [README "Network model"](../README.md#network-model-docker-sandbox).
+Full diagram + allow/deny table: [README "Network model"](../README.md#network-model-sbx-and-the-legacy-docker-sandbox).
 
 ## 4. `danno.toml` schema
 
