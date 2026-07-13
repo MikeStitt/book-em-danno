@@ -1,8 +1,9 @@
 # Bug 8 — Auto-compact fires unprompted turns it can never satisfy (livelock), including on guessed context windows
 
-Branch: _none yet_ — **this is the required base fix for the context-meter cluster**
-(Bugs 4/5; see README). Issue-first: mechanism fully root-caused, fix direction below,
-code not yet written.
+Branch: `fix/auto-compact-safety` (commit `9be67e1`, off `upstream/main` 59c397f) —
+**the required base fix for the context-meter cluster** (Bugs 4/5/10; see README).
+Code written 2026-07-12; compiles (`cargo check -p claurst`). Behavioral re-verification
+against a live session still pending.
 Files: `src-rust/crates/cli/src/main.rs` (trigger ~2995 at fork point `59c397f`,
 ~3236 at current upstream tip), `src-rust/crates/tui/src/app.rs` (window fallback).
 
@@ -79,9 +80,16 @@ models; that is exactly how it was discovered.
    with `used_pct` still ≥ the trigger threshold; cleared only when `used_pct` drops below
    a re-arm threshold. Surface "auto-compact did not reduce context usage" as a status
    notification when latching.
-3. (Larger, optional follow-up) make the compact turn prune: replace the summarized
-   prefix of `messages` with the summary message, mirroring what a real `/compact` should
-   do.
+3. Making the compact turn actually prune history (replace the summarized prefix instead
+   of appending) is **split out as [Bug 10](bug10-auto-compact-prune-history.md)** to keep
+   this base PR small — Bug 8 makes auto-compact *safe*, Bug 10 makes it *effective*.
+
+**As implemented on `fix/auto-compact-safety`:** added `App.context_window_is_estimate`
+(set in both arms of `refresh_context_window_size`) and `App.auto_compact_latched`; gated
+the `main.rs` trigger on `!context_window_is_estimate && !auto_compact_latched`; replaced the
+cosmetic `context_used_tokens = 0` reset in the turn-complete handler with an honest
+used-pct check that latches + surfaces a loud status when compact didn't help; the latch
+clears on hysteresis (usage < 95%) or a genuine context reset (model switch / config import).
 
 **Testing**
 - With a registry-backed window: drive usage to 99%, observe exactly **one** compact

@@ -20,17 +20,21 @@ The honest structure — **Bug 8 is the required base; 4 and 5 stack on it**:
 ```
 upstream/main (59c397f)
 │
-├── Bug 8  fix/auto-compact-safety            ★ BASE — must land first
+├── Bug 8  fix/auto-compact-safety            ★ BASE — must land first ✓ written+pushed
 │   │        (provenance-gate + re-arm latch for the auto-compact trigger)
-│   ├── Bug 4  fix/ollama-context-window-fallback   STACKED on Bug 8
+│   ├── Bug 4  fix/ollama-context-window-fallback   STACKED on Bug 8 ✓ re-parented+pushed
 │   │            (edits the same refresh_context_window_size fallback arm —
 │   │             textual conflict AND semantic dependency)
-│   └── Bug 5  fix/ollama-nvidia-stream-usage       STACKED on Bug 8
-│                (different files, semantic dependency: enabling usage for
-│                 local providers is what arms the unlatched trigger)
+│   ├── Bug 5  fix/ollama-nvidia-stream-usage       STACKED on Bug 8 ✓ re-parented+pushed
+│   │            (different files, semantic dependency: enabling usage for
+│   │             local providers is what arms the unlatched trigger)
+│   └── Bug 10 fix/auto-compact-prune-history       STACKED on Bug 8 — not yet written
+│                (make the compact turn actually replace summarized history
+│                 instead of appending; only then does re-arming compact mean
+│                 anything — split out of Bug 8 to keep the base PR small)
 │
-├── Bug 9  fix/esc-cancels-query              independent (same user-facing
-│                                             failure family as Bug 8)
+├── Bug 9  fix/esc-cancels-query              independent ✓ written+pushed (same
+│                                             user-facing failure family as Bug 8)
 ├── Bug 6  fix/context-used-set-not-accumulate  independent — strictly REDUCES
 │                                             spurious auto-compact firing
 ├── Bug 1  fix/configurable-provider-stall-timeout  independent
@@ -45,14 +49,20 @@ standalone again. Bugs 1, 3, 6, 7, 9 remain genuinely independent.
 
 | # | Draft | Fork branch | Type | Depends on |
 |---|-------|-------------|------|------------|
-| Bug 8 | [bug8-auto-compact-unsafe-trigger.md](bug8-auto-compact-unsafe-trigger.md) | _not yet written_ | issue-first, **base fix** | — |
-| Bug 4 | [bug4-ollama-context-window-fallback.md](bug4-ollama-context-window-fallback.md) | `fix/ollama-context-window-fallback` | code fix | **Bug 8** |
-| Bug 5 | [bug5-ollama-nvidia-stream-usage.md](bug5-ollama-nvidia-stream-usage.md) | `fix/ollama-nvidia-stream-usage` | code fix | **Bug 8** |
-| Bug 9 | [bug9-esc-does-not-cancel-query.md](bug9-esc-does-not-cancel-query.md) | _not yet written_ | issue-first | — |
+| Bug 8 | [bug8-auto-compact-unsafe-trigger.md](bug8-auto-compact-unsafe-trigger.md) | `fix/auto-compact-safety` ✓ | code fix, **base** | — |
+| Bug 4 | [bug4-ollama-context-window-fallback.md](bug4-ollama-context-window-fallback.md) | `fix/ollama-context-window-fallback` ✓ | code fix | **Bug 8** |
+| Bug 5 | [bug5-ollama-nvidia-stream-usage.md](bug5-ollama-nvidia-stream-usage.md) | `fix/ollama-nvidia-stream-usage` ✓ | code fix | **Bug 8** |
+| Bug 9 | [bug9-esc-does-not-cancel-query.md](bug9-esc-does-not-cancel-query.md) | `fix/esc-cancels-query` ✓ | code fix | — |
 | Bug 6 | [bug6-context-used-set-not-accumulate.md](bug6-context-used-set-not-accumulate.md) | `fix/context-used-set-not-accumulate` | code fix | — |
 | Bug 1 | [bug1-configurable-provider-stall-timeout.md](bug1-configurable-provider-stall-timeout.md) | `fix/configurable-provider-stall-timeout` | code fix | — |
 | Bug 7 | [bug7-warn-on-zero-tools.md](bug7-warn-on-zero-tools.md) | `fix/warn-on-zero-tools` | code fix | — |
 | Bug 3 | [bug3-tui-scroll-repaint-ghosting.md](bug3-tui-scroll-repaint-ghosting.md) | `fix/tui-scroll-repaint-ghosting` | issue-first (docs only) | — |
+| Bug 10 | [bug10-auto-compact-prune-history.md](bug10-auto-compact-prune-history.md) | _not yet written_ | issue-first | **Bug 8** |
+
+✓ = branch exists on the fork and compiles (`cargo check -p claurst`). Bug 8 and Bug 9 were
+written 2026-07-12; Bugs 4 and 5 were re-parented onto `fix/auto-compact-safety` the same day
+(Bug 4's fallback-arm conflict resolved to keep both the local-provider default and the
+`is_estimate` flag).
 
 Why the "independence" notes on 6/1/7/9 hold:
 - **Bug 6** changes the numerator from accumulate to set-to-latest — it can only *lower*
@@ -72,20 +82,38 @@ this restructure (`v0.1.6-danno2`) must be cut from a `danno-integration` re-mer
 includes Bug 8 (and ideally Bug 9) — until then, interactive claurst-under-danno sessions
 will keep exhibiting the unprompted-compact behavior.
 
-## ⚠️ Before opening any PR
-The `fix/ollama-nvidia-stream-usage` branch on the fork **accidentally committed a built
-binary** (`claurst-linux-arm64`) and a release tarball. **Exclude those from the upstream
-PR** — cherry-pick only the `openai_compat_providers.rs` change (commit `f384b57`,
-source-only). The diffs reproduced in these drafts already filter the binary out.
-When re-parenting Bugs 4/5 onto `fix/auto-compact-safety`, that is the natural moment to
-drop the binary from history.
+## ✅ RESOLVED (2026-07-12) — fork branch is now clean
+The `fix/ollama-nvidia-stream-usage` branch had **accidentally committed a built binary**
+(`claurst-linux-arm64`, ~30 MB) alongside the Bug 5 source fix, because the loose binary at
+repo root was never gitignored. On inspection there was **only the binary — no release
+tarball** (this section previously overstated it).
 
-## Verification status (danno fork, NVIDIA NIM + Ollama, 2026-06-26 → 2026-07-10)
+Rather than force-push, the branch was **rebuilt clean**: a fresh branch rooted on the
+original base `59c397f` carries only the `openai_compat_providers.rs` change (new commit
+`26aeb09`, byte-identical source diff to the old `f384b57`), the old binary-carrying branch
+was deleted locally and on origin, and the clean branch was pushed under the same name.
+`origin/fix/ollama-nvidia-stream-usage` is now one source-only commit with no binary in its
+tree. (It was subsequently **re-parented onto `fix/auto-compact-safety`** — Bug 8 — on
+2026-07-12 per the dependency graph above; the commit is now `7028f2e`, same one-file diff.)
+
+Recurrence is blocked: `danno-integration` (the only other branch that tracked the blob) was
+scrubbed with `git rm --cached` + a `claurst-linux-*` `.gitignore` rule (commit `dafbde1`).
+The blob still exists in each branch's *history* (not purged) but no branch tree tracks it,
+so GitHub PR diffs are clean.
+
+## Verification status (danno fork, NVIDIA NIM + Ollama, 2026-06-26 → 2026-07-12)
 - Bug 1 fix confirmed: 600s default lets large-context prefills (98–157s measured) complete.
 - Bugs 5/6 confirmed against Ollama locally (meter "used" advances + no longer over-counts).
 - Bug 7 confirmed: a catalog entry missing `tool_call` now prints the eprintln warning in
   headless `-p` runs instead of silently shipping 0 tools.
-- Bug 8 confirmed live 2026-07-10 (interactive danno session, `v0.1.6-danno1`): unprompted
-  "[Auto-compact triggered …]" turns after every completed turn once context passed ~8 K
-  tokens; ESC unable to stop them (Bug 9 by inspection: no `KeyCode::Esc` in `main.rs`,
-  token cancel gated on `is_streaming`).
+- Bug 8 *mechanism* confirmed live 2026-07-10 (interactive danno session, `v0.1.6-danno1`):
+  unprompted "[Auto-compact triggered …]" turns after every completed turn once context
+  passed ~8 K tokens; ESC unable to stop them (Bug 9 by inspection: no `KeyCode::Esc` in
+  `main.rs`, token cancel gated on `is_streaming`).
+- **Bug 8 + Bug 9 fixes written 2026-07-12** (`fix/auto-compact-safety` `9be67e1`,
+  `fix/esc-cancels-query` `1c1ad5d`). Both compile (`cargo check -p claurst`, host toolchain).
+  Behavioral re-verification against a live session is still **pending** — the fixes are
+  code-reviewed and type-checked, not yet exercised end-to-end (the drafts specify
+  stub-provider wire tests). Bugs 4/5 re-parented onto Bug 8 the same day; the stacked
+  `fix/ollama-context-window-fallback` (`f554343`) and `fix/ollama-nvidia-stream-usage`
+  (`7028f2e`) both compile.

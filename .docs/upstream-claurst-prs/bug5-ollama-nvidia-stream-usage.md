@@ -1,11 +1,13 @@
 # Bug 5 — Context meter "used" never advances for Ollama / NVIDIA NIM (missing stream usage request)
 
-Branch: `fix/ollama-nvidia-stream-usage` (commit `f384b57`, off `upstream/main` 59c397f)
+Branch: `fix/ollama-nvidia-stream-usage` (commit `26aeb09`, off `upstream/main` 59c397f)
 File: `src-rust/crates/api/src/providers/openai_compat_providers.rs`
 
-> ⚠️ **The fork branch also accidentally committed a built binary
-> (`claurst-linux-arm64`) and a tarball. EXCLUDE those from the upstream PR.** Cherry-pick
-> only the source change below (`openai_compat_providers.rs`).
+> ✅ **Binary hygiene resolved (2026-07-12).** The branch previously mixed a built
+> binary (`claurst-linux-arm64`; no tarball) into the fix commit. It has been rebuilt
+> clean — a single source-only commit (`26aeb09`, byte-identical diff to the old
+> `f384b57`) with no binary in its tree — so it can be PR'd as-is. See the README's
+> "RESOLVED" section.
 
 > **⚠️ DEPENDS ON BUG 8 — do not submit standalone.** Making usage flow for local
 > providers is precisely what *arms* the auto-compact trigger: today the frozen-at-0
