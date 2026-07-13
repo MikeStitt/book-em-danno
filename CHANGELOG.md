@@ -3,6 +3,49 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.15.0] - 2026-07-13
+
+### Bug Fixes
+
+- *(sandbox)* Handle sbx-specific create/rm/ls behaviors found live
+- *(sandbox)* Restore sbx egress isolation — allow only the Ollama endpoint
+- *(sandbox)* Resolve local Ollama to 127.0.0.1 loopback, not an auto-detected LAN IP
+- *(claurst)* Wait out the shell VM's boot-apt lock before installing ALSA
+- *(claurst)* Retry apt through the boot-apt lock race (fuser-wait was flaky)
+
+### Documentation
+
+- *(claurst)* Mark fix/ollama-nvidia-stream-usage binary-clean
+- *(claurst)* Bug 8/9 written, Bugs 4/5 re-parented, add Bug 10
+- *(claurst)* Auto-compaction findings — real bug vs enhancements
+- Plan migration from `docker sandbox` to `sbx` (dual-CLI)
+- Record D1 (default to sbx) in the sbx-migration plan
+- Mark sbx migration shipped (P1-P5) + document the DANNO_SANDBOX_CLI knob
+- Record verified Phase-2 mechanism findings + the relay-based plan
+- Sbx egress model + local-Ollama reachability, for independent review
+- Sbx HAS the host.docker.internal rewrite — correct model + Phase-2 plan
+- *(readme)* Split the network model by sandbox backend (sbx vs docker)
+- *(sbx)* Record W1+W2 done — all four harnesses E2E-verified under sbx
+- *(sbx)* Verify relay-free claurst timeout ceiling (W5); record W4 deferral
+- *(sbx)* Mark W7 done — backend-aware deny detection is a documented guardrail
+
+### Features
+
+- *(sandbox)* Route the sandbox CLI through a backend seam, default to sbx
+- *(sandbox)* Declared [sandbox] knobs for the sbx workarounds (cli, resolve_ollama_host)
+- *(doctor)* Recommend loopback-only Ollama; WARN on 0.0.0.0 (plan S3)
+- *(claurst)* Drop the in-VM Ollama relay — dial host Ollama directly (plan W3)
+- *(claurst)* Relay-free --capture — dial the recording proxy directly (plan W6)
+
+### Refactor
+
+- *(sandbox)* Retire the sbx loopback-resolver workaround (plan W1)
+
+### Testing
+
+- *(portability)* Teach the probe sbx + bash-kind + sbx --help capture
+- *(portability)* Consolidate cmd/powershell/wsl probe reports
+
 ## [0.14.0] - 2026-07-11
 
 ### Documentation
