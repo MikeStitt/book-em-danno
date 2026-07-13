@@ -60,23 +60,51 @@ class TurnWireMetrics:
 
 
 def _normalize_usage(usage: dict) -> dict[str, int | None]:
-    """OpenAI-shaped `usage` → `{prompt, completion, total, cached}`. `cached` reads the
-    OpenAI `prompt_tokens_details.cached_tokens` or the Anthropic `cache_read_input_tokens`."""
-    details = usage.get("prompt_tokens_details") or {}
+    """A model call's `usage` block → `{prompt, completion, total, cached}`, agnostic to
+    which wire format produced it. The token-count keys differ by API:
+
+    - chat-completions (OpenAI/Ollama/NVIDIA): `prompt_tokens` / `completion_tokens`
+    - Responses API (o-series via `@ai-sdk/openai`) & Anthropic: `input_tokens` /
+      `output_tokens`
+
+    `cached` (prompt tokens served from cache) reads OpenAI chat's
+    `prompt_tokens_details.cached_tokens`, the Responses API's
+    `input_tokens_details.cached_tokens`, or Anthropic's `cache_read_input_tokens`."""
+    prompt = usage.get("prompt_tokens")
+    if prompt is None:
+        prompt = usage.get("input_tokens")
+    completion = usage.get("completion_tokens")
+    if completion is None:
+        completion = usage.get("output_tokens")
+    details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
     cached = details.get("cached_tokens")
     if cached is None:
         cached = usage.get("cache_read_input_tokens")
     return {
-        "prompt": usage.get("prompt_tokens"),
-        "completion": usage.get("completion_tokens"),
+        "prompt": prompt,
+        "completion": completion,
         "total": usage.get("total_tokens"),
         "cached": cached,
     }
 
 
+def _chunk_usage(chunk: dict) -> dict | None:
+    """The `usage` block carried by one SSE data chunk, whichever format it is:
+    chat-completions puts `usage` at the top level of the final chunk; the Responses
+    API nests it in the `response` object on the `response.completed` event."""
+    usage = chunk.get("usage")
+    if isinstance(usage, dict):
+        return usage
+    resp = chunk.get("response")
+    if isinstance(resp, dict) and isinstance(resp.get("usage"), dict):
+        return resp["usage"]
+    return None
+
+
 def _extract_usage(body: Any) -> dict[str, int | None] | None:
-    """Pull normalized `usage` from a response body — a parsed JSON object (non-stream)
-    or an SSE text blob (`data: {…}` lines; the last chunk carrying `usage` wins)."""
+    """Pull normalized `usage` from a response body — a parsed JSON object (non-stream,
+    both chat-completions and Responses carry `usage` at the top level) or an SSE text
+    blob (`data: {…}` lines; the last chunk carrying `usage` wins)."""
     if isinstance(body, dict):
         usage = body.get("usage")
         return _normalize_usage(usage) if isinstance(usage, dict) else None
@@ -93,8 +121,8 @@ def _extract_usage(body: Any) -> dict[str, int | None] | None:
                 chunk = json.loads(data)
             except json.JSONDecodeError:
                 continue
-            usage = chunk.get("usage") if isinstance(chunk, dict) else None
-            if isinstance(usage, dict):
+            usage = _chunk_usage(chunk) if isinstance(chunk, dict) else None
+            if usage is not None:
                 found = _normalize_usage(usage)
         return found
     return None
@@ -223,7 +251,12 @@ def render_transcript(records: list[dict]) -> str:
             if isinstance(tools, list):
                 lines.append(f"- tools offered: {len(tools)}")
             lines.append("")
-            for msg in body.get("messages") or []:
+            # `instructions` carries the Responses-API system prompt separately from the
+            # turn messages; chat-completions folds it into `messages` as a system role.
+            if isinstance(body.get("instructions"), str):
+                lines.extend(_render_message({"role": "system", "content": body["instructions"]}))
+            # chat-completions uses `messages`; the Responses API uses `input`.
+            for msg in body.get("messages") or body.get("input") or []:
                 lines.extend(_render_message(msg))
         resp = responses.get(seq)
         if resp is not None:
@@ -234,9 +267,25 @@ def render_transcript(records: list[dict]) -> str:
 
 def _render_message(msg: dict) -> list[str]:
     role = msg.get("role", "?")
-    content = msg.get("content")
-    text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+    text = _content_text(msg.get("content"))
     return [f"**{role}:**", "", "```", text, "```", ""]
+
+
+def _content_text(content: Any) -> str:
+    """Flatten a message's `content` to text. Chat-completions uses a plain string; the
+    Responses API uses a list of typed blocks (`{type: "input_text"/"output_text", text}`).
+    Blocks without a `text` field fall back to their JSON so nothing is silently dropped."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            block["text"]
+            if isinstance(block, dict) and isinstance(block.get("text"), str)
+            else json.dumps(block, ensure_ascii=False)
+            for block in content
+        ]
+        return "\n".join(parts)
+    return json.dumps(content, ensure_ascii=False)
 
 
 def _render_response(resp: dict) -> list[str]:
@@ -244,13 +293,9 @@ def _render_response(resp: dict) -> list[str]:
     out = [f"**response** (status {resp.get('status', '?')}):", ""]
     usage = _extract_usage(body)
     if isinstance(body, dict):
-        for choice in body.get("choices") or []:
-            message = choice.get("message") or {}
-            if message.get("content"):
-                out += ["```", str(message["content"]), "```", ""]
-            for call in message.get("tool_calls") or []:
-                fn = call.get("function") or {}
-                out.append(f"- tool_call: `{fn.get('name', '?')}({fn.get('arguments', '')})`")
+        out.extend(_render_chat_output(body))
+    elif isinstance(body, str):
+        out.extend(_render_responses_output(body))
     if usage is not None:
         out.append(
             f"- usage: prompt={usage['prompt']} completion={usage['completion']} "
@@ -258,6 +303,65 @@ def _render_response(resp: dict) -> list[str]:
         )
     out.append("")
     return out
+
+
+def _render_chat_output(body: dict) -> list[str]:
+    """Render a chat-completions response body's `choices[].message` content + tool calls."""
+    out: list[str] = []
+    for choice in body.get("choices") or []:
+        message = choice.get("message") or {}
+        if message.get("content"):
+            out += ["```", str(message["content"]), "```", ""]
+        for call in message.get("tool_calls") or []:
+            fn = call.get("function") or {}
+            out.append(f"- tool_call: `{fn.get('name', '?')}({fn.get('arguments', '')})`")
+    return out
+
+
+def _render_responses_output(sse: str) -> list[str]:
+    """Render a Responses-API SSE stream's final `output[]` (from `response.completed`):
+    assistant `message` text and `function_call` items. Without this the transcript's
+    response section is empty, since the Responses body is an SSE string, not a dict."""
+    output = _final_responses_output(sse)
+    if output is None:
+        return []
+    out: list[str] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("type")
+        if kind == "function_call":
+            out.append(f"- tool_call: `{item.get('name', '?')}({item.get('arguments', '')})`")
+        elif kind == "message":
+            text = _content_text(item.get("content"))
+            if text:
+                out += ["```", text, "```", ""]
+    return out
+
+
+def _final_responses_output(sse: str) -> list | None:
+    """The `response.output` array from the last completed/incomplete Responses SSE event."""
+    output: list | None = None
+    for line in sse.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[len("data:") :].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            chunk = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(chunk, dict) or chunk.get("type") not in (
+            "response.completed",
+            "response.incomplete",
+        ):
+            continue
+        resp = chunk.get("response")
+        if isinstance(resp, dict) and isinstance(resp.get("output"), list):
+            output = resp["output"]
+    return output
 
 
 def write_transcript(path: Path, records: list[dict]) -> Path:
