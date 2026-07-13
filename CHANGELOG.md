@@ -3,6 +3,12 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.15.1] - 2026-07-13
+
+### Bug Fixes
+
+- *(telemetry)* Parse OpenAI Responses-API captures (usage + transcript)
+
 ## [0.15.0] - 2026-07-13
 
 ### Bug Fixes
