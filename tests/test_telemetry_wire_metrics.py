@@ -96,6 +96,87 @@ def test_cache_read_input_tokens_alias() -> None:
     assert usage["cached"] == 2
 
 
+def test_responses_api_usage_key_aliases() -> None:
+    # Responses API / Anthropic use input_tokens/output_tokens and the input_tokens_details
+    # cached block — normalized to the same canonical shape as chat-completions.
+    usage = wm._normalize_usage(
+        {
+            "input_tokens": 10821,
+            "output_tokens": 312,
+            "total_tokens": 11133,
+            "input_tokens_details": {"cached_tokens": 64},
+        }
+    )
+    assert usage == {"prompt": 10821, "completion": 312, "total": 11133, "cached": 64}
+
+
+def test_responses_api_non_stream_dict_usage() -> None:
+    # A non-streaming Responses body carries usage at the top level, input_tokens-shaped.
+    body = {
+        "object": "response",
+        "output": [],
+        "usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+    }
+    got = wm._extract_usage(body)
+    assert got == {"prompt": 100, "completion": 20, "total": 120, "cached": None}
+
+
+def test_responses_api_sse_usage_from_response_completed() -> None:
+    # Responses API nests usage in the `response` object on `response.completed`; earlier
+    # events carry usage: null and must not zero it out (last non-null wins).
+    sse = (
+        'data: {"type":"response.created","response":{"usage":null}}\n'
+        'data: {"type":"response.in_progress","response":{"usage":null}}\n'
+        'data: {"type":"response.function_call_arguments.delta","delta":"{"}\n'
+        'data: {"type":"response.completed","response":{"usage":'
+        '{"input_tokens":10821,"output_tokens":312,"total_tokens":11133,'
+        '"input_tokens_details":{"cached_tokens":0}}}}\n'
+    )
+    assert wm._extract_usage(sse) == {
+        "prompt": 10821,
+        "completion": 312,
+        "total": 11133,
+        "cached": 0,
+    }
+
+
+def test_render_transcript_responses_api_input_and_sse_output() -> None:
+    # A Responses-API turn: request uses `input[]`/`instructions` (not `messages`), and the
+    # response is an SSE string whose final output[] carries the tool call — both must render.
+    sse = (
+        'data: {"type":"response.created","response":{"usage":null}}\n'
+        'data: {"type":"response.completed","response":{'
+        '"output":['
+        '{"type":"reasoning","summary":[]},'
+        '{"type":"function_call","name":"glob","arguments":"{\\"pattern\\":\\"*.py\\"}"}'
+        "],"
+        '"usage":{"input_tokens":50,"output_tokens":9,"total_tokens":59}}}\n'
+    )
+    records = [
+        {
+            "seq": 1,
+            "direction": "request",
+            "ts": 0.0,
+            "method": "POST",
+            "path": "/v1/responses",
+            "body": {
+                "model": "o4-mini",
+                "instructions": "You are opencode",
+                "input": [
+                    {"role": "user", "content": [{"type": "input_text", "text": "make a roster"}]}
+                ],
+                "tools": [{}, {}],
+            },
+        },
+        {"seq": 1, "direction": "response", "ts": 1.0, "status": 200, "body": sse},
+    ]
+    md = wm.render_transcript(records)
+    assert "You are opencode" in md  # instructions rendered as the system prompt
+    assert "make a roster" in md  # input_text block flattened to text
+    assert "tool_call: `glob({" in md  # final output[] function_call rendered
+    assert "usage: prompt=50 completion=9" in md  # usage read from response.completed
+
+
 def test_headroom_pct() -> None:
     assert wm.headroom_pct(4000, 40000) == 90.0
     assert wm.headroom_pct(None, 40000) is None
