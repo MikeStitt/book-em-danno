@@ -23,7 +23,7 @@ from book_em_danno.capture.wiring import CaptureBinding
 from book_em_danno.core.exec import Runner
 from danno_validator.driver import Turn, TurnFn, opencode_run
 from danno_validator.oracle import FailureClass, TurnVerdict, classify_turn, gate_verdict
-from danno_validator.suites.config import ResolvedGates
+from danno_validator.suites.config import ResolvedGates, watchdog_max_turns
 from danno_validator.telemetry.sampler import (
     ResourceSummary,
     SampleBinding,
@@ -153,7 +153,10 @@ def run_bench_task(
             stack.enter_context(
                 runner.watching(
                     probe=tally,
-                    max_turns=gates.max_turns,
+                    # Option B: the harness's own --max-turns/agent.steps is set to
+                    # gates.max_turns; the external kill sits a grace margin above it so the
+                    # harness stops gracefully first (`.docs/plan-bench-runaway-gates.md` §3.2).
+                    max_turns=watchdog_max_turns(gates.max_turns),
                     max_tokens=gates.max_tokens,
                     timeout_s=gates.timeout_s,
                 )

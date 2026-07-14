@@ -380,7 +380,11 @@ def claurst_agent_unmapped_warnings(config: DannoConfig) -> list[str]:
 
 
 def _danno_doc(
-    config: DannoConfig, md_routed_agents: frozenset[str], *, disable_title: bool = False
+    config: DannoConfig,
+    md_routed_agents: frozenset[str],
+    *,
+    disable_title: bool = False,
+    agent_steps: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """The danno-owned opencode.jsonc members as a dict (no markers/braces).
 
@@ -511,6 +515,11 @@ def _danno_doc(
         # local default model). A real "title" agent in danno.toml would be unusual; this
         # deliberately wins for the sweep config that requests it.
         agent_block["title"] = {"disable": True}
+    # Runaway-gate polite-stop: set `steps` (opencode's per-agent iteration cap) on the
+    # named agent(s) — bench passes {run-agent: max_turns}. Soft/advisory (DoR §3.4), so the
+    # external watchdog is still the real bound; this just asks opencode to stop first.
+    for agent_name, steps in (agent_steps or {}).items():
+        agent_block.setdefault(agent_name, {})["steps"] = steps
     doc["agent"] = agent_block
     # OpenCode npm plugins: a bare package string, or the documented
     # [package, config] tuple when the plugin takes options. Omitted entirely for
@@ -528,11 +537,15 @@ def _danno_doc(
 
 
 def _region_inner(
-    config: DannoConfig, md_routed_agents: frozenset[str], *, disable_title: bool = False
+    config: DannoConfig,
+    md_routed_agents: frozenset[str],
+    *,
+    disable_title: bool = False,
+    agent_steps: dict[str, int] | None = None,
 ) -> list[str]:
     """The lines danno owns inside the opencode.jsonc managed region: the header
     comments + the JSON member lines (2-space indented, no enclosing braces)."""
-    doc = _danno_doc(config, md_routed_agents, disable_title=disable_title)
+    doc = _danno_doc(config, md_routed_agents, disable_title=disable_title, agent_steps=agent_steps)
     member_lines = json.dumps(doc, indent=2).splitlines()[1:-1]  # drop the `{` / `}`
     header_lines = ["  " + ln for ln in _HEADER.rstrip("\n").splitlines()]
     return header_lines + member_lines
@@ -584,13 +597,18 @@ def render_config(
     *,
     md_routed_agents: frozenset[str] = frozenset(),
     disable_title: bool = False,
+    agent_steps: dict[str, int] | None = None,
 ) -> str:
     """The full opencode.jsonc danno would write fresh (danno region wrapped in markers).
 
     `md_routed_agents` omit their `model` here because danno writes it into their `.md`
-    frontmatter instead (see `generate_md`). `disable_title` emits `agent.title.disable`
-    (see `_danno_doc`)."""
-    return _fresh_jsonc(_region_inner(config, md_routed_agents, disable_title=disable_title))
+    frontmatter instead (see `generate_md`). `disable_title` emits `agent.title.disable`;
+    `agent_steps` sets the runaway-gate polite-stop `steps` per agent (see `_danno_doc`)."""
+    return _fresh_jsonc(
+        _region_inner(
+            config, md_routed_agents, disable_title=disable_title, agent_steps=agent_steps
+        )
+    )
 
 
 # Markdown agent defs live under either dir (docs use plural, ADOS uses singular);
@@ -744,6 +762,7 @@ def generate(
     *,
     apply: bool = False,
     disable_title: bool = False,
+    agent_steps: dict[str, int] | None = None,
 ) -> GenerateResult:
     """Merge danno's managed region into <target>/.opencode/opencode.jsonc (Tier-1).
 
@@ -754,7 +773,10 @@ def generate(
     sessions don't run the local default model just to title threads."""
     md_fields = scan_agent_frontmatter(target)
     region_inner = _region_inner(
-        config, _md_routed_agents(config, md_fields), disable_title=disable_title
+        config,
+        _md_routed_agents(config, md_fields),
+        disable_title=disable_title,
+        agent_steps=agent_steps,
     )
     dest = Path(target) / ".opencode" / "opencode.jsonc"
     warnings = agent_markdown_collisions(config, md_fields) + override_warnings(config, "opencode")

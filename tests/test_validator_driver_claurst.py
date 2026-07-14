@@ -225,3 +225,17 @@ def test_claurst_turn_unparseable_stdout_yields_no_events(
     assert turn.events == []
     assert turn.raw == "not json at all"
     assert turn.ok is False
+
+
+def test_claurst_run_omits_max_turns_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # danno passes nothing → claurst rides its own default (~10); no flag emitted.
+    calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
+    driver.claurst_run(Runner(), "box", "go", model="ollama/x")
+    assert "--max-turns" not in _script(calls)
+
+
+def test_claurst_run_emits_max_turns_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The runaway-gate resolved max_turns is threaded through as claurst's --max-turns.
+    calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
+    driver.claurst_run(Runner(), "box", "go", model="ollama/x", max_turns=50)
+    assert "--max-turns 50" in _script(calls)

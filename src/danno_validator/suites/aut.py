@@ -52,6 +52,7 @@ def run_turn_for(
     env_file: Path | None,
     capture_port: int | None = None,
     model_override: str | None = None,
+    max_turns: int | None = None,
 ) -> TurnFn:
     """The `TurnFn` driving one turn for this HUT, with `env_file` bound.
 
@@ -69,11 +70,11 @@ def run_turn_for(
     """
     if harness == CLAURST:
         return claurst.authed_claurst_run(
-            env_file, capture_port=capture_port, model_override=model_override
+            env_file, capture_port=capture_port, model_override=model_override, max_turns=max_turns
         )
     if harness == OCC:
         return occ.authed_occ_run(
-            env_file, capture_port=capture_port, model_override=model_override
+            env_file, capture_port=capture_port, model_override=model_override, max_turns=max_turns
         )
     if harness == CLAUDE:
         if env_file is None:  # defensive: bench builds the auth file before dispatch

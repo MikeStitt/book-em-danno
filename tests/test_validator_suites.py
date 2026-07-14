@@ -19,6 +19,7 @@ from danno_validator.suites.config import (
     ResolvedGates,
     load_benchmarks,
     resolve_gates,
+    watchdog_max_turns,
 )
 
 
@@ -219,6 +220,15 @@ def test_gates_resolution_none_disables_a_gate() -> None:
     r = resolve_gates(GatesConfig(timeout_s=None), harness="occ", model=None)
     assert r.timeout_s is None  # disabled → watchdog skips it
     assert r.max_turns == 50
+
+
+def test_watchdog_max_turns_adds_grace_above_the_native_cap() -> None:
+    # Option B: the harness's own cap = max_turns (graceful); the external kill sits a
+    # grace margin above it (max(3, 10%)) so the harness stops first.
+    assert watchdog_max_turns(None) is None  # Gate 1 disabled stays disabled
+    assert watchdog_max_turns(50) == 55  # +max(3, 5)
+    assert watchdog_max_turns(100) == 110  # +max(3, 10)
+    assert watchdog_max_turns(10) == 13  # +max(3, 1) → +3 floor
 
 
 def test_gates_load_from_toml_with_overrides(tmp_path: Path) -> None:

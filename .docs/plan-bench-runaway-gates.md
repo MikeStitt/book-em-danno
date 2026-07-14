@@ -1,6 +1,6 @@
 # `danno bench` runaway gates — design of record
 
-**Status:** CORE IMPLEMENTED 2026-07-14 (see "Implementation status" below) · **Date:**
+**Status:** IMPLEMENTED 2026-07-14 (see "Implementation status" below) · **Date:**
 2026-07-14 · **Author:** Claude (Opus 4.8), from a live review of the capture/telemetry/
 bench code with the user.
 
@@ -17,15 +17,16 @@ Implemented + unit-tested (branch `docs-bench-runaway-gates`):
   become `runaway`/`over-budget`/`timeout` verdicts (`oracle.gate_verdict`).
 - **Always-on capture** — bench always runs the proxy; `--capture` deprecated to a no-op;
   `--no-save-captures` runs the proxy but persists nothing.
+- **Native polite-stop caps (option B, §3.2)** — the harness's own cap is set to the
+  resolved `max_turns` (occ/claurst `--max-turns`; opencode `agent.steps` at the
+  harness-level value, seeded once), while the external watchdog kills at `max_turns +
+  grace` (`watchdog_max_turns`, grace = `max(3, 10%)`). So a cap-honoring harness stops
+  GRACEFULLY first; the kill fires only on overshoot.
+- **Provenance** — the resolved `[gates]` config is recorded in `provenance.json`.
 
-Deferred (follow-ups — the external Gate-1 kill already ENFORCES the caps, so these are
-graceful-shutdown / observability niceties, not correctness):
-
-- **Native "polite-stop" caps** — passing the resolved `max_turns` into occ/claurst
-  `--max-turns` and opencode `agent.steps` (§3.3/§3.4). occ/claurst already ride their own
-  defaults (30 / ~10); opencode relies solely on the external kill today. Per-cell opencode
-  `agent.steps` needs per-cell config regen (config is seeded once), hence deferred.
-- **Provenance** — recording the resolved gate values per cell in `provenance.json` (§6).
+No material deferrals remain. (opencode's `agent.steps` is set at the harness level, not
+per-cell — per-cell precision stays the external kill's job, since the config is seeded
+once; that is a deliberate simplification, not a gap.)
 
 Supersedes the "runaway guard" sketch in
 [`plan-stub-ai-test-harness.md`](plan-stub-ai-test-harness.md) §4 knob 2 / M2
@@ -124,23 +125,27 @@ used only by HUT turn execs) with a **watchdog-wrapped exec** used **only** for 
 ```
 spawn cmd via Popen
 poll a GateTally (fed live by the cell's capture proxy) + wall clock, until exit:
-    if tally.inference_calls  > resolved.max_turns  -> kill, verdict "runaway"
-    if tally.tokens           > resolved.max_tokens -> kill, verdict "over-budget"
-    if elapsed                > resolved.timeout_s  -> kill, verdict "timeout"
+    if tally.inference_calls  > watchdog_max_turns(resolved.max_turns)  -> kill, "runaway"
+    if tally.tokens           > resolved.max_tokens                     -> kill, "over-budget"
+    if elapsed                > resolved.timeout_s                      -> kill, "timeout"
 record the breached gate + the partial transcript; fail loud in the report row
 ```
 
 - **`inference_calls`** counts only usage-bearing `/v1` calls (chat-completions /
   responses / messages), matching `parse_capture_records` — discovery hits (`/api/tags`,
   `/v1/models`, title-gen) do **not** count as rounds.
-- **Native "polite-stop" caps are still passed** where the harness has one, at the
-  **same** resolved `max_turns`: occ/claurst take `--max-turns` and **stop themselves
-  cleanly** just before the external kill would fire (graceful shutdown + complete
-  transcript); opencode takes **`agent.steps`**, but that is only a *soft* cap that asks
-  the model to stop (§3.4). So the external Gate-1 kill is the **backstop** for occ/claurst
-  and the **only reliable stop** for opencode. Gate 1 is uniform across harnesses because
-  the always-on proxy counts rounds for all of them — no dependence on an opencode CLI flag
-  that doesn't exist.
+- **Native "polite-stop" caps + a grace margin (option B).** The harness's own cap is set
+  to the resolved `max_turns` (occ/claurst `--max-turns`; opencode `agent.steps`); the
+  external Gate-1 kill sits a **grace margin above** it —
+  `watchdog_max_turns(max_turns) = max_turns + max(3, 10%)`. So a cap-honoring harness
+  (occ/claurst) **stops itself cleanly at `max_turns`**, well before the kill, giving a
+  graceful shutdown + complete transcript; the external kill fires only for a harness that
+  **overshoots** its cap — opencode (whose `agent.steps` is a *soft* ask, §3.4), a true
+  runaway, or the small drift between the harness's step count and the proxy's
+  inference-call count. The margin is why they aren't the *same* number: it guarantees the
+  graceful stop wins the race. Gate 1 is uniform across harnesses because the always-on
+  proxy counts rounds for all of them — no dependence on an opencode CLI flag that doesn't
+  exist. (Gate 2/3 have no harness-side equivalent, so they are external-only, no margin.)
 - **Kill + reap (verify, don't assume).** Killing the outer `docker sandbox exec` does
   **not** necessarily reap the relay + harness *inside* the VM. Implementation MUST
   confirm in-VM child cleanup and that the partial capture JSONL is flushed before the
@@ -148,11 +153,13 @@ record the breached gate + the partial transcript; fail loud in the report row
 
 ### 3.3 Per-harness Gate 1 wiring summary
 
+Native cap set to `max_turns`; external kill at `max_turns + grace`.
+
 | harness | native cap passed? | external Gate-1 kill? |
 |---|---|---|
-| occ | ✅ `--max-turns <resolved>` (today hardcoded 30 in `OCC_DEFAULT_MAX_TURNS`; `authed_occ_run` must thread the resolved value) | ✅ backstop |
-| claurst | ✅ `--max-turns <resolved>` (flag exists per `driver.py:74`; **no constant wired yet** — add it) | ✅ backstop |
-| opencode | ⚠️ `agent.steps` (soft — asks, doesn't enforce; §3.4) | ✅ **primary** |
+| occ | ✅ `--max-turns <max_turns>` (`OCC_MAX_TURNS_FLAG`; defaults to 30 only when unset) | ✅ backstop at `+grace` |
+| claurst | ✅ `--max-turns <max_turns>` (`CLAURST_MAX_TURNS_FLAG`; omitted → claurst's own ~10) | ✅ backstop at `+grace` |
+| opencode | ⚠️ `agent.steps <max_turns>` (soft — asks, doesn't enforce; §3.4) | ✅ **primary** at `+grace` |
 | claude | ❌ (uncaptured) | ❌ (Gate 3 only) |
 
 ### 3.4 opencode's `agent.steps` — a soft cap, not enforcement

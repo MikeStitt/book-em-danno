@@ -218,3 +218,17 @@ def test_occ_turn_unparseable_stdout_yields_no_events(monkeypatch: pytest.Monkey
     assert turn.events == []
     assert turn.raw == "not json at all"
     assert turn.ok is False
+
+
+def test_occ_run_defaults_to_30_max_turns(monkeypatch: pytest.MonkeyPatch) -> None:
+    # No explicit cap → occ's built-in default 30 (runaway-gate polite-stop unset).
+    calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
+    driver.occ_run(Runner(), "box", "go", model="ollama/x")
+    assert "--max-turns 30" in _script(calls)
+
+
+def test_occ_run_honors_explicit_max_turns(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The runaway-gate resolved max_turns is threaded through as occ's --max-turns.
+    calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
+    driver.occ_run(Runner(), "box", "go", model="ollama/x", max_turns=55)
+    assert "--max-turns 55" in _script(calls)

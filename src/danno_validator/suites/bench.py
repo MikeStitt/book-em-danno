@@ -34,6 +34,7 @@ from book_em_danno.config.schema import DannoConfig, InertBackend
 from book_em_danno.core.exec import CommandFailedError, Runner, log_info, log_warn
 from danno_validator import baseline
 from danno_validator.driver import seed_workspace
+from danno_validator.level0 import DEFAULT_RUN_AGENT
 from danno_validator.matrix import ConfigVariant, model_variants
 from danno_validator.suites.aut import (
     CLAUDE,
@@ -302,7 +303,9 @@ def _setup_bench_sampler(opts: BenchOptions, out_dir: Path) -> SampleBinding | N
     return SampleBinding(sample_dir=sample_dir, interval=opts.sample_interval)
 
 
-def _seed_opencode_config(config: DannoConfig, harness: str, workspace: Path) -> None:
+def _seed_opencode_config(
+    config: DannoConfig, harness: str, workspace: Path, *, run_agent_steps: int | None = None
+) -> None:
     """Generate `.opencode/opencode.jsonc` into the bench workspace for opencode.
 
     Only opencode reads this file — it declares the `ollama`/openai providers (with
@@ -312,10 +315,13 @@ def _seed_opencode_config(config: DannoConfig, harness: str, workspace: Path) ->
     every opencode turn failed with "Model not found: ollama/<tag>". claurst/occ/
     claude don't read opencode.jsonc (they dial Ollama through the in-VM relay or a
     cloud provider), so this is a no-op for them. `disable_title` matches the sweep:
-    no throwaway per-session title-gen call against the local model."""
+    no throwaway per-session title-gen call against the local model. `run_agent_steps`,
+    when set, writes the runaway-gate polite-stop `steps` onto opencode's run-agent (a
+    soft cap — the external watchdog is the real bound; DoR §3.4)."""
     if harness != sb.DEFAULT_HARNESS:  # "opencode"
         return
-    generate(config, workspace, apply=True, disable_title=True)
+    agent_steps = {DEFAULT_RUN_AGENT: run_agent_steps} if run_agent_steps is not None else None
+    generate(config, workspace, apply=True, disable_title=True, agent_steps=agent_steps)
 
 
 def _run_aider(
@@ -350,6 +356,7 @@ def _run_aider(
             # `_warm_variant`: an up-front bulk warm loses to VRAM eviction between models.
             _warm_variant(variant, warm=warm, warmup=warmup)
             log_info(f"[bench] aider × {variant.model_ref}")
+            resolved = resolve_gates(cfg.gates, harness=opts.harness, model=variant.model_name)
             verdicts += run_aider_suite(
                 runner,
                 name,
@@ -361,11 +368,12 @@ def _run_aider(
                     env_files[variant.model_ref],
                     capture_port,
                     model_override=_harness_dial_ref(opts.harness, config, variant),
+                    max_turns=resolved.max_turns,  # occ/claurst native polite-stop
                 ),
                 model=variant.model_ref,
                 capture=capture,
                 sampler=sampler,
-                gates=resolve_gates(cfg.gates, harness=opts.harness, model=variant.model_name),
+                gates=resolved,
             )
     finally:
         remove_checkout(checkout)
@@ -418,6 +426,7 @@ def _run_swebench(
                 # each cell so an eviction reload is absorbed here (and recorded), not timed.
                 _warm_variant(variant, warm=warm, warmup=warmup)
                 log_info(f"[bench] swebench {task.id} × {variant.model_ref}")
+                resolved = resolve_gates(cfg.gates, harness=opts.harness, model=variant.model_name)
                 verdicts.append(
                     run_bench_task(
                         runner,
@@ -432,14 +441,13 @@ def _run_swebench(
                                 env_files[variant.model_ref],
                                 capture_port,
                                 model_override=_harness_dial_ref(opts.harness, config, variant),
+                                max_turns=resolved.max_turns,  # occ/claurst native polite-stop
                             ),
                             task.workspace_dir(workspace),
                         ),
                         capture=capture,
                         sampler=sampler,
-                        gates=resolve_gates(
-                            cfg.gates, harness=opts.harness, model=variant.model_name
-                        ),
+                        gates=resolved,
                     )
                 )
         finally:
@@ -669,7 +677,14 @@ def run_bench(
     # must be generated from the REWRITTEN config so its base_url dials the proxy.
     cfg_for_run, capture, allow_hosts, capture_port = _setup_bench_capture(config, opts, out_dir)
     sampler = _setup_bench_sampler(opts, out_dir)
-    _seed_opencode_config(cfg_for_run, opts.harness, workspace)
+    # opencode's polite-stop `agent.steps` is a single config value (seeded once), so use the
+    # harness-level resolved max_turns; per-cell precision is handled by the external kill.
+    opencode_steps = (
+        resolve_gates(bench_cfg.gates, harness=opts.harness, model=None).max_turns
+        if opts.harness == sb.DEFAULT_HARNESS
+        else None
+    )
+    _seed_opencode_config(cfg_for_run, opts.harness, workspace, run_agent_steps=opencode_steps)
 
     # Pre-warm accumulator: each suite warms a variant's local model JUST BEFORE its cells run
     # (default on; `--no-warm` skips) so the first cell's latency reflects the harness loop, not
@@ -728,6 +743,7 @@ def run_bench(
         harness=opts.harness,
         sample_interval_s=opts.sample_interval if opts.sample else None,
         warmup=warmup,
+        gates=bench_cfg.gates,
     )
     write_provenance(out_dir, provenance)
     report.results_json = _write_results(
