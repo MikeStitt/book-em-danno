@@ -344,24 +344,25 @@ def test_run_turn_for_claurst_returns_callable() -> None:
     assert callable(aut.run_turn_for("claurst", None))
 
 
-def test_setup_bench_capture_off_is_a_noop() -> None:
-    # No --capture → the original config, no binding, the default egress, no relay port.
+def test_setup_bench_capture_no_save_is_always_on_but_temp(tmp_path: Path) -> None:
+    # Capture is ALWAYS on (it powers the runaway gates); --no-save-captures just routes
+    # the artifacts to a temp dir instead of <out>/captures — the proxy still runs.
     cfg = _config()
-    opts = bench.BenchOptions(target=Path("."), harness="opencode", capture=False)
-    cfg_for_run, binding, allow, port = bench._setup_bench_capture(cfg, opts, Path("/out"))
-    assert cfg_for_run is cfg  # the original config, unrewritten
-    assert binding is None
-    assert allow == bench.sb.DEFAULT_ALLOW_HOSTS
-    assert port is None
+    opts = bench.BenchOptions(target=Path("."), harness="opencode", save_captures=False)
+    cfg_for_run, binding, allow, port = bench._setup_bench_capture(cfg, opts, tmp_path)
+    assert binding is not None and port is not None  # proxy runs → feeds the gate tally
+    assert tmp_path not in binding.capture_dir.parents  # NOT persisted under <out>
+    assert "host.docker.internal" in cfg_for_run.backends["ollama"].base_url
 
 
-def test_setup_bench_capture_on_rewrites_backend_and_opens_port(tmp_path: Path) -> None:
-    # --capture rewrites the ollama backend base_url at a proxy, opens its egress port,
-    # and reports that port as the occ/claurst relay upstream (capture_port).
+def test_setup_bench_capture_default_saves_under_out_and_opens_port(tmp_path: Path) -> None:
+    # Default (save) rewrites the ollama backend base_url at a proxy, opens its egress port,
+    # persists under <out>/captures, and reports that port as the occ/claurst relay upstream.
     cfg = _config()
-    opts = bench.BenchOptions(target=Path("."), harness="opencode", capture=True)
+    opts = bench.BenchOptions(target=Path("."), harness="opencode")  # save_captures defaults True
     cfg_for_run, binding, allow, port = bench._setup_bench_capture(cfg, opts, tmp_path)
     assert binding is not None and port is not None
+    assert binding.capture_dir == tmp_path / "captures"  # persisted under <out>
     # base_url now dials host.docker.internal:<proxy-port> (the recording proxy).
     assert "host.docker.internal" in cfg_for_run.backends["ollama"].base_url
     assert cfg.backends["ollama"].base_url == "http://h:11434/v1"  # original untouched

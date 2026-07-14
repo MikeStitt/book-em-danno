@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
@@ -75,7 +76,10 @@ class BenchOptions:
     out_dir: Path | None = None
     keep_sandboxes: bool = False
     dry_run: bool = False
-    capture: bool = False
+    # Capture is ALWAYS on in bench — the recording proxy is the runaway-gate sensor
+    # (feeds the token/round tally). `save_captures` only controls whether the per-
+    # permutation JSONL + derived metrics/transcripts are persisted to disk.
+    save_captures: bool = True
     capture_dir: Path | None = None
     sample: bool = False
     sample_interval: float = 0.5
@@ -253,20 +257,24 @@ def _build_bench_env_files(
 def _setup_bench_capture(
     config: DannoConfig, opts: BenchOptions, out_dir: Path
 ) -> tuple[DannoConfig, CaptureBinding | None, tuple[str, ...], int | None]:
-    """Resolve `--capture` for bench: (config to run from, per-permutation binding,
-    sandbox allow-list, occ/claurst relay upstream port).
+    """Stand up the ALWAYS-ON capture for bench: (config to run from, per-permutation
+    binding, sandbox allow-list, occ/claurst relay upstream port).
 
-    Off → the original config, no binding, the default egress allow-list, no relay
-    port. On → rewrite each redirectable backend's base_url at a recording proxy
-    (`plan_capture`, stable ports baked into provisioning) and open its port; the
-    returned `CaptureBinding` mints a per-permutation JSONL per turn. Warns loud
-    (Working Rule 8) about traffic capture cannot reach: built-in cloud refs and the
-    cloud claude reference row (api.anthropic.com has no danno base_url lever)."""
-    if not opts.capture:
-        return config, None, sb.DEFAULT_ALLOW_HOSTS, None
-    capture_dir = opts.capture_dir or (out_dir / "captures")
+    Capture is always on because the recording proxy is the runaway-gate sensor. Each
+    redirectable backend's base_url is rewritten at a recording proxy (`plan_capture`,
+    stable ports baked into provisioning) and its port opened; the `CaptureBinding` mints
+    a per-permutation JSONL per turn. `save_captures=False` routes the artifacts to a temp
+    dir the caller deletes (the proxy still runs and feeds the tally). Warns loud (Working
+    Rule 8) about traffic capture cannot reach: built-in cloud refs and the cloud claude
+    reference row (api.anthropic.com has no danno base_url lever)."""
+    if opts.save_captures:
+        capture_dir = opts.capture_dir or (out_dir / "captures")
+        log_info(f"capture: recording bench <-> backend wire traffic under {capture_dir}")
+    else:
+        # Always-on proxy, nothing persisted: write under a temp root the caller removes.
+        capture_dir = Path(tempfile.mkdtemp(prefix="danno-bench-cap-")) / "captures"
+        log_info("capture: --no-save-captures — running the gate proxy, persisting nothing")
     cfg_for_run, targets = plan_capture(config, capture_dir)
-    log_info(f"--capture: recording bench <-> backend wire traffic under {capture_dir}")
     uncap = uncaptured_cloud_refs(config)
     if uncap:
         log_warn(
@@ -737,6 +745,9 @@ def run_bench(
     _summary(report.verdicts)
     log_info(f"\n  results  {report.results_json}")
     log_info(f"  report   {md_path}  ·  {html_path}")
+    if not opts.save_captures and capture is not None:
+        # --no-save-captures: the proxy fed the gate tally live; drop the temp artifacts.
+        shutil.rmtree(capture.capture_dir.parent, ignore_errors=True)
     return report
 
 
