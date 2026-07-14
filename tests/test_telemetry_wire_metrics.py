@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from book_em_danno.capture.usage import normalize_usage
 from danno_validator.telemetry import wire_metrics as wm
 
 
@@ -92,14 +93,14 @@ def test_sse_streaming_body_usage_extracted() -> None:
 
 def test_cache_read_input_tokens_alias() -> None:
     # Anthropic-shaped cached field is read when the OpenAI details block is absent.
-    usage = wm._normalize_usage({"prompt_tokens": 5, "cache_read_input_tokens": 2})
+    usage = normalize_usage({"prompt_tokens": 5, "cache_read_input_tokens": 2})
     assert usage["cached"] == 2
 
 
 def test_responses_api_usage_key_aliases() -> None:
     # Responses API / Anthropic use input_tokens/output_tokens and the input_tokens_details
     # cached block — normalized to the same canonical shape as chat-completions.
-    usage = wm._normalize_usage(
+    usage = normalize_usage(
         {
             "input_tokens": 10821,
             "output_tokens": 312,

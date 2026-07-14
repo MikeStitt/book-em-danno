@@ -2,14 +2,10 @@
 wire format (OpenAI chat-completions, the Responses API, or Anthropic Messages).
 
 Lives at the `capture` layer so the live gate tally (`capture.proxy`, which counts tokens
-per response as they stream through) has a low-level, dependency-free extractor.
-
-NOTE — temporary duplication: `danno_validator.telemetry.wire_metrics` has its own copy of
-this logic. Once the unmerged Responses-API fix (branch `fix-responses-api-capture-parsing`,
-commit c9d8c45, which upgrades wire_metrics to this same shape) lands on main, fold
-wire_metrics onto this module (`from book_em_danno.capture.usage import extract_usage`) so
-there is a single source of truth. Kept separate now only to avoid touching wire_metrics on
-a branch that is disjoint from that fix.
+per response as they stream through) has a low-level, dependency-free extractor. This is
+the SINGLE source of truth: `danno_validator.telemetry.wire_metrics` imports `extract_usage`
+from here for its post-hoc metrics — the Responses-API SSE parsing is fiddly enough that a
+second copy would drift.
 """
 
 from __future__ import annotations

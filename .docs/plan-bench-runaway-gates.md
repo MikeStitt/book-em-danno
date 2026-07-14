@@ -10,8 +10,8 @@ Implemented + unit-tested (branch `docs-bench-runaway-gates`):
 
 - **M0** — `GateLimits`/`GatesConfig`/`resolve_gates` in `suites/config.py`.
 - **Sensor** — `GateTally` (`capture/gate.py`) fed by the proxy on each usage-bearing
-  response; shared usage extraction in `capture/usage.py` (see the dedup note in that
-  file re: the unmerged Responses-API fix).
+  response; usage extraction lives in `capture/usage.py`, the single source of truth that
+  `telemetry/wire_metrics` also imports (deduped after the Responses-API fix landed on main).
 - **Enforcement** — the watchdog in `core/exec.py` (`Runner.watching()` +
   `_capture_watched`), wired per cell in `suites/base.py:run_bench_task`; killed cells
   become `runaway`/`over-budget`/`timeout` verdicts (`oracle.gate_verdict`).
