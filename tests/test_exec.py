@@ -207,6 +207,39 @@ def test_watchdog_no_breach_completes_and_captures_output() -> None:
     assert res.ok is True
 
 
+def test_watchdog_calls_on_kill_after_a_kill() -> None:
+    # The reaper (in-VM harness cleanup) runs exactly once, after the process is killed.
+    called: list[str] = []
+    runner = Runner()
+    with runner.watching(timeout_s=0.4, on_kill=lambda: called.append("reaped")) as watch:
+        runner.capture(_SLEEP)
+    assert watch.breach is not None
+    assert called == ["reaped"]
+
+
+def test_watchdog_on_kill_not_called_without_a_breach() -> None:
+    # A clean completion must NOT trigger the reaper.
+    called: list[str] = []
+    runner = Runner()
+    with runner.watching(
+        timeout_s=30, max_turns=1000, on_kill=lambda: called.append("reaped")
+    ) as watch:
+        runner.capture([sys.executable, "-c", "print('ok')"])
+    assert watch.breach is None
+    assert called == []
+
+
+def test_watchdog_on_kill_failure_is_suppressed() -> None:
+    # A reaper that raises must not mask the breach (best-effort cleanup).
+    def boom() -> None:
+        raise RuntimeError("reap failed")
+
+    runner = Runner()
+    with runner.watching(timeout_s=0.4, on_kill=boom) as watch:
+        runner.capture(_SLEEP)
+    assert watch.breach is not None  # breach still recorded despite the reaper error
+
+
 def test_watching_context_restores_normal_capture(monkeypatch: pytest.MonkeyPatch) -> None:
     runner = Runner()
     with runner.watching(timeout_s=1):

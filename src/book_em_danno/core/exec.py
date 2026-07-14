@@ -13,12 +13,13 @@ wrapper; core logic stays inspectable).
 
 from __future__ import annotations
 
+import contextlib
 import shlex
 import shutil
 import subprocess
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -103,6 +104,10 @@ class GateWatch:
     max_tokens: int | None = None  # Gate 2 — total tokens
     timeout_s: float | None = None  # Gate 3 — wall-clock backstop
     breach: GateBreach | None = None
+    # Best-effort cleanup run AFTER a kill. Killing the host-side `sbx exec` does NOT reap
+    # the process inside the sandbox VM (verified), so the caller passes a reaper that
+    # `pkill`s the harness in the VM — else a killed runaway keeps burning VM CPU.
+    on_kill: Callable[[], None] | None = None
 
     def check(self, elapsed: float) -> GateBreach | None:
         """The first gate that has tripped at `elapsed` seconds, or None. Gate 1/2 need a
@@ -153,12 +158,18 @@ class Runner:
         max_turns: int | None = None,
         max_tokens: int | None = None,
         timeout_s: float | None = None,
+        on_kill: Callable[[], None] | None = None,
     ) -> Iterator[GateWatch]:
         """Wrap `capture()` calls in this block with the runaway-gate watchdog. Yields the
-        `GateWatch` so the caller can read `.breach` after the turn. Nesting restores the
-        previous watch on exit (there is only ever one active HUT turn)."""
+        `GateWatch` so the caller can read `.breach` after the turn. `on_kill` is a
+        best-effort reaper run after a kill (the host exec kill doesn't reap the sandbox VM).
+        Nesting restores the previous watch on exit (there is only ever one active HUT turn)."""
         watch = GateWatch(
-            probe=probe, max_turns=max_turns, max_tokens=max_tokens, timeout_s=timeout_s
+            probe=probe,
+            max_turns=max_turns,
+            max_tokens=max_tokens,
+            timeout_s=timeout_s,
+            on_kill=on_kill,
         )
         prev = self._watch
         self._watch = watch
@@ -285,6 +296,11 @@ class Runner:
                     watch.breach = breach
                     proc.kill()
                     proc.wait()
+                    if watch.on_kill is not None:
+                        # Reap the in-VM harness (the host kill doesn't propagate). Never let
+                        # a reaper failure mask the breach — this is best-effort cleanup.
+                        with contextlib.suppress(Exception):
+                            watch.on_kill()
                     break
         for reader in readers:
             reader.join()

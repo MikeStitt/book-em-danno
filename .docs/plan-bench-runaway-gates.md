@@ -146,10 +146,12 @@ record the breached gate + the partial transcript; fail loud in the report row
   graceful stop wins the race. Gate 1 is uniform across harnesses because the always-on
   proxy counts rounds for all of them — no dependence on an opencode CLI flag that doesn't
   exist. (Gate 2/3 have no harness-side equivalent, so they are external-only, no margin.)
-- **Kill + reap (verify, don't assume).** Killing the outer `docker sandbox exec` does
-  **not** necessarily reap the relay + harness *inside* the VM. Implementation MUST
-  confirm in-VM child cleanup and that the partial capture JSONL is flushed before the
-  cell is torn down — this is a live-verification gate, not a code-review one.
+- **Kill + reap (RESOLVED — verified live 2026-07-14).** Killing the outer `sbx exec`
+  does **not** reap the harness inside the VM (confirmed: an in-VM process survived the
+  host SIGKILL). Fixed with `GateWatch.on_kill`, a best-effort reaper the watchdog runs
+  after a kill; `run_bench_task._reap_harness` does `sbx exec <sandbox> pkill -9 -f
+  'opencode|claurst|index.mjs|DANNO_RELAY'`. See
+  [`live-verify-runaway-gates.md`](live-verify-runaway-gates.md) §3.
 
 ### 3.3 Per-harness Gate 1 wiring summary
 
@@ -286,8 +288,9 @@ comparison knows what caps were in force.
   `timeout_s=1800`. These are runaway backstops, not fairness normalizers: set high enough
   that no legitimate solve hits them, low enough to catch the pathological tail (opencode's
   observed 383 rounds). Tune against real bench data before locking.
-- **D3 — in-VM reap.** Confirm (live) that killing the outer exec reaps the in-VM relay +
-  harness and flushes the partial JSONL. If not, add an explicit in-VM teardown.
+- **D3 — in-VM reap. RESOLVED 2026-07-14** (verified live, found the defect, fixed it —
+  §3.2 and [`live-verify-runaway-gates.md`](live-verify-runaway-gates.md)). No open
+  decisions remain.
 
 ## 8. Milestones (revises the stub-AI plan M0–M2)
 

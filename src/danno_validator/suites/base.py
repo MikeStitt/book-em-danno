@@ -20,6 +20,7 @@ from typing import Protocol, runtime_checkable
 from book_em_danno.capture.gate import GateTally
 from book_em_danno.capture.proxy import read_captures
 from book_em_danno.capture.wiring import CaptureBinding
+from book_em_danno.commands import sandbox_cli
 from book_em_danno.core.exec import Runner
 from danno_validator.driver import Turn, TurnFn, opencode_run
 from danno_validator.oracle import FailureClass, TurnVerdict, classify_turn, gate_verdict
@@ -106,6 +107,31 @@ def error_verdict(task_id: str, suite: str, detail: str) -> BenchVerdict:
     )
 
 
+# Harness processes to reap in the sandbox VM after a runaway-gate kill. The host-side
+# `sbx exec` kill does NOT propagate into the VM (verified live), so without this a killed
+# runaway keeps burning VM CPU there — and, in the shared aider sandbox, bleeds into the
+# next cell. The pattern is broad by design: the sandbox is danno-owned and runs one harness
+# turn at a time (opencode / occ `index.mjs` / claurst, plus the occ in-VM Ollama relay).
+_REAP_PATTERN = "opencode|claurst|index\\.mjs|DANNO_RELAY"
+
+
+def _reap_harness(runner: Runner, sandbox: str) -> None:
+    """Best-effort `pkill` of the harness inside `sandbox` after the watchdog killed the
+    host-side exec (which does not reap the VM). Never raises (called under suppression)."""
+    runner.run(
+        [
+            *sandbox_cli.base(),
+            "exec",
+            sandbox,
+            "bash",
+            "-lc",
+            f"pkill -9 -f '{_REAP_PATTERN}' 2>/dev/null; true",
+        ],
+        why=f"reap harness processes in '{sandbox}' after runaway-gate kill",
+        check=False,
+    )
+
+
 def run_bench_task(
     runner: Runner,
     sandbox: str,
@@ -159,6 +185,7 @@ def run_bench_task(
                     max_turns=watchdog_max_turns(gates.max_turns),
                     max_tokens=gates.max_tokens,
                     timeout_s=gates.timeout_s,
+                    on_kill=lambda: _reap_harness(runner, sandbox),
                 )
             )
             if gates is not None
