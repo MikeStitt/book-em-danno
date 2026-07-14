@@ -32,6 +32,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, cast
 
+from book_em_danno.capture.gate import GateTally
+from book_em_danno.capture.usage import extract_usage, total_tokens
 from book_em_danno.core.exec import CommandFailedError
 
 # Header names whose VALUES carry secrets — recorded as "<redacted>", never verbatim.
@@ -58,6 +60,9 @@ class CaptureProxyConfig:
     capture_file: Path
     port: int
     pass_headers: bool = True
+    # When set (`danno bench`'s runaway gates), each usage-bearing response feeds this live
+    # tally so the exec watchdog can trip Gate 1 (round count) / Gate 2 (tokens) mid-cell.
+    tally: GateTally | None = None
 
 
 def _redact_headers(headers: Any) -> dict[str, str]:
@@ -138,6 +143,7 @@ class _Handler(BaseHTTPRequestHandler):
             status, resp_headers = 502, {"Content-Type": "application/json"}
             payload = json.dumps({"error": f"capture proxy upstream error: {exc.reason}"}).encode()
 
+        resp_body = _decode_body(payload)
         self._record(
             {
                 "seq": seq,
@@ -145,9 +151,15 @@ class _Handler(BaseHTTPRequestHandler):
                 "ts": time.time(),  # buffered-response completion time (§2.3 RTT / §2.2 TTFT)
                 "status": status,
                 "headers": _redact_headers(resp_headers),
-                "body": _decode_body(payload),
+                "body": resp_body,
             }
         )
+        if cfg.tally is not None:
+            # Only usage-bearing responses are inference calls; discovery hits (no usage)
+            # are not counted — keeps Gate 1 aligned with `parse_capture_records`.
+            usage = extract_usage(resp_body)
+            if usage is not None:
+                cfg.tally.record(tokens=total_tokens(usage))
 
         self.send_response(status)
         self.send_header("Content-Type", resp_headers.get("Content-Type", "application/json"))
