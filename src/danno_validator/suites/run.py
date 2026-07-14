@@ -20,6 +20,7 @@ from book_em_danno.core.exec import Runner
 from danno_validator.driver import TurnFn
 from danno_validator.suites.aider import AiderTask, load_aider_tasks
 from danno_validator.suites.base import BenchVerdict, run_bench_task
+from danno_validator.suites.config import ResolvedGates
 from danno_validator.telemetry.sampler import SampleBinding
 
 _GIT_PREFIX = "git:"
@@ -53,6 +54,7 @@ def run_aider_suite(
     model: str | None = None,
     capture: CaptureBinding | None = None,
     sampler: SampleBinding | None = None,
+    gates: ResolvedGates | None = None,
 ) -> list[BenchVerdict]:
     """Run the selected Aider Polyglot exercises against one HUT, in `select` order.
 
@@ -78,6 +80,7 @@ def run_aider_suite(
                 run_turn=cwd_bound(run_turn, task.workspace_dir(workspace)),
                 capture=capture,
                 sampler=sampler,
+                gates=gates,
             )
         )
     return verdicts

@@ -3,17 +3,20 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
 from book_em_danno.core.exec import Runner
+from danno_validator.oracle import FailureClass
 from danno_validator.suites import base
 from danno_validator.suites.config import (
     BenchmarksConfig,
     GateLimits,
     GatesConfig,
+    ResolvedGates,
     load_benchmarks,
     resolve_gates,
 )
@@ -237,3 +240,29 @@ def test_gates_unknown_key_fails_loud(tmp_path: Path) -> None:
     p.write_text("[gates]\nmax_turns = 60\ncost_usd = 2.0\n")  # cost tier was removed
     with pytest.raises(ValueError, match="invalid benchmarks config"):
         load_benchmarks(p)
+
+
+def _run_turn_wedged(runner, name, prompt, **kw):  # type: ignore[no-untyped-def]
+    # A harness turn that never returns — the Gate 3 wall clock must kill it.
+    runner.capture([sys.executable, "-c", "import time; time.sleep(30)"])
+    return _FakeTurn()
+
+
+def test_run_bench_task_gate_timeout_kills_and_classifies(tmp_path: Path) -> None:
+    # End-to-end through run_bench_task (real subprocess, no Docker): a wedged turn under
+    # a 0.3s Gate 3 is killed and recorded as a `timeout` verdict, not a normal stall/pass.
+    task = _FakeTask(_passed=False)
+    v = base.run_bench_task(
+        Runner(),
+        "box",
+        task=task,
+        suite="aider",
+        workspace=tmp_path,
+        model="ollama/x",
+        run_turn=_run_turn_wedged,
+        gates=ResolvedGates(max_turns=None, max_tokens=None, timeout_s=0.3),
+    )
+    assert v.verdict.failure_class is FailureClass.TIMEOUT
+    assert v.passed is False
+    assert "timeout" in (v.error_summary or "")
+    assert task.calls == ["reset", "grade"]  # still graded after the kill

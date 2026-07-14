@@ -17,11 +17,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from book_em_danno.capture.gate import GateTally
 from book_em_danno.capture.proxy import read_captures
 from book_em_danno.capture.wiring import CaptureBinding
 from book_em_danno.core.exec import Runner
 from danno_validator.driver import Turn, TurnFn, opencode_run
-from danno_validator.oracle import FailureClass, TurnVerdict, classify_turn
+from danno_validator.oracle import FailureClass, TurnVerdict, classify_turn, gate_verdict
+from danno_validator.suites.config import ResolvedGates
 from danno_validator.telemetry.sampler import (
     ResourceSummary,
     SampleBinding,
@@ -116,6 +118,7 @@ def run_bench_task(
     run_turn: TurnFn | None = None,
     capture: CaptureBinding | None = None,
     sampler: SampleBinding | None = None,
+    gates: ResolvedGates | None = None,
 ) -> BenchVerdict:
     """Run one benchmark `task` against one agent in `sandbox`, returning a verdict.
 
@@ -124,21 +127,40 @@ def run_bench_task(
     and classifies the turn with the shared oracle (`side_effect = tests passed`).
     `run_turn` is the harness-under-test's turn producer (`opencode_run` by default,
     resolved at call time so a monkeypatched `base.opencode_run` still applies).
-    `capture`, when set (`danno bench --capture`), records this permutation's wire
-    traffic to its own `<suite>/<task>/<model>.<backend>.jsonl` for the turn's duration.
+    `capture`, when set, records this permutation's wire traffic to its own
+    `<suite>/<task>/<model>.<backend>.jsonl` and feeds the runaway-gate tally.
     `sampler`, when set (`danno bench --sample`), profiles host CPU/GPU/mem/VRAM over
     the turn window and its peak/mean rollups (§5.5) land on `BenchVerdict.resource`.
+    `gates`, when set, bounds the cell: a live `GateTally` (fed by the capture proxy)
+    plus a wall clock are polled by `runner.watching()`, which kills the turn on the
+    first breach — recorded as a `runaway`/`over-budget`/`timeout` verdict
+    (`.docs/plan-bench-runaway-gates.md`).
     """
     turn_fn = run_turn or opencode_run
     task.reset(runner, sandbox, workspace)
     resource: ResourceSummary | None = None
     wire: TurnWireMetrics | None = None
+    tally = GateTally() if gates is not None else None
     start = time.monotonic()
     with contextlib.ExitStack() as stack:
         if capture is not None:
-            stack.enter_context(capture.permutation(suite=suite, task_id=task.id, model=model))
+            stack.enter_context(
+                capture.permutation(suite=suite, task_id=task.id, model=model, tally=tally)
+            )
         if sampler is not None:
             stack.enter_context(sampler.permutation(suite=suite, task_id=task.id, model=model))
+        watch = (
+            stack.enter_context(
+                runner.watching(
+                    probe=tally,
+                    max_turns=gates.max_turns,
+                    max_tokens=gates.max_tokens,
+                    timeout_s=gates.timeout_s,
+                )
+            )
+            if gates is not None
+            else None
+        )
         turn: Turn = turn_fn(
             runner,
             sandbox,
@@ -149,6 +171,7 @@ def run_bench_task(
             workspace=workspace,
         )
     latency = time.monotonic() - start
+    breach = watch.breach if watch is not None else None
     if sampler is not None:
         resource = summarize(
             read_samples(sampler.permutation_path(suite=suite, task_id=task.id, model=model))
@@ -156,7 +179,13 @@ def run_bench_task(
     if capture is not None:
         wire = _derive_wire(capture, suite=suite, task_id=task.id, model=model)
     passed = task.grade(runner, sandbox, workspace)
-    verdict = classify_turn(turn, side_effect=passed, expects_action=True)
+    if breach is not None:
+        # A killed cell is a gate event regardless of what grading finds in the workspace.
+        verdict = gate_verdict(breach, tool_call_count=turn.tool_call_count)
+        error_summary: str | None = verdict.rationale
+    else:
+        verdict = classify_turn(turn, side_effect=passed, expects_action=True)
+        error_summary = turn.error_summary
     return BenchVerdict(
         task_id=task.id,
         suite=suite,
@@ -166,7 +195,7 @@ def run_bench_task(
         tokens=turn.tokens,
         cost=turn.cost,
         latency_s=latency,
-        error_summary=turn.error_summary,
+        error_summary=error_summary,
         model=model,
         resource=resource,
         wire=wire,

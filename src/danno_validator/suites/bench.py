@@ -43,7 +43,7 @@ from danno_validator.suites.aut import (
     run_turn_for,
 )
 from danno_validator.suites.base import BenchVerdict, error_verdict, run_bench_task
-from danno_validator.suites.config import BenchmarksConfig
+from danno_validator.suites.config import BenchmarksConfig, resolve_gates
 from danno_validator.suites.run import (
     clone_polyglot,
     cwd_bound,
@@ -357,6 +357,7 @@ def _run_aider(
                 model=variant.model_ref,
                 capture=capture,
                 sampler=sampler,
+                gates=resolve_gates(cfg.gates, harness=opts.harness, model=variant.model_name),
             )
     finally:
         remove_checkout(checkout)
@@ -428,6 +429,9 @@ def _run_swebench(
                         ),
                         capture=capture,
                         sampler=sampler,
+                        gates=resolve_gates(
+                            cfg.gates, harness=opts.harness, model=variant.model_name
+                        ),
                     )
                 )
         finally:
