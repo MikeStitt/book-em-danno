@@ -10,7 +10,13 @@ import pytest
 
 from book_em_danno.core.exec import Runner
 from danno_validator.suites import base
-from danno_validator.suites.config import BenchmarksConfig, load_benchmarks
+from danno_validator.suites.config import (
+    BenchmarksConfig,
+    GateLimits,
+    GatesConfig,
+    load_benchmarks,
+    resolve_gates,
+)
 
 
 @dataclass
@@ -167,4 +173,67 @@ def test_load_benchmarks_bad_toml_fails_loud(tmp_path: Path) -> None:
     p = tmp_path / "benchmarks.toml"
     p.write_text("[swebench\nenabled = true\n")
     with pytest.raises(ValueError, match="invalid TOML"):
+        load_benchmarks(p)
+
+
+# --- runaway gates (M0) -------------------------------------------------------
+
+
+def test_gates_default_values_are_backstops() -> None:
+    g = BenchmarksConfig().gates
+    assert (g.max_turns, g.max_tokens, g.timeout_s) == (50, 2_000_000, 1800.0)
+    assert g.harness == {} and g.model == {}
+
+
+def test_gates_resolution_falls_through_to_global_defaults() -> None:
+    r = resolve_gates(GatesConfig(), harness="opencode", model="ollama/x")
+    assert (r.max_turns, r.max_tokens, r.timeout_s) == (50, 2_000_000, 1800.0)
+
+
+def test_gates_resolution_precedence_is_per_field_model_over_harness_over_global() -> None:
+    gates = GatesConfig(
+        max_turns=50,
+        max_tokens=2_000_000,
+        timeout_s=1800.0,
+        harness={"opencode": GateLimits(max_turns=40)},
+        model={"o4-mini": GateLimits(max_turns=80)},
+    )
+    # opencode + a model with an override: model max_turns wins; max_tokens/timeout_s
+    # fall through to the global floor (neither the model nor harness layer set them).
+    r = resolve_gates(gates, harness="opencode", model="o4-mini")
+    assert r.max_turns == 80  # model layer
+    assert r.max_tokens == 2_000_000  # global
+    assert r.timeout_s == 1800.0  # global
+    # opencode + a model with no override: harness max_turns wins.
+    r2 = resolve_gates(gates, harness="opencode", model="qwen")
+    assert r2.max_turns == 40  # harness layer
+    # a different harness + no model override: global floor.
+    r3 = resolve_gates(gates, harness="occ", model="qwen")
+    assert r3.max_turns == 50  # global
+
+
+def test_gates_resolution_none_disables_a_gate() -> None:
+    r = resolve_gates(GatesConfig(timeout_s=None), harness="occ", model=None)
+    assert r.timeout_s is None  # disabled → watchdog skips it
+    assert r.max_turns == 50
+
+
+def test_gates_load_from_toml_with_overrides(tmp_path: Path) -> None:
+    p = tmp_path / "benchmarks.toml"
+    p.write_text(
+        "[gates]\nmax_turns = 60\nmax_tokens = 1_000_000\n"
+        "[gates.harness.opencode]\nmax_turns = 40\n"
+        '[gates.model."o4-mini"]\nmax_turns = 80\n'
+    )
+    gates = load_benchmarks(p).gates
+    assert gates.max_turns == 60 and gates.max_tokens == 1_000_000
+    assert gates.timeout_s == 1800.0  # unset → default floor
+    assert gates.harness["opencode"].max_turns == 40
+    assert gates.model["o4-mini"].max_turns == 80
+
+
+def test_gates_unknown_key_fails_loud(tmp_path: Path) -> None:
+    p = tmp_path / "benchmarks.toml"
+    p.write_text("[gates]\nmax_turns = 60\ncost_usd = 2.0\n")  # cost tier was removed
+    with pytest.raises(ValueError, match="invalid benchmarks config"):
         load_benchmarks(p)

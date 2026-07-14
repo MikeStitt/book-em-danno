@@ -10,6 +10,7 @@ the throttle on a matrix that is HUT x suite x tests x models.
 from __future__ import annotations
 
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -17,6 +18,9 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 # Default file name looked up next to the project's danno.toml.
 DEFAULT_BENCHMARKS_FILE = "benchmarks.toml"
+
+# Harness names a gate override may target (mirrors `BenchmarksConfig.harnesses`).
+HARNESS_NAMES = ("opencode", "claurst", "occ", "claude")
 
 
 class AiderPolyglotConfig(BaseModel):
@@ -46,6 +50,68 @@ class SwebenchConfig(BaseModel):
     select: list[str] = []  # instance ids (e.g. "django__django-11099"); empty = none
 
 
+class GateLimits(BaseModel):
+    """One layer of runaway-gate limits (`danno bench` per-cell caps). Every field is
+    optional so an override layer sets only what it changes; a cell's effective caps are
+    resolved by overlaying model > harness > global, per field (`resolve_gates`). See
+    `.docs/plan-bench-runaway-gates.md`."""
+
+    model_config = ConfigDict(extra="forbid")
+    max_turns: int | None = None  # Gate 1 — inference calls per cell
+    max_tokens: int | None = None  # Gate 2 — total tokens per cell
+    timeout_s: float | None = None  # Gate 3 — wall-clock backstop (seconds)
+
+
+class GatesConfig(GateLimits):
+    """`[gates]` in `benchmarks.toml`: zero-thought global defaults (the base fields,
+    which carry concrete values) plus optional per-harness / per-model overrides. The
+    per-model key is the `danno.toml [models]` name. Defaults are runaway BACKSTOPS, not
+    fairness normalizers — high enough that no legitimate solve hits them (DoR §7 D2)."""
+
+    max_turns: int | None = 50
+    max_tokens: int | None = 2_000_000
+    timeout_s: float | None = 1800.0
+    harness: dict[Literal["opencode", "claurst", "occ", "claude"], GateLimits] = {}
+    model: dict[str, GateLimits] = {}
+
+
+@dataclass(frozen=True)
+class ResolvedGates:
+    """A single cell's effective gate caps after overlaying model > harness > global.
+    A `None` field means that gate is disabled for the cell (the watchdog skips it)."""
+
+    max_turns: int | None
+    max_tokens: int | None
+    timeout_s: float | None
+
+
+def resolve_gates(gates: GatesConfig, *, harness: str, model: str | None) -> ResolvedGates:
+    """The effective caps for one `(harness, model)` cell. Precedence is per field and
+    independent: `[gates.model.<model>]` > `[gates.harness.<harness>]` > `[gates]`. A
+    layer that leaves a field unset (`None`) falls through to the next; the global layer's
+    defaults are the floor."""
+    layers: list[GateLimits] = []
+    if model is not None and model in gates.model:
+        layers.append(gates.model[model])
+    for name, override in gates.harness.items():
+        if name == harness:
+            layers.append(override)
+    layers.append(gates)  # global defaults (the GateLimits base fields)
+
+    def pick(attr: str) -> object:
+        for layer in layers:
+            value = getattr(layer, attr)
+            if value is not None:
+                return value
+        return None
+
+    return ResolvedGates(
+        max_turns=pick("max_turns"),  # type: ignore[arg-type]
+        max_tokens=pick("max_tokens"),  # type: ignore[arg-type]
+        timeout_s=pick("timeout_s"),  # type: ignore[arg-type]
+    )
+
+
 class BenchmarksConfig(BaseModel):
     """The whole `benchmarks.toml`: one optional table per suite."""
 
@@ -55,6 +121,7 @@ class BenchmarksConfig(BaseModel):
     # (the default) means the single opencode default; `--harness` on the CLI overrides this.
     # An unknown name fails loud at load (Working Rule 8).
     harnesses: list[Literal["opencode", "claurst", "occ", "claude"]] = []
+    gates: GatesConfig = GatesConfig()
     aider_polyglot: AiderPolyglotConfig = AiderPolyglotConfig()
     swebench: SwebenchConfig = SwebenchConfig()
 
