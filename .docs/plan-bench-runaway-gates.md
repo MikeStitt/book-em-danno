@@ -1,7 +1,31 @@
 # `danno bench` runaway gates — design of record
 
-**Status:** DESIGNED, unimplemented · **Date:** 2026-07-14 · **Author:** Claude
-(Opus 4.8), from a live review of the capture/telemetry/bench code with the user.
+**Status:** CORE IMPLEMENTED 2026-07-14 (see "Implementation status" below) · **Date:**
+2026-07-14 · **Author:** Claude (Opus 4.8), from a live review of the capture/telemetry/
+bench code with the user.
+
+## Implementation status
+
+Implemented + unit-tested (branch `docs-bench-runaway-gates`):
+
+- **M0** — `GateLimits`/`GatesConfig`/`resolve_gates` in `suites/config.py`.
+- **Sensor** — `GateTally` (`capture/gate.py`) fed by the proxy on each usage-bearing
+  response; shared usage extraction in `capture/usage.py` (see the dedup note in that
+  file re: the unmerged Responses-API fix).
+- **Enforcement** — the watchdog in `core/exec.py` (`Runner.watching()` +
+  `_capture_watched`), wired per cell in `suites/base.py:run_bench_task`; killed cells
+  become `runaway`/`over-budget`/`timeout` verdicts (`oracle.gate_verdict`).
+- **Always-on capture** — bench always runs the proxy; `--capture` deprecated to a no-op;
+  `--no-save-captures` runs the proxy but persists nothing.
+
+Deferred (follow-ups — the external Gate-1 kill already ENFORCES the caps, so these are
+graceful-shutdown / observability niceties, not correctness):
+
+- **Native "polite-stop" caps** — passing the resolved `max_turns` into occ/claurst
+  `--max-turns` and opencode `agent.steps` (§3.3/§3.4). occ/claurst already ride their own
+  defaults (30 / ~10); opencode relies solely on the external kill today. Per-cell opencode
+  `agent.steps` needs per-cell config regen (config is seeded once), hence deferred.
+- **Provenance** — recording the resolved gate values per cell in `provenance.json` (§6).
 
 Supersedes the "runaway guard" sketch in
 [`plan-stub-ai-test-harness.md`](plan-stub-ai-test-harness.md) §4 knob 2 / M2
