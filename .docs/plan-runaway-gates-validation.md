@@ -386,8 +386,22 @@ stays green while the backlog stays loud — a silently-passing xfail fails the 
   Docker. Note: V2's F2 red row uses a **bounded** (2 s) grandchild so the red test
   latency-fails rather than actually hanging the fast gate — the plan's own
   "fail, never hang" rule applied to the test itself. *(≈ stub plan M0, scoped to gates.)*
-- **GV1** — fix F1 (path-based round counting) + F2/F3/F4 on a branch stacked on
-  PR #88; flip the xfails green. F6/F8 ride along (docs + dead code).
+- **GV1 — DONE** (2026-07-15, branch `gv1-runaway-gate-fixes` stacked on GV0 — Q1
+  resolved in favour of a stacked follow-up PR, not amending #88, so the fix and its
+  un-xfailed V1/V2 proof live together). F1 = path-based round counting
+  (`capture/proxy.py` ticks by `capture.usage.is_inference_request`, not usage presence)
+  + Ollama `eval_count`/`prompt_eval_count` mapping (`capture/usage.py`, JSON + NDJSON) +
+  `wire_metrics.parse_capture_records` alignment (a usage-less round is a metric row with
+  `None` tokens, so `request_count` == the tally) + `GateTally.blind()` fail-loud warning
+  at cell end (`suites/base.py`). F2 = `start_new_session` + `killpg` process-group kill +
+  bounded `reader.join` + daemon readers + loud truncation warning (`core/exec.py`). F3 =
+  `errors="replace"` on both exec paths + surfaced reader exceptions. F4 = temp
+  capture-root cleanup in a `finally` (`suites/bench.py`) + `--no-save-captures
+  --capture-dir` conflict fails loud at the CLI (`cli.py`), with fast rows in
+  `test_cli`/`test_validator_bench`. F6 = README bench-capture rewrite. F8 = `HarnessName`
+  Literal alias replaces the dead `HARNESS_NAMES` tuple. All 5 GV0 strict xfails flipped
+  green; `ninja check` green (660 passed, 0 xfailed). V4's in-sandbox residue rows remain a
+  Tier B (GV3) item.
 - **GV2** — Tier B fixtures (`stub_backend`, `harness_cell` — stub plan §3.4) + V3
   for opencode + occ. *(≈ stub plan M1 + the M2 red-row-goes-green moment.)*
 - **GV3** — claurst row + V4 + V5; record the run-before-every-campaign rule in the
@@ -396,9 +410,10 @@ stays green while the backlog stays loud — a silently-passing xfail fails the 
 
 ## 7. Open questions
 
-- **Q1 — F1 fix location:** path-based round counting is a behavior change to the
-  gate sensor; land it as its own PR stacked on #88 (recommended — keeps #88's
-  review surface stable) or amend #88? User's call at GV1.
+- **Q1 — F1 fix location: RESOLVED** (2026-07-15) — landed as its own branch
+  `gv1-runaway-gate-fixes` stacked on GV0 (the recommended option), so #88's review
+  surface stays stable and the fix ships together with its un-xfailed V1/V2 proof rather
+  than split across the stack.
 - **Q2 — cadence enforcement:** Tier B can't run in CI (needs Docker Desktop + host
   Ollama for V5's live diff). Proposal: a documented pre-campaign checklist step in
   the bench README, plus running it after any sandbox-template/fork bump. Automation
