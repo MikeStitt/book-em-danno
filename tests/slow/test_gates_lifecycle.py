@@ -46,7 +46,9 @@ def _write_target(target: Path) -> None:
         "[models.stub]\n"
         'backend = "ollama"\n'
         f'tag = "{MODEL_TAG}"\n'
-        'reasoning_effort = "none"\n\n'
+        'reasoning_effort = "none"\n'
+        "context_budget = 32000\n"
+        "output_limit = 8192\n\n"
         "[agents]\n"
         'build = "stub"\n',
         encoding="utf-8",

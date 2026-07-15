@@ -50,19 +50,24 @@ pytestmark = [pytest.mark.slow, requires_docker]
 _STEPS = 4
 
 
-@pytest.mark.timeout(900)
-def test_opencode_steps_cap_is_honored_on_the_wire(tmp_path: Path) -> None:
-    # Seed agent.steps=_STEPS, then let the stub loop forever. A V1-runner opencode honors
-    # `steps ?? Infinity` and stops after ~_STEPS round-trips; if the template flipped to the
-    # V2 runner (hardcoded MAX_STEPS, or steps ignored), the wire count diverges — which is
-    # exactly the signal this canary exists to raise.
+@pytest.mark.timeout(600)
+def test_opencode_steps_does_not_hard_cap_rounds(tmp_path: Path) -> None:
+    # Live-confirmed 2026-07-15: opencode's `agent.steps` is ADVISORY at the sandbox
+    # template's version (memory `opencode-steps-advisory-responses-api`). It injects a
+    # summarize-and-stop prompt at the cap but does NOT hard-bound agent iterations, so a
+    # non-cooperating (forever-tool-loop) model runs right past it — which is exactly why
+    # option B relies on the EXTERNAL Gate 1 for opencode, not on steps. This canary pins
+    # that reality: seed a tiny `steps`, confirm the loop blows past it, and confirm Gate 1
+    # catches it. If a template bump ever makes `steps` a HARD cap on round-trips, the loop
+    # would instead stop at ~steps with no breach — the first assertion then fails and names
+    # the V1→V2 runner flip so option B's opencode leg can be re-evaluated.
     name = "danno-gates-steps"
     with provisioned_sandbox(name, "opencode", tmp_path) as workspace:
-        # Re-seed the opencode config with the step cap (bench does this per run).
         from gates_fixtures import gen_config
 
         _seed_opencode_config(gen_config("opencode"), "opencode", workspace, run_agent_steps=_STEPS)
-        gates = ResolvedGates(max_turns=1000, max_tokens=10_000_000, timeout_s=600.0)
+        # Modest round cap so the external kill fires fast (the instant stub races to the cap).
+        gates = ResolvedGates(max_turns=20, max_tokens=10_000_000, timeout_s=600.0)
         with scripted_backend([ToolLoop(LOOP_TOOL, LOOP_TOOL_ARGS, n=None)], tmp_path) as backend:
             _turn, watch = run_scripted_turn(
                 Runner(apply=True),
@@ -74,11 +79,13 @@ def test_opencode_steps_cap_is_honored_on_the_wire(tmp_path: Path) -> None:
                 workspace=workspace,
             )
             rounds = backend.tally.inference_calls()
-    assert watch.breach is None, "steps should stop the loop before any external gate fires"
-    assert rounds <= _STEPS + 1, (
-        f"opencode made {rounds} wire round-trips with agent.steps={_STEPS} — the sandbox "
-        "template's session runner no longer honors `steps` (likely a V1→V2 cutover). "
-        "Re-verify the step-cap semantics and danno's jsonc schema before trusting option B."
+    assert rounds > _STEPS * 2, (
+        f"opencode stopped after {rounds} wire round-trips with agent.steps={_STEPS} — steps "
+        "now HARD-caps agent iterations (it was advisory). The sandbox template's session "
+        "runner changed (likely a V1→V2 cutover); re-evaluate option B's opencode leg."
+    )
+    assert watch.breach is not None and watch.breach.gate == "runaway", (
+        "the external Gate 1 must catch an opencode runaway that steps did not stop"
     )
 
 
@@ -93,7 +100,9 @@ def test_provenance_records_the_gates(tmp_path: Path) -> None:
         "[models.stub]\n"
         'backend = "ollama"\n'
         f'tag = "{MODEL_TAG}"\n'
-        'reasoning_effort = "none"\n\n'
+        'reasoning_effort = "none"\n'
+        "context_budget = 32000\n"
+        "output_limit = 8192\n\n"
         "[agents]\n"
         'build = "stub"\n',
         encoding="utf-8",
