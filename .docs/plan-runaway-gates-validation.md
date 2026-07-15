@@ -47,10 +47,210 @@ deterministically and stays as its regression net after the fix.
 | F8 | `HARNESS_NAMES` (`suites/config.py:23`) is defined and never used — dead code | confirmed | (delete, no script) |
 
 F1 is the load-bearing one: **the uniform Gate-1 backstop is the PR's core claim**,
-and it currently depends on an accident of dialect. The candidate fix (count rounds
-by request *path* — POST to `/v1/chat/completions` | `/v1/responses` | `/v1/messages` |
-`/api/chat` — and use `usage` only for Gate 2's tokens) belongs in a follow-up on the
-PR #88 stack; V1 is written red-first against it.
+and it currently depends on an accident of dialect. The subsections below give, per
+finding, *why it is a problem* (which invariant it breaks and what goes wrong in the
+field) and *the fix design* (mechanism, location, edge cases). Every fix lands on a
+follow-up branch stacked on PR #88, red-test-first against its V# script.
+
+### 2.1 F1 — the gate sensor is usage-blind (Gate 1/2 inert for claurst-local)
+
+**Why it is a problem.** Gate 1 is the *primary* runaway detector — the whole DoR
+reframe (§2 there) rests on round count being the speed-invariant unit, and §3.2
+claims uniformity: *"Gate 1 is uniform across harnesses because the always-on proxy
+counts rounds for all of them."* But the sensor's counting condition is not "an
+inference round happened"; it is "`extract_usage` returned a value"
+(`capture/proxy.py:160`). Those coincide only for dialects that carry a `usage`
+block. claurst-local traffic does not: Ollama-native `/api/chat` reports
+`eval_count`/`prompt_eval_count` (no `usage` key), its streaming form is NDJSON
+(no `data:` prefix, so the SSE scanner in `extract_usage` skips every line), and
+claurst's stream path is the known `include_usage_in_stream` gap. Consequences:
+
+- **Defense-in-depth collapses to one layer.** For claurst-local the "external
+  backstop at `+grace`" (DoR §3.3 table: ✅) can never fire; the only round bound is
+  claurst's *own* `--max-turns` — in a fork we rebuild regularly, i.e. exactly the
+  component whose regression the external gate exists to survive. If that cap
+  regresses, the cell burns GPU for the full 1800 s Gate 3.
+- **It fails silent, which is worse than failing.** Nothing warns that a cell's
+  Gate 1/2 were inert; `provenance.json` records `max_turns`/`max_tokens` as if in
+  force, so a reader gains *false* confidence (Working Rule 8 violation).
+  `wire.request_count` also reads 0 for these cells, so the report under-states
+  what the harness did.
+- **The blindness is load-order fragile.** Whether claurst usage flows depends on
+  which fork build is installed (the `fix/ollama-nvidia-stream-usage` branch adds
+  stream usage on some paths) — the sensor's coverage changes with a binary swap
+  that nothing records.
+
+**Fix design.** Separate the two questions the sensor currently conflates:
+
+1. *"Is this an inference round?"* → decide by **request path + method**, not by
+   response contents: POST to `/v1/chat/completions` | `/v1/responses` |
+   `/v1/messages` | `/api/chat` (+ `/api/generate` for completeness) ticks
+   `tally.record(...)`. Discovery traffic (`GET`s, `/api/tags`, `/v1/models`,
+   `/api/show`) stays excluded by the same rule. Title-gen POSTs would count, but
+   bench already seeds `disable_title=True`, so scripted counts stay exact.
+2. *"How many tokens?"* → `usage` when present, as today; **also** map
+   Ollama-native `prompt_eval_count`/`eval_count` in `capture/usage.py` (a cheap
+   win that makes Gate 2 and the token telemetry non-zero for local cells).
+
+Alignment duty: `GateTally.record`'s docstring pins the tally to
+`wire_metrics.parse_capture_records` — change both sides in the same commit (the
+request *metric* row can keep `usage=None` fields; it must simply exist), or the
+"rounds ≥ request_count" invariant becomes unverifiable. Fail-loud backstop
+regardless of the fix: at cell end, if the proxy saw ≥1 POST but
+`tally.inference_calls() == 0`, log a loud "gate sensor blind for this cell"
+warning — that catches the *next* unknown dialect too.
+
+**Proven by:** V1's dialect matrix — the two red rows (Ollama-native, usage-less
+SSE) plus the `rounds ≥ request_count` invariant.
+
+### 2.2 F2 — the kill doesn't cover the process tree; the watchdog can hang itself
+
+**Why it is a problem.** The watchdog's entire value is a *termination guarantee* —
+D1 was "`danno bench` blocks forever at the exec seam." `_capture_watched` kills
+only the immediate child (`proc.kill()`, `core/exec.py:297`; no
+`start_new_session`), then blocks on `reader.join()` with **no timeout**
+(`exec.py:305`). A pipe reaches EOF only when *every* write-end FD closes; any
+host-side helper the `sbx`/`docker` CLI forked (credential helpers, wrappers)
+inherits those FDs. Kill the CLI and the helper keeps the pipe open →
+`proc.stdout.read()` never returns → `join()` blocks → the run hangs *after* the
+gate "fired," with the breach recorded but never reported. That is D1 reintroduced
+one layer up, and it is strictly worse than the pre-PR hang because the operator
+believes the gates make it impossible; there is no outer timeout above this seam by
+design.
+
+**Fix design.** Three cheap layers, all in `_capture_watched`:
+
+1. Spawn with `start_new_session=True`; on breach, `os.killpg(proc.pid, SIGKILL)`
+   (guarded for `ProcessLookupError`) so the whole host-side tree dies, then the
+   existing `proc.wait()` + `on_kill` reap.
+2. `reader.join(timeout=…)` (a few seconds); on expiry, log a loud warning and
+   abandon the threads (make them daemons at creation so they cannot pin exit).
+3. Note the abandonment in the breach rationale so a truncated transcript is
+   *labeled* truncated, never silently short.
+
+The in-VM reaper (`on_kill`) is unaffected — it solves the other half (the VM side)
+and stays as is.
+
+**Proven by:** V2's grandchild-holds-pipe row (bounded return time under
+`pytest-timeout`) and the kill-latency bound.
+
+### 2.3 F3 — reader-thread exceptions are swallowed (silent `""` output)
+
+**Why it is a problem.** `text=True` readers decode strictly; a harness emitting
+one invalid UTF-8 byte (binary spill into stdout, a truncated multibyte sequence at
+a kill boundary — likelier than usual *because* the watchdog now SIGKILLs
+mid-stream) raises `UnicodeDecodeError` **inside the reader lambda**
+(`core/exec.py:283`). The thread dies, `out` stays empty, and
+`out[0] if out else ""` (`exec.py:307`) converts the crash into an empty string.
+Downstream, the turn parser sees no events, the oracle classifies a wrong failure
+class, and nobody learns output was lost — a fail-loud violation. It is also a
+**behavioral fork between watched and unwatched execs**: plain
+`subprocess.run(text=True)` raises in the main thread. Since capture is now always
+on in bench, every bench exec takes the watched path — the *quiet* one.
+
+**Fix design.** Decode with `errors="replace"` on the watched `Popen` **and** the
+unwatched `subprocess.run` (parity — telemetry wants best-effort text, not
+strictness), and wrap the reader bodies to stash any unexpected exception and
+re-raise it after `join()` in the main thread. Two lines each; the parity test
+(V2) then pins watched/unwatched `CaptureResult` equality for a well-behaved child
+so the seam can never grow a second personality again.
+
+**Proven by:** V2's invalid-UTF-8 emitter row ("not silent" assertion) + the
+watched/unwatched parity row.
+
+### 2.4 F4 — `--no-save-captures` leaks captures on abort; `--capture-dir` conflict is silent
+
+**Why it is a problem.** The flag's contract is "persist nothing." The temp root
+(`suites/bench.py:276`) is removed only by a line at the *end* of `run_bench`
+(`bench.py:766`) — success path only, not a `finally`. Bench runs are long and
+abort often (Ctrl-C, provisioning failure, a gate bug); every abort strands full
+wire captures — **prompts and completions included** — in `/tmp`, exactly the data
+the user opted out of persisting. Separately, `--no-save-captures --capture-dir X`
+silently discards `X`: the user believes captures land at `X`; neither the captures
+nor a warning exist. Both are quiet contract breaks (Working Rule 8).
+
+**Fix design.** Ownership, not cleanup-by-remembering: `run_bench` wraps everything
+after `_setup_bench_capture` in `try/finally` (or registers the rmtree on the same
+`ExitStack` pattern the cells already use), keyed on `not opts.save_captures` — the
+multi-harness `run_benches` loop then inherits correctness because each `run_bench`
+owns its own root. For the flag conflict, fail loud at the CLI boundary
+(`cli.py`): `--no-save-captures` with an explicit `--capture-dir` is a contradiction
+→ `log_err` + exit 2 (a hard error beats a warning here; there is no sensible
+"both" semantics to guess).
+
+**Proven by:** V4's completed-run and SIGINT-abort residue rows + the conflict row.
+
+### 2.5 F5 — provenance records the config, not the per-cell resolved gates (and no harness version)
+
+**Why it is a problem.** The triple doctrine makes gate caps *benchmarked config
+dimensions*; DoR §6 promises "provenance records the **resolved** gate values per
+cell." Dumping the raw `GatesConfig` once (`provenance.py:170`) means a reader must
+re-run danno's resolution logic — *at the same danno version* — to know a cell's
+effective caps; resolution itself can change between versions, so old runs become
+unreconstructable. The missing **harness version** is the same class of gap with a
+sharper edge: the sandbox template is unpinned and opencode's V1→V2 cutover changes
+`agent.steps` semantics, so the polite-stop leg of option B can silently change
+meaning between two runs whose provenance is byte-identical.
+
+**Fix design.** Record where the value is *used*: put the cell's `ResolvedGates`
+(three numbers) on each `BenchVerdict` row in `bench.json` (`_row` in
+`suites/bench.py`) — verdict-local data survives partial runs and needs no join
+logic; keep the raw `[gates]` block in `provenance.json` as the intent record.
+Harness version: extend `harness_provenance` to exec `<harness> --version` in the
+VM once per run (occ/claurst already have version constants; opencode is the one
+that matters).
+
+**Proven by:** V5's provenance-completeness assertions; the steps-semantics canary
+is what makes the version field *actionable*.
+
+### 2.6 F6 — README still documents bench-era `--capture`
+
+**Why it is a problem.** Constitution, Documentation Hygiene: *"Any
+behavior-affecting change MUST update affected `--help` text, READMEs, and related
+documentation in the same commit. A documentation gap is a bug."* The `--help` text
+was updated; `README.md:321` ("With `--capture`, `report.html` also plots …") now
+describes a deprecated no-op, and `--no-save-captures` — the flag a user actually
+needs — appears nowhere. A reader follows the README, passes a dead flag, and never
+finds the opt-out.
+
+**Fix design.** Docs-only, rides the F-fix branch: rewrite the bench sentences of
+the capture section (always-on, why — it is the gate sensor — plus
+`--no-save-captures` / `--capture-dir`), leaving the `sandbox start --capture` /
+`validate --capture` paragraphs untouched (those paths are unchanged). No script;
+verified by reading.
+
+### 2.7 F7 — the reaper's `pkill -f` SIGKILLs its own wrapper
+
+**Why it is a problem.** `_REAP_PATTERN` (`suites/base.py:115`) is delivered as
+`bash -lc "pkill -9 -f 'opencode|claurst|…'"`; the wrapper bash's own command line
+*contains the pattern text*, so pkill kills its parent shell (pkill skips only its
+own PID). Today the damage is a spurious exit 137 absorbed by `check=False` — but
+it means the reap exec **cannot distinguish "reaped fine" from "reap failed"**, and
+any future edit that checks the exit code, adds a second command after `pkill`, or
+reuses the pattern in a checked context inherits a live bug wearing a passing test.
+
+**Fix design.** The classic self-exclusion bracket: first character of each
+alternative in a character class — `'[o]pencode|[c]laurst|index[.]mjs|[D]ANNO_RELAY'`.
+The regex still matches the real processes, but the wrapper's cmdline (which
+contains the *bracketed* text) no longer matches itself. Keep `-f` (needed for
+`index.mjs`, which runs under `node`); the reap exec should then exit 0, which V3
+asserts.
+
+**Proven by:** V3's post-kill invariants (reaper exit code 0 + no surviving
+processes + next cell clean).
+
+### 2.8 F8 — `HARNESS_NAMES` is dead code
+
+**Why it is a problem.** Working Rule 2 (nothing speculative) — but the real cost
+is drift: the same four names exist as inline `Literal[...]` types in
+`BenchmarksConfig.harnesses` and `GatesConfig.harness`; an unused parallel tuple
+invites someone to update one and not the others.
+
+**Fix design.** Either delete the constant, or make it the single source: a
+`HarnessName = Literal["opencode", "claurst", "occ", "claude"]` type alias used by
+both fields (and the tuple derived via `get_args` if a runtime sequence is ever
+needed). Pick whichever the follow-up branch touches naturally; do not keep both.
+No script; the type checker is the net.
 
 ## 3. Architecture — three tiers, one stub
 
