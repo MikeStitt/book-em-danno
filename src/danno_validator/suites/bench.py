@@ -676,95 +676,104 @@ def run_bench(
     # turn. Off → original config, no binding, default egress. opencode's provider file
     # must be generated from the REWRITTEN config so its base_url dials the proxy.
     cfg_for_run, capture, allow_hosts, capture_port = _setup_bench_capture(config, opts, out_dir)
-    sampler = _setup_bench_sampler(opts, out_dir)
-    # opencode's polite-stop `agent.steps` is a single config value (seeded once), so use the
-    # harness-level resolved max_turns; per-cell precision is handled by the external kill.
-    opencode_steps = (
-        resolve_gates(bench_cfg.gates, harness=opts.harness, model=None).max_turns
-        if opts.harness == sb.DEFAULT_HARNESS
-        else None
+    # --no-save-captures owns the temp capture root for the WHOLE run: remove it in a finally,
+    # not on the success path, so an abort (Ctrl-C, provisioning failure, a gate bug) can't
+    # strand full wire captures — prompts included — in /tmp (F4). The proxy still fed the
+    # gate tally live regardless.
+    capture_temp_root = (
+        capture.capture_dir.parent if (capture is not None and not opts.save_captures) else None
     )
-    _seed_opencode_config(cfg_for_run, opts.harness, workspace, run_agent_steps=opencode_steps)
-
-    # Pre-warm accumulator: each suite warms a variant's local model JUST BEFORE its cells run
-    # (default on; `--no-warm` skips) so the first cell's latency reflects the harness loop, not
-    # a cold load — and so a multi-model matrix survives VRAM eviction (see `_warm_variant`). The
-    # per-warm records land in provenance so the report states the run's cold-start posture.
-    warmup: list[dict] = []
-
-    # One chmod-600 env-file PER model variant: shared base lines (the HUT's loop-ceiling
-    # knobs, opencode's OLLAMA_BASE_URL, danno.toml [env], --env/--env-file) plus each cloud
-    # variant's provider auth (occ: OPENAI_BASE_URL/OPENAI_API_KEY; claurst/opencode: the raw
-    # {api_key_env}). Built from the capture-rewritten config so occ cloud dials the --capture
-    # proxy, and up front so a missing cloud key / claude token fails loud before provisioning.
-    env_files = _build_bench_env_files(cfg_for_run, opts, variants)
     try:
-        report.verdicts += _run_aider(
-            runner,
-            bench_cfg,
-            opts,
-            workspace=workspace,
-            variants=variants,
-            config=cfg_for_run,
-            env_files=env_files,
-            capture=capture,
-            sampler=sampler,
-            allow_hosts=allow_hosts,
-            capture_port=capture_port,
-            warm=opts.warm,
-            warmup=warmup,
+        sampler = _setup_bench_sampler(opts, out_dir)
+        # opencode's polite-stop `agent.steps` is a single config value (seeded once), so use the
+        # harness-level resolved max_turns; per-cell precision is handled by the external kill.
+        opencode_steps = (
+            resolve_gates(bench_cfg.gates, harness=opts.harness, model=None).max_turns
+            if opts.harness == sb.DEFAULT_HARNESS
+            else None
         )
-        report.verdicts += _run_swebench(
-            runner,
-            bench_cfg,
-            opts,
-            workspace=workspace,
-            variants=variants,
-            config=cfg_for_run,
-            env_files=env_files,
-            capture=capture,
-            sampler=sampler,
-            allow_hosts=allow_hosts,
-            capture_port=capture_port,
-            warm=opts.warm,
-            warmup=warmup,
-        )
-    finally:
-        for env_file in {p for p in env_files.values() if p is not None}:
-            env_file.unlink(missing_ok=True)
+        _seed_opencode_config(cfg_for_run, opts.harness, workspace, run_agent_steps=opencode_steps)
 
-    # §7 provenance is always written (a separate file, so bench.json's schema is stable):
-    # exact model bytes + static facts, harness/danno pins, host descriptor, sampler interval.
-    # Collected BEFORE the results so each row's §6.3 headroom can compare peak context
-    # against the model's real loaded `context_length`.
-    provenance = collect_provenance(
-        config,
-        variants,
-        harness=opts.harness,
-        sample_interval_s=opts.sample_interval if opts.sample else None,
-        warmup=warmup,
-        gates=bench_cfg.gates,
-    )
-    write_provenance(out_dir, provenance)
-    report.results_json = _write_results(
-        report,
-        config_path=opts.target / "danno.toml",
-        harness=opts.harness,
-        variants=variants,
-        num_ctx_by_model=_num_ctx_by_model(provenance),
-        capture_dir=opts.capture_dir,
-    )
-    # Human report (summary + per-permutation detail). `report.html` is self-contained
-    # so it doubles as the published Artifact summary.
-    payload = json.loads(report.results_json.read_text(encoding="utf-8"))
-    md_path, html_path = write_report(out_dir, payload, provenance=provenance)
-    _summary(report.verdicts)
-    log_info(f"\n  results  {report.results_json}")
-    log_info(f"  report   {md_path}  ·  {html_path}")
-    if not opts.save_captures and capture is not None:
-        # --no-save-captures: the proxy fed the gate tally live; drop the temp artifacts.
-        shutil.rmtree(capture.capture_dir.parent, ignore_errors=True)
-    return report
+        # Pre-warm accumulator: each suite warms a variant's local model JUST BEFORE its cells
+        # run (default on; `--no-warm` skips) so the first cell's latency reflects the harness
+        # loop, not a cold load — and so a multi-model matrix survives VRAM eviction (see
+        # `_warm_variant`). The per-warm records land in provenance so the report states the
+        # run's cold-start posture.
+        warmup: list[dict] = []
+
+        # One chmod-600 env-file PER model variant: shared base lines (the HUT's loop-ceiling
+        # knobs, opencode's OLLAMA_BASE_URL, danno.toml [env], --env/--env-file) plus each cloud
+        # variant's provider auth (occ: OPENAI_BASE_URL/OPENAI_API_KEY; claurst/opencode: the raw
+        # {api_key_env}). Built from the capture-rewritten config so occ cloud dials the --capture
+        # proxy, and up front so a missing cloud key / claude token fails loud before provisioning.
+        env_files = _build_bench_env_files(cfg_for_run, opts, variants)
+        try:
+            report.verdicts += _run_aider(
+                runner,
+                bench_cfg,
+                opts,
+                workspace=workspace,
+                variants=variants,
+                config=cfg_for_run,
+                env_files=env_files,
+                capture=capture,
+                sampler=sampler,
+                allow_hosts=allow_hosts,
+                capture_port=capture_port,
+                warm=opts.warm,
+                warmup=warmup,
+            )
+            report.verdicts += _run_swebench(
+                runner,
+                bench_cfg,
+                opts,
+                workspace=workspace,
+                variants=variants,
+                config=cfg_for_run,
+                env_files=env_files,
+                capture=capture,
+                sampler=sampler,
+                allow_hosts=allow_hosts,
+                capture_port=capture_port,
+                warm=opts.warm,
+                warmup=warmup,
+            )
+        finally:
+            for env_file in {p for p in env_files.values() if p is not None}:
+                env_file.unlink(missing_ok=True)
+
+        # §7 provenance is always written (a separate file, so bench.json's schema is stable):
+        # exact model bytes + static facts, harness/danno pins, host descriptor, sampler
+        # interval. Collected BEFORE the results so each row's §6.3 headroom can compare peak
+        # context against the model's real loaded `context_length`.
+        provenance = collect_provenance(
+            config,
+            variants,
+            harness=opts.harness,
+            sample_interval_s=opts.sample_interval if opts.sample else None,
+            warmup=warmup,
+            gates=bench_cfg.gates,
+        )
+        write_provenance(out_dir, provenance)
+        report.results_json = _write_results(
+            report,
+            config_path=opts.target / "danno.toml",
+            harness=opts.harness,
+            variants=variants,
+            num_ctx_by_model=_num_ctx_by_model(provenance),
+            capture_dir=opts.capture_dir,
+        )
+        # Human report (summary + per-permutation detail). `report.html` is self-contained
+        # so it doubles as the published Artifact summary.
+        payload = json.loads(report.results_json.read_text(encoding="utf-8"))
+        md_path, html_path = write_report(out_dir, payload, provenance=provenance)
+        _summary(report.verdicts)
+        log_info(f"\n  results  {report.results_json}")
+        log_info(f"  report   {md_path}  ·  {html_path}")
+        return report
+    finally:
+        if capture_temp_root is not None:
+            shutil.rmtree(capture_temp_root, ignore_errors=True)
 
 
 def run_bench_harnesses(

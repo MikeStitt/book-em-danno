@@ -355,6 +355,36 @@ def test_setup_bench_capture_no_save_is_always_on_but_temp(tmp_path: Path) -> No
     assert "host.docker.internal" in cfg_for_run.backends["ollama"].base_url
 
 
+def test_run_bench_no_save_captures_cleans_temp_on_abort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # F4: the --no-save-captures temp capture root is removed in a finally, so an abort
+    # AFTER capture setup can't strand full wire captures (prompts included) in /tmp.
+    opts = bench.BenchOptions(
+        target=Path("."), harness="opencode", save_captures=False, out_dir=tmp_path
+    )
+    captured: dict[str, Path] = {}
+    real_setup = bench._setup_bench_capture
+
+    def _spy(config: DannoConfig, o: bench.BenchOptions, out: Path):  # type: ignore[no-untyped-def]
+        result = real_setup(config, o, out)
+        assert result[1] is not None
+        captured["root"] = result[1].capture_dir.parent  # the mkdtemp root
+        return result
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("abort mid-run")
+
+    monkeypatch.setattr(bench, "_setup_bench_capture", _spy)
+    monkeypatch.setattr(bench, "_setup_bench_sampler", _boom)  # raise right after capture setup
+
+    with pytest.raises(RuntimeError, match="abort mid-run"):
+        bench.run_bench(_config(), BenchmarksConfig(), opts, Runner())
+
+    assert captured["root"].name.startswith("danno-bench-cap-")
+    assert not captured["root"].exists()  # cleaned up despite the abort
+
+
 def test_setup_bench_capture_default_saves_under_out_and_opens_port(tmp_path: Path) -> None:
     # Default (save) rewrites the ollama backend base_url at a proxy, opens its egress port,
     # persists under <out>/captures, and reports that port as the occ/claurst relay upstream.
