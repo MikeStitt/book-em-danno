@@ -318,9 +318,17 @@ co-fit evict each other; warming each right before its block keeps it resident f
 cells). It's on by default; pass `--no-warm` to also measure cold-start. Every warm result
 (already-resident vs cold-loaded, and the load time) is recorded in `provenance.json` and
 summarized in the report — so an eviction-forced reload shows up as an extra cold-load, a
-direct thrash signal. With `--capture`, `report.html` also plots per-cell **first-call vs
-steady-state** request latency: a red first-call bar is a model load that leaked into a
-timed cell — what pre-warm exists to prevent.
+direct thrash signal. `report.html` also plots per-cell **first-call vs steady-state**
+request latency: a red first-call bar is a model load that leaked into a timed cell — what
+pre-warm exists to prevent.
+
+Wire **capture is always on** in `danno bench`: the recording proxy is the *runaway-gate
+sensor* — it counts each cell's inference rounds and tokens live so the gates (round /
+token / wall-clock caps in `benchmarks.toml [gates]`) can stop a runaway. The
+per-permutation JSONL is persisted under `<out>/captures` by default; pass
+`--no-save-captures` to run the gate proxy but keep nothing on disk (captures can contain
+prompts), or `--capture-dir <path>` to persist elsewhere (the two are mutually exclusive).
+The old `bench --capture` flag is a deprecated no-op.
 
 ## `danno.toml` quickstart
 
