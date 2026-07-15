@@ -375,9 +375,17 @@ stays green while the backlog stays loud — a silently-passing xfail fails the 
 
 ## 6. Milestones
 
-- **GV0** — stub server + script engine (minimum: `finish`/`tool_call`/`tool_loop`/
-  `drip` + the §V1 dialect table) + V1 + V2. Gate green with F1/F2/F3 as strict
-  xfails. No Docker. *(≈ stub plan M0, scoped to gates.)*
+- **GV0 — DONE** (2026-07-15, branch `gv0-stub-ai-gate-validation` stacked on
+  `docs-runaway-gates-validation`). Stub server + script engine
+  (`src/book_em_danno/stubai/{script,server}.py`: `finish`/`tool_call`/`tool_loop`/
+  `drip`, the six wire dialects of the §V1 table + Anthropic, discovery table,
+  recorded-404 gap, transcript in the `capture.proxy` JSONL schema) + V1
+  (`tests/test_gate_sensor_dialects.py`) + V2 (`tests/test_exec_watchdog_hostile.py`).
+  `ninja check` green (653 passed, 5 strict xfails = F1×3 usage-less dialects, F2
+  grandchild-holds-pipe, F3 invalid-UTF-8). `pytest-timeout` added (dev group). No
+  Docker. Note: V2's F2 red row uses a **bounded** (2 s) grandchild so the red test
+  latency-fails rather than actually hanging the fast gate — the plan's own
+  "fail, never hang" rule applied to the test itself. *(≈ stub plan M0, scoped to gates.)*
 - **GV1** — fix F1 (path-based round counting) + F2/F3/F4 on a branch stacked on
   PR #88; flip the xfails green. F6/F8 ride along (docs + dead code).
 - **GV2** — Tier B fixtures (`stub_backend`, `harness_cell` — stub plan §3.4) + V3
