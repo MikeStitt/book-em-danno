@@ -14,8 +14,10 @@ wrapper; core logic stays inspectable).
 from __future__ import annotations
 
 import contextlib
+import os
 import shlex
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -32,6 +34,9 @@ console = Console()
 # How often the runaway-gate watchdog polls the tally + wall clock while a harness cell
 # runs. Fine enough to bound overshoot to a few calls/seconds, coarse enough to be free.
 _WATCH_INTERVAL_S = 0.25
+# How long to wait for the output readers to drain after a kill before abandoning them.
+# Bounds the watchdog's own return so a grandchild holding the pipe can't hang it (F2).
+_READER_JOIN_S = 5.0
 
 
 def log_info(msg: str) -> None:
@@ -123,6 +128,19 @@ class GateWatch:
         if self.timeout_s is not None and elapsed > self.timeout_s:
             return GateBreach("timeout", round(elapsed, 1), self.timeout_s)
         return None
+
+
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """SIGKILL the child's whole process group (F2) so a host-side grandchild that inherited
+    the pipes dies too and the readers can reach EOF. Spawned with `start_new_session=True`,
+    the child leads its own group. Falls back to killing just the child if the group is
+    already gone; a missing process is a no-op (the child may have exited between poll and
+    kill)."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
 
 
 def require_cmd(name: str, *, fix: str | None = None) -> str:
@@ -254,7 +272,11 @@ class Runner:
         log_debug(f"capturing: {shlex.join(cmd)}", verbose=self.verbose)
         if self._watch is not None:
             return self._capture_watched(cmd, cwd=cwd, env=env, check=check, watch=self._watch)
-        result = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
+        # `errors="replace"` for parity with the watched path (F3): telemetry wants
+        # best-effort text, never a strict UnicodeDecodeError on a stray byte.
+        result = subprocess.run(
+            cmd, cwd=cwd, env=env, capture_output=True, text=True, errors="replace"
+        )
         if check and result.returncode != 0:
             raise CommandFailedError(
                 f"command failed (exit {result.returncode}): {shlex.join(cmd)}"
@@ -270,18 +292,42 @@ class Runner:
         check: bool,
         watch: GateWatch,
     ) -> CaptureResult:
-        """`capture()` under the runaway-gate watchdog: spawn via `Popen`, drain stdout/
-        stderr on reader threads (so a chatty child never deadlocks on a full pipe), and
-        poll `watch.check()` every `_WATCH_INTERVAL_S`. On the first breach, kill the
-        process and record it on `watch.breach`; the partial output is still returned."""
+        """`capture()` under the runaway-gate watchdog: spawn via `Popen` in its own process
+        group, drain stdout/stderr on reader threads (so a chatty child never deadlocks on a
+        full pipe), and poll `watch.check()` every `_WATCH_INTERVAL_S`. On the first breach,
+        SIGKILL the whole group and record it on `watch.breach`; the partial output is still
+        returned.
+
+        F2/F3 hardening: the kill covers the process GROUP (`start_new_session=True` +
+        `killpg`) so a host-side grandchild that inherited the pipes dies too — otherwise it
+        keeps the reader blocked and the watchdog itself hangs after the gate "fired". The
+        drain join is bounded (`_READER_JOIN_S`) and the readers are daemons, so a reader we
+        still can't unblock is abandoned with a loud warning rather than hanging. Decoding is
+        best-effort (`errors="replace"`) and any unexpected reader error is surfaced in the
+        main thread, never swallowed into a silent empty string."""
         proc = subprocess.Popen(  # noqa: S603 - cmd is built from trusted internal argv
-            cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            cmd,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            start_new_session=True,
         )
         out: list[str] = []
         err: list[str] = []
+        reader_errors: list[BaseException] = []
+
+        def _drain(stream: object, sink: list[str]) -> None:
+            try:
+                sink.append(stream.read() if stream else "")  # type: ignore[attr-defined]
+            except BaseException as exc:  # noqa: BLE001 - stash + re-raise in the main thread
+                reader_errors.append(exc)
+
         readers = [
-            threading.Thread(target=lambda: out.append(proc.stdout.read() if proc.stdout else "")),
-            threading.Thread(target=lambda: err.append(proc.stderr.read() if proc.stderr else "")),
+            threading.Thread(target=_drain, args=(proc.stdout, out), daemon=True),
+            threading.Thread(target=_drain, args=(proc.stderr, err), daemon=True),
         ]
         for reader in readers:
             reader.start()
@@ -294,7 +340,7 @@ class Runner:
                 breach = watch.check(time.monotonic() - start)
                 if breach is not None:
                     watch.breach = breach
-                    proc.kill()
+                    _kill_process_group(proc)
                     proc.wait()
                     if watch.on_kill is not None:
                         # Reap the in-VM harness (the host kill doesn't propagate). Never let
@@ -303,7 +349,17 @@ class Runner:
                             watch.on_kill()
                     break
         for reader in readers:
-            reader.join()
+            reader.join(timeout=_READER_JOIN_S)
+        if any(reader.is_alive() for reader in readers):
+            # A reader still blocked after the kill — a grandchild we couldn't reap holds the
+            # pipe. Abandon the daemon thread (never hang) but flag it loud (Working Rule 8):
+            # the transcript is truncated, not silently short.
+            log_warn(
+                f"watchdog: output reader did not drain within {_READER_JOIN_S}s after kill; "
+                f"transcript may be truncated for: {shlex.join(cmd)}"
+            )
+        if reader_errors and watch.breach is None:
+            raise reader_errors[0]  # surface an unexpected reader crash like the unwatched path
         result = CaptureResult(cmd, proc.returncode, out[0] if out else "", err[0] if err else "")
         # A gate kill is an expected outcome (the caller reads `watch.breach`), never a
         # CommandFailedError; only a genuine non-gate non-zero exit escalates under `check`.

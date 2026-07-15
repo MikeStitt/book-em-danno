@@ -1,19 +1,18 @@
 """V2 — the runaway-gate watchdog under hostile children (the F2/F3 net).
 
 Real subprocesses, no Docker. `Runner.capture` under `watching()` takes the watched path
-(`core.exec._capture_watched`), which today has two defects the plan fixes on the GV1
-branch:
+(`core.exec._capture_watched`). The two hardened behaviors:
 
-- **F2** — the kill covers only the direct child (`proc.kill()`, no process group) and
-  `reader.join()` has no timeout, so a grandchild inheriting the stdout pipe keeps the
-  reader blocked *after* the gate fired: `capture` does not return promptly. The red row
-  uses a **short-lived** grandchild so the demonstration is bounded — the test fails on a
-  latency assertion, it never actually hangs the gate (the same "fail, never hang" rule
-  the whole plan rests on).
-- **F3** — reader-thread exceptions are swallowed, so a child emitting invalid UTF-8
-  returns a silent empty string instead of surfacing the loss.
+- **F2** — the kill covers the process GROUP (`start_new_session` + `killpg`) and
+  `reader.join()` is bounded, so a grandchild inheriting the stdout pipe is reaped too and
+  `capture` returns promptly after the gate fires (it never hangs on the still-open pipe).
+  The row uses a **short-lived** grandchild so that even a regression latency-fails rather
+  than hanging the gate (the same "fail, never hang" rule the whole plan rests on).
+- **F3** — reader-thread decoding is best-effort (`errors="replace"`) and unexpected reader
+  errors are surfaced, so a child emitting invalid UTF-8 no longer returns a silent empty
+  string.
 
-The two green rows (kill-latency, watched/unwatched parity) are standing regression nets.
+The other two rows (kill-latency, watched/unwatched parity) are standing regression nets.
 See `.docs/plan-runaway-gates-validation.md` §2.2/§2.3/§4.
 """
 
@@ -42,11 +41,6 @@ _PARENT_HOLDS_PIPE = (
 )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F2: watched kill is child-only + reader.join() has no timeout; a grandchild "
-    "holding the stdout pipe keeps capture() from returning promptly after the gate fires",
-)
 def test_grandchild_holding_pipe_does_not_delay_return() -> None:
     runner = Runner()
     cmd = [sys.executable, "-c", _PARENT_HOLDS_PIPE]
@@ -60,12 +54,6 @@ def test_grandchild_holding_pipe_does_not_delay_return() -> None:
     assert elapsed < 1.5
 
 
-@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
-@pytest.mark.xfail(
-    strict=True,
-    reason="F3: reader-thread exceptions are swallowed; invalid UTF-8 returns a silent "
-    'empty string via `out[0] if out else ""`',
-)
 def test_invalid_utf8_output_is_not_silently_dropped() -> None:
     runner = Runner()
     # A child that emits bytes undecodable as UTF-8, then exits cleanly (no gate breach).
