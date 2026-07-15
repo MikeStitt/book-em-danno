@@ -98,14 +98,15 @@ def test_chat_tool_call_shape(tmp_path: Path) -> None:
 # --- Ollama native ----------------------------------------------------------
 
 
-def test_ollama_native_nonstream_has_no_usage_block(tmp_path: Path) -> None:
+def test_ollama_native_nonstream_maps_eval_count(tmp_path: Path) -> None:
     with _stub([Finish("done")], tmp_path) as stub:
         _ctype, raw = _post(stub, "/api/chat", {"model": "stub", "stream": False})
     body = json.loads(raw)
     assert body["done"] is True
     assert body["eval_count"] == 5 and body["prompt_eval_count"] == 10
-    assert "usage" not in body
-    assert extract_usage(body) is None  # F1: Ollama native is invisible to the sensor today
+    assert "usage" not in body  # Ollama native carries no `usage` block on the wire...
+    # ...but the F1 fix derives normalized usage from eval_count/prompt_eval_count.
+    assert extract_usage(body) == {"prompt": 10, "completion": 5, "total": 15, "cached": None}
 
 
 def test_ollama_native_ndjson_stream(tmp_path: Path) -> None:
@@ -117,7 +118,13 @@ def test_ollama_native_ndjson_stream(tmp_path: Path) -> None:
     assert lines[-1]["eval_count"] == 5
     content = "".join(line["message"]["content"] for line in lines if not line["done"])
     assert content == "hi there"
-    assert extract_usage(raw.decode()) is None  # NDJSON has no `data:` lines
+    # NDJSON has no `data:` lines, but the F1 fix scans bare JSON lines for eval_count too.
+    assert extract_usage(raw.decode()) == {
+        "prompt": 10,
+        "completion": 5,
+        "total": 15,
+        "cached": None,
+    }
 
 
 # --- Responses API ----------------------------------------------------------

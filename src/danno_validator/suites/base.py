@@ -21,7 +21,7 @@ from book_em_danno.capture.gate import GateTally
 from book_em_danno.capture.proxy import read_captures
 from book_em_danno.capture.wiring import CaptureBinding
 from book_em_danno.commands import sandbox_cli
-from book_em_danno.core.exec import Runner
+from book_em_danno.core.exec import Runner, log_warn
 from danno_validator.driver import Turn, TurnFn, opencode_run
 from danno_validator.oracle import FailureClass, TurnVerdict, classify_turn, gate_verdict
 from danno_validator.suites.config import ResolvedGates, watchdog_max_turns
@@ -202,6 +202,14 @@ def run_bench_task(
         )
     latency = time.monotonic() - start
     breach = watch.breach if watch is not None else None
+    if tally is not None and tally.blind():
+        # Fail loud (Working Rule 8): the proxy saw inference POSTs but recognised none as a
+        # round, so Gates 1/2 were inert for this cell — an unknown wire dialect. Never let a
+        # cell silently run un-gated (F1). `provenance` still records the caps as if in force.
+        log_warn(
+            f"gate sensor blind for {suite}/{task.id} {model}: proxy saw POST traffic but "
+            "counted 0 inference rounds (unrecognised wire dialect) — Gates 1/2 were inert."
+        )
     if sampler is not None:
         resource = summarize(
             read_samples(sampler.permutation_path(suite=suite, task_id=task.id, model=model))

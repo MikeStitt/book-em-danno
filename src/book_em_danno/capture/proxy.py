@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from book_em_danno.capture.gate import GateTally
-from book_em_danno.capture.usage import extract_usage, total_tokens
+from book_em_danno.capture.usage import extract_usage, is_inference_request, total_tokens
 from book_em_danno.core.exec import CommandFailedError
 
 # Header names whose VALUES carry secrets — recorded as "<redacted>", never verbatim.
@@ -155,11 +155,15 @@ class _Handler(BaseHTTPRequestHandler):
             }
         )
         if cfg.tally is not None:
-            # Only usage-bearing responses are inference calls; discovery hits (no usage)
-            # are not counted — keeps Gate 1 aligned with `parse_capture_records`.
-            usage = extract_usage(resp_body)
-            if usage is not None:
-                cfg.tally.record(tokens=total_tokens(usage))
+            # Gate 1 counts inference ROUNDS, decided by request path (not by whether a
+            # `usage` block came back) so a usage-less dialect — Ollama-native, an SSE
+            # stream without `include_usage` — still advances the tally (F1). Tokens are
+            # recorded when extractable, else `None` (a round with no token spend).
+            if self.command == "POST":
+                cfg.tally.observe_post()
+            if is_inference_request(self.command, self.path):
+                usage = extract_usage(resp_body)
+                cfg.tally.record(tokens=total_tokens(usage) if usage is not None else None)
 
         self.send_response(status)
         self.send_header("Content-Type", resp_headers.get("Content-Type", "application/json"))
