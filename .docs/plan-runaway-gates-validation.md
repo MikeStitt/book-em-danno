@@ -402,11 +402,26 @@ stays green while the backlog stays loud — a silently-passing xfail fails the 
   Literal alias replaces the dead `HARNESS_NAMES` tuple. All 5 GV0 strict xfails flipped
   green; `ninja check` green (660 passed, 0 xfailed). V4's in-sandbox residue rows remain a
   Tier B (GV3) item.
-- **GV2** — Tier B fixtures (`stub_backend`, `harness_cell` — stub plan §3.4) + V3
-  for opencode + occ. *(≈ stub plan M1 + the M2 red-row-goes-green moment.)*
-- **GV3** — claurst row + V4 + V5; record the run-before-every-campaign rule in the
-  bench docs; retire `live-verify-runaway-gates.md` §1–2 to "see the automated
-  matrix" (keep §3's manual reap recipe).
+- **GV2 + GV3 — AUTHORED, NOT LIVE-VERIFIED** (2026-07-15, same branch
+  `gv2-gv3-tier-b-slow-tests` stacked on GV1; user opted to write the Tier B suites
+  without a live Docker run). Shared fixtures `tests/slow/gates_fixtures.py`
+  (`scripted_backend` = stub on a fixed port behind the always-on capture proxy;
+  `provisioned_sandbox` = one real sandbox wired to the proxy; `run_scripted_turn` = the
+  `suites.base.run_cell` watchdog seam driving the harness `*_run`). V3
+  `test_gates_termination_matrix.py` (harness ∈ {opencode, occ, claurst} × {clean-finish,
+  runaway-loop, token-gate, wallclock-gate, next-cell-clean}, with option-B graceful-vs-
+  external split + `surviving_harness_pids` post-kill invariant). V4
+  `test_gates_lifecycle.py` (real `danno bench` subprocess: `--no-save-captures` residue on
+  completed + SIGINT-abort). V5 `test_gates_drift.py` (opencode `steps` wire-round-trip
+  canary that names a V1→V2 runner flip; provenance-records-gates; opt-in stub-vs-live SSE
+  framing diff). All `-m slow` + `requires_docker` skip guard + `pytest-timeout` ceilings;
+  20 tests collect, `ninja check` unaffected (660 passed, 31 deselected). **Every file
+  carries a loud NOT-YET-LIVE-VERIFIED banner listing what the first Docker run must
+  confirm (loop-tool name/args, occ/claurst relay routing, `agent.steps` honored).**
+  Still TODO for a full GV2/GV3 close: the live run itself; F5 (per-cell resolved gates +
+  harness version — V5's provenance row asserts loose until then); F7 (reaper self-kill
+  bracket — V3 observes it); the bench-docs run-before-every-campaign note + retiring
+  `live-verify-runaway-gates.md` §1–2.
 
 ## 7. Open questions
 
