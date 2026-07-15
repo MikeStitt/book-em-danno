@@ -54,7 +54,7 @@ def _write_target(target: Path) -> None:
         encoding="utf-8",
     )
     (target / "benchmarks.toml").write_text(
-        '[aider_polyglot]\nenabled = true\nselect = ["python/anagram"]\n\n'
+        '[aider_polyglot]\nenabled = true\nselect = ["python/proverb"]\n\n'
         "[gates]\nmax_turns = 5\ntimeout_s = 300\n",
         encoding="utf-8",
     )

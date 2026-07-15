@@ -230,6 +230,20 @@ def test_drip_streams_content_over_time(tmp_path: Path) -> None:
     assert elapsed >= 0.1
 
 
+def test_drip_delays_the_whole_buffered_body_when_not_streaming(tmp_path: Path) -> None:
+    # A non-streaming client (e.g. occ under CLAUDE_CODE_STREAMING=0) waits for the whole
+    # body, so the drip cost must land as one late delivery — otherwise the wall-clock gate
+    # is silently untestable for non-streaming harnesses.
+    with _stub([Drip("one two three four", tokens_per_s=20.0)], tmp_path) as stub:
+        start = time.monotonic()
+        ctype, raw = _post(stub, "/v1/chat/completions", {"stream": False})
+        elapsed = time.monotonic() - start
+    assert ctype.startswith("application/json")
+    body = json.loads(raw.decode())
+    assert body["choices"][0]["message"]["content"] == "one two three four"
+    assert elapsed >= 0.1  # same ~0.2 s total as the streamed case, delivered at once
+
+
 # --- helpers ----------------------------------------------------------------
 
 

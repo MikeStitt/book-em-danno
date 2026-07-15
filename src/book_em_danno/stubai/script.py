@@ -68,9 +68,15 @@ class ToolLoop:
 
 @dataclass(frozen=True)
 class Drip:
-    """Final assistant text, streamed slowly at `tokens_per_s` — latency injection
-    (regression net for provider-stall-timeout bugs). Observable only on a streaming
-    dialect; on a non-streaming request the delay collapses to nothing."""
+    """Final assistant text delivered slowly at `tokens_per_s` — latency injection
+    (regression net for provider-stall-timeout bugs, and the wall-clock gate's sensor).
+
+    Models a slow provider, so the wall-clock cost is observable on EITHER framing: a
+    streaming dialect dribbles one token per `1/tokens_per_s`, while a non-streaming
+    dialect buffers the whole body and delivers it after the full drip duration
+    (`n_tokens / tokens_per_s`). The non-streaming path matters for harnesses that dial a
+    non-streaming dialect (e.g. occ's OpenAI chat path under `CLAUDE_CODE_STREAMING=0`):
+    without the buffered delay the timeout gate would be silently untestable for them."""
 
     text: str = "done"
     tokens_per_s: float = 10.0
@@ -252,7 +258,7 @@ def _sse_done() -> bytes:
 
 def _render_chat(reply: Reply, *, stream: bool, include_usage: bool, model: str) -> WireResponse:
     if not stream:
-        return _buffered_json(_chat_body(reply, model))
+        return _buffered_json(_chat_body(reply, model), delay=_buffered_delay(reply))
     return _chat_sse(reply, include_usage=include_usage, model=model)
 
 
@@ -330,7 +336,9 @@ def _chat_sse(reply: Reply, *, include_usage: bool, model: str) -> WireResponse:
 
 def _render_ollama(reply: Reply, *, stream: bool, model: str) -> WireResponse:
     if not stream:
-        return _buffered_json(_ollama_final(reply, model, streaming=False))
+        return _buffered_json(
+            _ollama_final(reply, model, streaming=False), delay=_buffered_delay(reply)
+        )
     return _ollama_ndjson(reply, model=model)
 
 
@@ -455,11 +463,21 @@ def _render_anthropic(reply: Reply, *, model: str) -> WireResponse:
 # --- shared helpers ---------------------------------------------------------
 
 
-def _buffered_json(body: dict[str, Any]) -> WireResponse:
-    return WireResponse("application/json", ((0.0, json.dumps(body).encode()),), stream=False)
+def _buffered_json(body: dict[str, Any], *, delay: float = 0.0) -> WireResponse:
+    return WireResponse("application/json", ((delay, json.dumps(body).encode()),), stream=False)
 
 
 def _drip_delay(reply: Reply) -> float:
     if reply.drip_tokens_per_s and reply.drip_tokens_per_s > 0:
         return 1.0 / reply.drip_tokens_per_s
     return 0.0
+
+
+def _buffered_delay(reply: Reply) -> float:
+    """Total wall-clock a dripped reply costs a NON-streaming client: it waits for the
+    whole body, so it sees the sum of the per-token streaming delays at once (0.0 when the
+    reply is not a `Drip`). Mirrors the streaming path's `n_tokens x _drip_delay`."""
+    per_token = _drip_delay(reply)
+    if per_token <= 0.0:
+        return 0.0
+    return len(_text_tokens(reply.text)) * per_token

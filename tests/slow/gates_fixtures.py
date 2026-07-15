@@ -31,7 +31,7 @@ import shutil
 import subprocess
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,7 +45,8 @@ from book_em_danno.config.generate import generate
 from book_em_danno.config.schema import DannoConfig, Defaults, Model, OllamaBackend
 from book_em_danno.core.exec import GateWatch, Runner
 from book_em_danno.stubai import Stub, StubConfig, stub_ai
-from danno_validator.driver import Turn, claurst_run, occ_run, opencode_run
+from danno_validator.driver import Turn
+from danno_validator.suites.aut import run_turn_for
 from danno_validator.suites.base import _reap_harness
 from danno_validator.suites.config import ResolvedGates, watchdog_max_turns
 
@@ -67,12 +68,6 @@ DOCKER_DOWN = shutil.which("docker") is None or (
     subprocess.run(["docker", "info"], capture_output=True, check=False).returncode != 0
 )
 OLLAMA_DOWN = not ollama.reachable()  # only V5's live-diff row needs this; V3/V4 do not
-
-_TURN_FNS: dict[str, Callable[..., Turn]] = {
-    "opencode": opencode_run,
-    "occ": occ_run,
-    "claurst": claurst_run,
-}
 
 
 def gen_config(harness: str) -> DannoConfig:
@@ -133,6 +128,8 @@ def scripted_backend(script: list, tmp_path: Path) -> Iterator[ScriptedBackend]:
 def provisioned_sandbox(name: str, harness: str, tmp_path: Path) -> Iterator[Path]:
     """Generate the proxy-dialing config and provision a real sandbox once, wired to allow
     the proxy port. Yields the workspace/target dir; tears the sandbox down on exit."""
+    from danno_validator.suites.bench import _seed_opencode_config
+
     generate(gen_config(harness), tmp_path, apply=True)
     _seed_workspace(tmp_path)
     teardown_sandbox(name)
@@ -146,6 +143,12 @@ def provisioned_sandbox(name: str, harness: str, tmp_path: Path) -> Iterator[Pat
             # match, so the rule names localhost:<proxy port>.
             allow_hosts=(f"localhost:{PROXY_PORT}",),
         )
+        # Mirror the real bench flow (bench.py:695): opencode reads its model registry from
+        # `.opencode/opencode.jsonc`, which bench (re)seeds POST-provision with title-gen
+        # disabled. A bare pre-provision generate leaves title-gen enabled, and opencode then
+        # makes 0 model calls (the "Model not found: ollama/<tag>" path _seed_opencode_config
+        # was written to fix). No-op for occ/claurst (they route via the in-VM relay).
+        _seed_opencode_config(gen_config(harness), harness, tmp_path)
         yield tmp_path
     finally:
         teardown_sandbox(name)
@@ -162,10 +165,17 @@ def run_scripted_turn(
     workspace: Path,
 ) -> tuple[Turn, GateWatch]:
     """Drive one harness turn under the runaway-gate watchdog — the exact seam `suites.base.
-    run_cell` uses: `runner.watching(probe=tally, ...)` wraps the harness `*_run`, so a
-    breach kills the cell and lands on `watch.breach`. Option B: the native cap is set to
-    `watchdog_max_turns(gates.max_turns)` so a cap-honoring harness stops itself first."""
-    turn_fn = _TURN_FNS[harness]
+    run_cell` uses: `runner.watching(probe=tally, ...)` wraps the harness turn fn, so a breach
+    kills the cell and lands on `watch.breach`. Option B: the harness's NATIVE cap is set to
+    the raw `gates.max_turns` and the external watchdog sits a grace margin above it
+    (`watchdog_max_turns`), so a cap-honoring harness (occ/claurst) stops itself first.
+
+    Built via the canonical `run_turn_for` (not the raw driver fns) so occ/claurst get their
+    two local-routing knobs bench binds too: `capture_port=PROXY_PORT` points their in-VM
+    Ollama relay at the stub proxy (else it dials the default 11434 → 0 stub calls), and
+    `max_turns` is their `--max-turns` polite-stop. opencode ignores both — it dials the proxy
+    via its seeded backend `base_url` and relies on the external Gate 1."""
+    turn_fn = run_turn_for(harness, None, capture_port=PROXY_PORT, max_turns=gates.max_turns)
     with runner.watching(
         probe=backend.tally,
         max_turns=watchdog_max_turns(gates.max_turns),
@@ -187,7 +197,14 @@ def run_scripted_turn(
 
 def surviving_harness_pids(name: str) -> list[str]:
     """PIDs of any harness process still alive in the sandbox after a kill+reap — the
-    post-kill invariant is that this is empty (`ps` filtered by the reap pattern)."""
+    post-kill invariant is that this is empty (`ps` filtered by the reap pattern).
+
+    The alternatives are bracketed (`[o]pencode`, not `opencode`) so the pattern string does
+    NOT contain the literal names: otherwise `pgrep -f` matches its OWN `bash -lc "pgrep -f
+    'opencode|...'"` wrapper (whose cmdline carries the pattern), returning a fresh self-match
+    PID every call — a false 'surviving harness' on a sandbox with nothing running. Verified
+    2026-07-15: broad pattern → a pid on an idle sandbox; bracketed → none. Same self-match
+    class as the deferred reaper F7."""
     result = subprocess.run(
         [
             *_sbx_base(),
@@ -195,7 +212,7 @@ def surviving_harness_pids(name: str) -> list[str]:
             name,
             "bash",
             "-lc",
-            "pgrep -f 'opencode|claurst|index.mjs' || true",
+            r"pgrep -f '[o]pencode|[c]laurst|[i]ndex\.mjs' || true",
         ],
         capture_output=True,
         text=True,
@@ -205,8 +222,14 @@ def surviving_harness_pids(name: str) -> list[str]:
 
 
 def teardown_sandbox(name: str) -> None:
-    for verb in ("stop", "rm"):
-        subprocess.run([*_sbx_base(), verb, name], capture_output=True, check=False)
+    from book_em_danno.commands import sandbox_cli
+
+    subprocess.run([*_sbx_base(), "stop", name], capture_output=True, check=False)
+    # `sbx rm` prompts for confirmation and aborts on a non-tty (this exec path is headless),
+    # so it needs `--force` — use the canonical argv. A bare `sbx rm` silently no-ops, leaving
+    # an orphaned sandbox that provision then "already exists — skipping create"s, reusing a
+    # dead VM so every inference call vanishes (0-round false failures across the matrix).
+    subprocess.run(sandbox_cli.rm_argv(name), capture_output=True, check=False)
 
 
 def _sbx_base() -> list[str]:
