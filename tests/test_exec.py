@@ -140,6 +140,19 @@ def test_capture_uses_capture_output_and_text(monkeypatch: pytest.MonkeyPatch) -
     assert captured["capture_output"] is True and captured["text"] is True
 
 
+def test_capture_isolates_stdin_from_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A captured command must not inherit the caller's TTY: opencode run drains
+    # stdin and would block until Ctrl-D otherwise (see capture docstring).
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        exec_mod.subprocess,
+        "run",
+        lambda cmd, **kw: (captured.update(kw), subprocess.CompletedProcess(cmd, 0, "", ""))[1],
+    )
+    Runner().capture(["opencode", "run", "hi"])
+    assert captured["stdin"] is subprocess.DEVNULL
+
+
 def test_require_cmd_found() -> None:
     assert require_cmd("python3") or require_cmd("python")
 

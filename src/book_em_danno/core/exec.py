@@ -156,9 +156,17 @@ class Runner:
         `CommandFailedError` on a non-zero exit (e.g. a workspace reset that must
         succeed). The command is logged only under `--verbose` (machine-driven; no
         copy-paste line).
+
+        stdin is redirected from `DEVNULL`: a captured command is machine-driven,
+        never interactive, so it must not inherit the caller's terminal. Otherwise
+        a child that drains stdin (e.g. `opencode run <msg>`, which concatenates
+        piped stdin onto the prompt) blocks reading the TTY until the human hits
+        Ctrl-D — hanging every headless AUT turn. DEVNULL makes it read EOF at once.
         """
         log_debug(f"capturing: {shlex.join(cmd)}", verbose=self.verbose)
-        result = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
+        result = subprocess.run(
+            cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True
+        )
         if check and result.returncode != 0:
             raise CommandFailedError(
                 f"command failed (exit {result.returncode}): {shlex.join(cmd)}"
