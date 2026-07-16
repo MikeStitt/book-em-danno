@@ -892,9 +892,39 @@ edit `danno.toml`, not the generated file (see
 
 ## Development
 
+- **Tests:** two tiers, both run with `pytest`.
+  - **Unit / fast** (default; no Docker, no network) — the bulk of `tests/*.py`:
+    config schema + generator (`test_generate`, `test_loader`), the
+    advise-by-default `Runner` and its runaway watchdog (`test_exec`,
+    `test_exec_watchdog_hostile`), the capture proxy + gate sensor
+    (`test_capture_proxy`, `test_capture_gate`, `test_gate_sensor_dialects`),
+    the stub AI (`test_stubai_server`), and the `danno validate` / `danno bench`
+    orchestration against fakes (`test_validator_*`, incl.
+    `test_validator_suites`/`test_validator_bench` for the bench-task engine and
+    its gate-observability rows). Run the tier with `uv run pytest`, or one
+    module: `uv run pytest tests/test_validator_bench.py`. This is the `pytest`
+    step of `ninja check`.
+  - **End-to-end / live** (`-m slow`, under `tests/slow/`) — provision a REAL
+    Docker sandbox, point a harness at the stub AI through the capture proxy,
+    and drive full turns; they skip cleanly when Docker/Ollama are down. Run all
+    with `uv run pytest -m slow`, or target a suite:
+    - `tests/slow/test_gates_termination_matrix.py` — the runaway-gate
+      termination matrix: clean-finish / runaway / token-budget / wall-clock /
+      post-kill recovery × opencode / occ / claurst. Narrow to one harness with
+      `-k occ` (each cell provisions its own sandbox, so run one at a time).
+    - `tests/slow/test_gates_lifecycle.py` + `tests/slow/test_gates_drift.py` —
+      the `danno bench` CLI end-to-end: `--no-save-captures` leaves no residue,
+      provenance + the per-row gate fields (`termination` / `rounds` / `gate` /
+      `survivors`) are recorded, and the opencode `agent.steps` drift canary.
+    - `tests/slow/test_capture.py`, `test_live.py`, `test_ollama_v1.py` — live
+      wire capture and the Ollama `/v1` passthrough contract.
+
+    The gate suites write throwaway sandbox workspaces; keep them out of the tree
+    with a scratch `--basetemp`:
+    `uv run pytest -m slow tests/slow/test_gates_*.py --basetemp=./.gvtmp`.
 - **Gate:** `ninja check` = `ruff check` + `ruff format --check` + `mypy` +
-  `pytest` (fast suite). Run the live tests with `uv run pytest -m slow` (they skip
-  cleanly when Docker/Ollama are down).
+  `pytest` (the fast tier only). The `-m slow` tier is opt-in and not part of the
+  gate.
 - **Setup:**
   ```bash
   uv sync --locked --dev        # install deps into .venv
