@@ -213,7 +213,14 @@ def test_run_bench_claude_collapses_matrix_to_reference_row(
     captured: dict[str, object] = {}
 
     def fake_write(
-        report, *, config_path, harness, variants, num_ctx_by_model=None, capture_dir=None
+        report,
+        *,
+        config_path,
+        harness,
+        variants,
+        num_ctx_by_model=None,
+        capture_dir=None,
+        captures_persisted=True,
     ):  # type: ignore[no-untyped-def]
         captured["models"] = [v.model_ref for v in variants]
         captured["model_names"] = [v.model_name for v in variants]
@@ -277,7 +284,14 @@ def test_run_bench_claude_sweeps_declared_inert_models(
     captured: dict[str, object] = {}
 
     def fake_write(
-        report, *, config_path, harness, variants, num_ctx_by_model=None, capture_dir=None
+        report,
+        *,
+        config_path,
+        harness,
+        variants,
+        num_ctx_by_model=None,
+        capture_dir=None,
+        captures_persisted=True,
     ):  # type: ignore[no-untyped-def]
         captured["model_names"] = [v.model_name for v in variants]
         captured["model_refs"] = [v.model_ref for v in variants]
@@ -344,22 +358,27 @@ def test_run_turn_for_claurst_returns_callable() -> None:
     assert callable(aut.run_turn_for("claurst", None))
 
 
-def test_setup_bench_capture_no_save_is_always_on_but_temp(tmp_path: Path) -> None:
-    # Capture is ALWAYS on (it powers the runaway gates); --no-save-captures just routes
-    # the artifacts to a temp dir instead of <out>/captures — the proxy still runs.
+def test_setup_bench_capture_no_save_is_always_on_but_never_persists(tmp_path: Path) -> None:
+    # Capture is ALWAYS on (it powers the runaway gates); --no-save-captures now runs the SAME
+    # proxy as a pure gate sensor with persist=False — no temp dir, no mkdtemp. The capture_dir
+    # path is still computed (it names the numeric metrics sidecar), but the proxy never creates
+    # it: nothing to strand or clean (this supersedes the F4 temp-root leak fix).
     cfg = _config()
     opts = bench.BenchOptions(target=Path("."), harness="opencode", save_captures=False)
     cfg_for_run, binding, allow, port = bench._setup_bench_capture(cfg, opts, tmp_path)
     assert binding is not None and port is not None  # proxy runs → feeds the gate tally
-    assert tmp_path not in binding.capture_dir.parents  # NOT persisted under <out>
+    assert binding.persist is False  # metrics-only: proxies write no JSONL/transcript
+    assert binding.capture_dir == tmp_path / "captures"  # path computed, but never created
+    assert not binding.capture_dir.exists()
     assert "host.docker.internal" in cfg_for_run.backends["ollama"].base_url
 
 
-def test_run_bench_no_save_captures_cleans_temp_on_abort(
+def test_run_bench_no_save_captures_creates_no_capture_dir_on_abort(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # F4: the --no-save-captures temp capture root is removed in a finally, so an abort
-    # AFTER capture setup can't strand full wire captures (prompts included) in /tmp.
+    # Supersedes F4: under --no-save-captures the proxy writes nothing, so an abort AFTER
+    # capture setup cannot strand wire captures — there is no capture dir (in /tmp or under
+    # <out>) to leak, and none is ever created.
     opts = bench.BenchOptions(
         target=Path("."), harness="opencode", save_captures=False, out_dir=tmp_path
     )
@@ -369,7 +388,7 @@ def test_run_bench_no_save_captures_cleans_temp_on_abort(
     def _spy(config: DannoConfig, o: bench.BenchOptions, out: Path):  # type: ignore[no-untyped-def]
         result = real_setup(config, o, out)
         assert result[1] is not None
-        captured["root"] = result[1].capture_dir.parent  # the mkdtemp root
+        captured["dir"] = result[1].capture_dir
         return result
 
     def _boom(*_a: object, **_k: object) -> None:
@@ -381,8 +400,7 @@ def test_run_bench_no_save_captures_cleans_temp_on_abort(
     with pytest.raises(RuntimeError, match="abort mid-run"):
         bench.run_bench(_config(), BenchmarksConfig(), opts, Runner())
 
-    assert captured["root"].name.startswith("danno-bench-cap-")
-    assert not captured["root"].exists()  # cleaned up despite the abort
+    assert not captured["dir"].exists()  # never created — nothing to strand
 
 
 def test_setup_bench_capture_default_saves_under_out_and_opens_port(tmp_path: Path) -> None:

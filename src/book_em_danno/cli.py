@@ -292,10 +292,13 @@ def bench(
     save_captures: bool = typer.Option(
         True,
         "--save-captures/--no-save-captures",
-        help="Persist each permutation's harness<->backend wire capture (JSONL + derived "
-        "metrics/transcripts) under <out>/captures. On by default. Capture itself is ALWAYS "
-        "on in bench (it feeds the runaway-gate token/round tally); --no-save-captures runs "
-        "the recording proxy but keeps nothing on disk.",
+        help="Persist each permutation's harness<->backend wire capture (JSONL + readable "
+        "transcript) under <out>/captures + <out>/transcripts. On by default. Capture itself is "
+        "ALWAYS on in bench (it feeds the runaway-gate token/round tally); --no-save-captures "
+        "runs the recording proxy as a pure gate sensor that writes NO capture bytes to disk — "
+        "no dir, no JSONL, no transcript, no message bodies retained. The report's numeric wire "
+        "metrics (<out>/metrics + bench.json) still derive live, so you keep the numbers "
+        "without keeping the prompts.",
     ),
     capture: bool = typer.Option(
         False,

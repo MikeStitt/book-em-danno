@@ -19,7 +19,7 @@ from typing import Protocol, runtime_checkable
 
 from book_em_danno.capture.gate import GateTally
 from book_em_danno.capture.proxy import read_captures
-from book_em_danno.capture.wiring import CaptureBinding
+from book_em_danno.capture.wiring import CaptureBinding, RunningCaptures
 from book_em_danno.commands import sandbox_cli
 from book_em_danno.core.exec import GateBreach, Runner, log_warn
 from danno_validator.driver import Turn, TurnFn, opencode_run
@@ -34,6 +34,7 @@ from danno_validator.telemetry.sampler import (
 from danno_validator.telemetry.wire_metrics import (
     TurnWireMetrics,
     metrics_from_files,
+    metrics_from_summaries,
     write_metrics,
     write_transcript,
 )
@@ -206,9 +207,12 @@ def run_bench_task(
     wire: TurnWireMetrics | None = None
     tally = GateTally() if gates is not None else None
     start = time.monotonic()
+    captures: RunningCaptures | None = None
     with contextlib.ExitStack() as stack:
         if capture is not None:
-            stack.enter_context(
+            # The handle stays valid after the block closes (the servers outlive
+            # `serve_forever`), so the metrics-only path can roll up numbers post-turn.
+            captures = stack.enter_context(
                 capture.permutation(suite=suite, task_id=task.id, model=model, tally=tally)
             )
         if sampler is not None:
@@ -253,7 +257,8 @@ def run_bench_task(
             read_samples(sampler.permutation_path(suite=suite, task_id=task.id, model=model))
         )
     if capture is not None:
-        wire = _derive_wire(capture, suite=suite, task_id=task.id, model=model)
+        assert captures is not None  # entered together above
+        wire = _derive_wire(capture, captures, suite=suite, task_id=task.id, model=model)
     # Gate-1 rounds are read from the tally now (before grading), so grading — which execs the
     # instance's tests in the VM, never touching the capture proxy — cannot inflate the count.
     rounds = tally.inference_calls() if tally is not None else None
@@ -297,16 +302,33 @@ def run_bench_task(
 
 
 def _derive_wire(
-    capture: CaptureBinding, *, suite: str, task_id: str, model: str | None
+    capture: CaptureBinding,
+    captures: RunningCaptures,
+    *,
+    suite: str,
+    task_id: str,
+    model: str | None,
 ) -> TurnWireMetrics:
-    """Parse this permutation's just-written capture JSONL into derived wire metrics and
-    write the `metrics/` + `transcripts/` sidecars (§1/§2/§6/§3.4)."""
-    cap_files = [
-        t.capture_file
-        for t in capture.permutation_targets(suite=suite, task_id=task_id, model=model)
-    ]
-    wire = metrics_from_files(cap_files)
+    """Derive this permutation's wire metrics and write its sidecars.
+
+    Save-mode (`persist=True`) parses the just-written capture JSONL, then writes the
+    numeric `metrics/` sidecar AND the body-bearing readable `transcripts/` (§1/§2/§6/§3.4).
+    Under `--no-save-captures` (`persist=False`) no JSONL exists — the numbers roll up from
+    the proxy's in-RAM body-free summaries (byte-identical to the file path, see the parity
+    test) and ONLY the numeric `metrics/` sidecar is written; the transcript, which would
+    contain message bodies, is deliberately skipped."""
+    if capture.persist:
+        cap_files = [
+            t.capture_file
+            for t in capture.permutation_targets(suite=suite, task_id=task_id, model=model)
+        ]
+        wire = metrics_from_files(cap_files)
+        write_metrics(capture.metrics_path(suite=suite, task_id=task_id, model=model), wire)
+        records = [rec for f in cap_files for rec in read_captures(f)]
+        write_transcript(
+            capture.transcript_path(suite=suite, task_id=task_id, model=model), records
+        )
+        return wire
+    wire = metrics_from_summaries(captures.read_summaries())
     write_metrics(capture.metrics_path(suite=suite, task_id=task_id, model=model), wire)
-    records = [rec for f in cap_files for rec in read_captures(f)]
-    write_transcript(capture.transcript_path(suite=suite, task_id=task_id, model=model), records)
     return wire
