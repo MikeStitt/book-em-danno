@@ -769,3 +769,14 @@ def test_no_occ_config_generation_exists() -> None:
     import book_em_danno.config.generate as gen
 
     assert not [name for name in dir(gen) if name.startswith("generate_occ")]
+
+
+def test_render_config_agent_steps_sets_run_agent_steps() -> None:
+    # Runaway-gate polite-stop: `agent_steps` writes opencode's `steps` onto the named agent.
+    doc = json.loads(_strip_comments(render_config(_example(), agent_steps={"build": 40})))
+    assert doc["agent"]["build"]["steps"] == 40
+
+
+def test_render_config_omits_agent_steps_by_default() -> None:
+    doc = json.loads(_strip_comments(render_config(_example())))
+    assert "steps" not in doc.get("agent", {}).get("build", {})

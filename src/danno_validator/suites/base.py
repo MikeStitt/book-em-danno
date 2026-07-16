@@ -17,11 +17,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from book_em_danno.capture.gate import GateTally
 from book_em_danno.capture.proxy import read_captures
 from book_em_danno.capture.wiring import CaptureBinding
-from book_em_danno.core.exec import Runner
+from book_em_danno.commands import sandbox_cli
+from book_em_danno.core.exec import GateBreach, Runner, log_warn
 from danno_validator.driver import Turn, TurnFn, opencode_run
-from danno_validator.oracle import FailureClass, TurnVerdict, classify_turn
+from danno_validator.oracle import FailureClass, TurnVerdict, classify_turn, gate_verdict
+from danno_validator.suites.config import ResolvedGates, watchdog_max_turns
 from danno_validator.telemetry.sampler import (
     ResourceSummary,
     SampleBinding,
@@ -78,6 +81,13 @@ class BenchVerdict:
     model: str | None = None  # the model ref this row ran (the permutation axis)
     resource: ResourceSummary | None = None  # §5 peak/mean rollups (with --sample)
     wire: TurnWireMetrics | None = None  # §1/§2/§6 derived wire metrics (with --capture)
+    # Runaway-gate observability (only populated when the cell ran under gates):
+    rounds: int | None = None  # gate-tally inference rounds — the Gate-1 axis, distinct from
+    #   `tool_calls`; excludes grading (the tally stops before `task.grade`). None if ungated.
+    gate: GateBreach | None = None  # the breach that killed the cell (gate/observed/limit)
+    survivors: tuple[int, ...] | None = None  # harness PIDs alive after the turn; () = clean
+    termination: str = "completed"  # "gate_kill" if a gate killed the cell, else "completed"
+    #   (orthogonal to `passed`: a killed cell is a gate event regardless of grading)
 
 
 def error_verdict(task_id: str, suite: str, detail: str) -> BenchVerdict:
@@ -104,6 +114,62 @@ def error_verdict(task_id: str, suite: str, detail: str) -> BenchVerdict:
     )
 
 
+# Harness processes to reap in the sandbox VM after a runaway-gate kill. The host-side
+# `sbx exec` kill does NOT propagate into the VM (verified live), so without this a killed
+# runaway keeps burning VM CPU there — and, in the shared aider sandbox, bleeds into the
+# next cell. The pattern is broad by design: the sandbox is danno-owned and runs one harness
+# turn at a time (opencode / occ `index.mjs` / claurst, plus the occ in-VM Ollama relay).
+_REAP_PATTERN = "opencode|claurst|index\\.mjs|DANNO_RELAY"
+
+
+def _reap_harness(runner: Runner, sandbox: str) -> None:
+    """Best-effort `pkill` of the harness inside `sandbox` after the watchdog killed the
+    host-side exec (which does not reap the VM). Never raises (called under suppression)."""
+    runner.run(
+        [
+            *sandbox_cli.base(),
+            "exec",
+            sandbox,
+            "bash",
+            "-lc",
+            f"pkill -9 -f '{_REAP_PATTERN}' 2>/dev/null; true",
+        ],
+        why=f"reap harness processes in '{sandbox}' after runaway-gate kill",
+        check=False,
+    )
+
+
+# Harness-only survivor probe. The alternatives are bracketed (`[o]pencode`, not `opencode`)
+# so `pgrep -f` does not match its OWN `bash -lc` wrapper (whose cmdline carries the pattern),
+# which would report a phantom survivor on an idle sandbox. Unlike `_REAP_PATTERN` this omits
+# the occ Ollama relay (`DANNO_RELAY`): the relay is a persistent in-VM helper, not the turn's
+# harness, so it is never a 'survivor'.
+_SURVIVOR_PATTERN = r"[o]pencode|[c]laurst|[i]ndex\.mjs"
+
+
+def _surviving_harness_pids(runner: Runner, sandbox: str) -> tuple[int, ...]:
+    """Harness PIDs still alive in `sandbox` after the turn (and any post-kill reap). The
+    post-turn invariant is that this is empty: a clean cell's harness exits and a killed one is
+    reaped, so a non-empty result means a runaway leaked past the kill and will burn VM CPU
+    (and, in a shared sandbox, bleed into the next cell). Best-effort — never raises (a missing
+    sandbox CLI or already-gone sandbox reads as no survivors, not an errored row)."""
+    try:
+        result = runner.capture(
+            [
+                *sandbox_cli.base(),
+                "exec",
+                sandbox,
+                "bash",
+                "-lc",
+                f"pgrep -f '{_SURVIVOR_PATTERN}' || true",
+            ],
+            check=False,
+        )
+    except OSError:
+        return ()
+    return tuple(int(p) for p in result.stdout.split() if p.strip().isdigit())
+
+
 def run_bench_task(
     runner: Runner,
     sandbox: str,
@@ -116,6 +182,7 @@ def run_bench_task(
     run_turn: TurnFn | None = None,
     capture: CaptureBinding | None = None,
     sampler: SampleBinding | None = None,
+    gates: ResolvedGates | None = None,
 ) -> BenchVerdict:
     """Run one benchmark `task` against one agent in `sandbox`, returning a verdict.
 
@@ -124,21 +191,44 @@ def run_bench_task(
     and classifies the turn with the shared oracle (`side_effect = tests passed`).
     `run_turn` is the harness-under-test's turn producer (`opencode_run` by default,
     resolved at call time so a monkeypatched `base.opencode_run` still applies).
-    `capture`, when set (`danno bench --capture`), records this permutation's wire
-    traffic to its own `<suite>/<task>/<model>.<backend>.jsonl` for the turn's duration.
+    `capture`, when set, records this permutation's wire traffic to its own
+    `<suite>/<task>/<model>.<backend>.jsonl` and feeds the runaway-gate tally.
     `sampler`, when set (`danno bench --sample`), profiles host CPU/GPU/mem/VRAM over
     the turn window and its peak/mean rollups (§5.5) land on `BenchVerdict.resource`.
+    `gates`, when set, bounds the cell: a live `GateTally` (fed by the capture proxy)
+    plus a wall clock are polled by `runner.watching()`, which kills the turn on the
+    first breach — recorded as a `runaway`/`over-budget`/`timeout` verdict
+    (`.docs/plan-bench-runaway-gates.md`).
     """
     turn_fn = run_turn or opencode_run
     task.reset(runner, sandbox, workspace)
     resource: ResourceSummary | None = None
     wire: TurnWireMetrics | None = None
+    tally = GateTally() if gates is not None else None
     start = time.monotonic()
     with contextlib.ExitStack() as stack:
         if capture is not None:
-            stack.enter_context(capture.permutation(suite=suite, task_id=task.id, model=model))
+            stack.enter_context(
+                capture.permutation(suite=suite, task_id=task.id, model=model, tally=tally)
+            )
         if sampler is not None:
             stack.enter_context(sampler.permutation(suite=suite, task_id=task.id, model=model))
+        watch = (
+            stack.enter_context(
+                runner.watching(
+                    probe=tally,
+                    # Option B: the harness's own --max-turns/agent.steps is set to
+                    # gates.max_turns; the external kill sits a grace margin above it so the
+                    # harness stops gracefully first (`.docs/plan-bench-runaway-gates.md` §3.2).
+                    max_turns=watchdog_max_turns(gates.max_turns),
+                    max_tokens=gates.max_tokens,
+                    timeout_s=gates.timeout_s,
+                    on_kill=lambda: _reap_harness(runner, sandbox),
+                )
+            )
+            if gates is not None
+            else None
+        )
         turn: Turn = turn_fn(
             runner,
             sandbox,
@@ -149,14 +239,43 @@ def run_bench_task(
             workspace=workspace,
         )
     latency = time.monotonic() - start
+    breach = watch.breach if watch is not None else None
+    if tally is not None and tally.blind():
+        # Fail loud (Working Rule 8): the proxy saw inference POSTs but recognised none as a
+        # round, so Gates 1/2 were inert for this cell — an unknown wire dialect. Never let a
+        # cell silently run un-gated (F1). `provenance` still records the caps as if in force.
+        log_warn(
+            f"gate sensor blind for {suite}/{task.id} {model}: proxy saw POST traffic but "
+            "counted 0 inference rounds (unrecognised wire dialect) — Gates 1/2 were inert."
+        )
     if sampler is not None:
         resource = summarize(
             read_samples(sampler.permutation_path(suite=suite, task_id=task.id, model=model))
         )
     if capture is not None:
         wire = _derive_wire(capture, suite=suite, task_id=task.id, model=model)
+    # Gate-1 rounds are read from the tally now (before grading), so grading — which execs the
+    # instance's tests in the VM, never touching the capture proxy — cannot inflate the count.
+    rounds = tally.inference_calls() if tally is not None else None
     passed = task.grade(runner, sandbox, workspace)
-    verdict = classify_turn(turn, side_effect=passed, expects_action=True)
+    survivors: tuple[int, ...] | None = None
+    if gates is not None:
+        # Post-turn invariant: no harness left running (a clean turn exits; a killed one is
+        # reaped by on_kill). A survivor means the runaway leaked — fail loud (Working Rule 8).
+        survivors = _surviving_harness_pids(runner, sandbox)
+        if survivors:
+            log_warn(
+                f"surviving harness process(es) {list(survivors)} in '{sandbox}' after "
+                f"{suite}/{task.id} {model}: a runaway leaked past the kill/reap and will burn "
+                "VM CPU (and, in a shared sandbox, bleed into the next cell)."
+            )
+    if breach is not None:
+        # A killed cell is a gate event regardless of what grading finds in the workspace.
+        verdict = gate_verdict(breach, tool_call_count=turn.tool_call_count)
+        error_summary: str | None = verdict.rationale
+    else:
+        verdict = classify_turn(turn, side_effect=passed, expects_action=True)
+        error_summary = turn.error_summary
     return BenchVerdict(
         task_id=task.id,
         suite=suite,
@@ -166,10 +285,14 @@ def run_bench_task(
         tokens=turn.tokens,
         cost=turn.cost,
         latency_s=latency,
-        error_summary=turn.error_summary,
+        error_summary=error_summary,
         model=model,
         resource=resource,
         wire=wire,
+        rounds=rounds,
+        gate=breach,
+        survivors=survivors,
+        termination="gate_kill" if breach is not None else "completed",
     )
 
 

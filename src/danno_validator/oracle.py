@@ -19,6 +19,7 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
+from book_em_danno.core.exec import GateBreach
 from danno_validator.driver import Turn
 
 
@@ -35,6 +36,10 @@ class FailureClass(StrEnum):
     MALFORMED_TOOL_ARGS = "malformed-tool-args"  # called a tool, the tool errored
     LOOP = "loop"  # repeated itself without progress (conversation-level)
     ERROR = "error"  # provider/transport error event, not a model behavior
+    # `danno bench` runaway gates killed the cell (`.docs/plan-bench-runaway-gates.md`).
+    RUNAWAY = "runaway"  # Gate 1: inference-call count exceeded max_turns
+    OVER_BUDGET = "over-budget"  # Gate 2: token total exceeded max_tokens
+    TIMEOUT = "timeout"  # Gate 3: wall-clock exceeded timeout_s (a wedged cell)
 
 
 # Future-tense action promises ("I will create…", "let me run…"). Anchored to the
@@ -164,4 +169,20 @@ def classify_turn(turn: Turn, *, side_effect: bool, expects_action: bool) -> Tur
     return verdict(
         FailureClass.STALL,
         "no tool call and no side effect on a task that required one.",
+    )
+
+
+def gate_verdict(breach: GateBreach, *, tool_call_count: int = 0) -> TurnVerdict:
+    """Classify a cell the runaway-gate watchdog killed (`.docs/plan-bench-runaway-gates.md`
+    §6). The breach slug (`runaway`/`over-budget`/`timeout`) is the `FailureClass` value, so
+    it maps straight across; `tool_call_count` carries the rounds done before the kill."""
+    return TurnVerdict(
+        failure_class=FailureClass(breach.gate),
+        promised_action=False,
+        tool_call_count=tool_call_count,
+        side_effect=False,
+        rationale=(
+            f"runaway gate '{breach.gate}': observed {breach.observed} exceeded "
+            f"limit {breach.limit}"
+        ),
     )

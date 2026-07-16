@@ -9,8 +9,8 @@ body Ollama actually receives. Settles, at the wire:
        opencode build does NOT hang on #21903.
   T3 — the sandbox's opencode `--version` is recorded for provenance.
 
-Skips when Docker or Ollama is down or gemma4:26b is absent. Never runs opencode
-on the host — only via `docker sandbox exec`.
+Skips when sbx or Ollama is down or gemma4:26b is absent. Never runs opencode
+on the host — only via `sbx exec`.
 """
 
 from __future__ import annotations
@@ -52,7 +52,9 @@ def _model_present(tag: str) -> bool:
 
 ollama_down = not ollama.reachable()
 model_absent = not _model_present(MODEL)
-docker_down = shutil.which("docker") is None or (
+# This test drives the sandbox directly (not via the danno CLI) and speaks only `sbx`,
+# so it needs `sbx` on PATH with its Docker runtime up; it skips cleanly otherwise.
+sbx_down = shutil.which("sbx") is None or (
     subprocess.run(["docker", "info"], capture_output=True, check=False).returncode != 0
 )
 
@@ -86,14 +88,16 @@ def _chat_captures(capture_file: Path) -> list[dict[str, object]]:
 
 
 def _teardown_sandbox(name: str) -> None:
-    subprocess.run(["docker", "sandbox", "stop", name], capture_output=True, check=False)
-    subprocess.run(["docker", "sandbox", "rm", name], capture_output=True, check=False)
+    # sbx-only (this test provisions via sbx). `sbx rm` needs `--force` in a headless
+    # shell and won't remove a running VM, so stop first. Best-effort.
+    subprocess.run(["sbx", "stop", name], capture_output=True, check=False)
+    subprocess.run(["sbx", "rm", "--force", name], capture_output=True, check=False)
 
 
 def _run_opencode(target: Path, prompt: str, *, timeout: int) -> subprocess.CompletedProcess[bytes]:
     trigger = f"cd {target} && opencode run -m ollama/{MODEL} {prompt!r}"
     return subprocess.run(
-        ["docker", "sandbox", "exec", NAME, "bash", "-lc", trigger],
+        ["sbx", "exec", NAME, "bash", "-lc", trigger],
         capture_output=True,
         check=False,
         timeout=timeout,
@@ -101,8 +105,8 @@ def _run_opencode(target: Path, prompt: str, *, timeout: int) -> subprocess.Comp
 
 
 @pytest.mark.skipif(
-    docker_down or ollama_down or model_absent,
-    reason="Docker/Ollama down or gemma4:26b absent",
+    sbx_down or ollama_down or model_absent,
+    reason="sbx/Ollama down or gemma4:26b absent",
 )
 def test_opencode_wire_contract(tmp_path: Path) -> None:
     capture_file = tmp_path / "capture.jsonl"
@@ -119,7 +123,7 @@ def test_opencode_wire_contract(tmp_path: Path) -> None:
                 allow_hosts=("localhost:11434", f"localhost:{PROXY_PORT}"),
             )
             ver = subprocess.run(
-                ["docker", "sandbox", "exec", NAME, "opencode", "--version"],
+                ["sbx", "exec", NAME, "opencode", "--version"],
                 capture_output=True,
                 text=True,
                 check=False,

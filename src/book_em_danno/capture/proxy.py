@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import itertools
 import json
+import socketserver
 import threading
 import time
 import urllib.error
@@ -32,6 +33,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, cast
 
+from book_em_danno.capture.gate import GateTally
+from book_em_danno.capture.usage import extract_usage, is_inference_request, total_tokens
 from book_em_danno.core.exec import CommandFailedError
 
 # Header names whose VALUES carry secrets — recorded as "<redacted>", never verbatim.
@@ -58,6 +61,9 @@ class CaptureProxyConfig:
     capture_file: Path
     port: int
     pass_headers: bool = True
+    # When set (`danno bench`'s runaway gates), each usage-bearing response feeds this live
+    # tally so the exec watchdog can trip Gate 1 (round count) / Gate 2 (tokens) mid-cell.
+    tally: GateTally | None = None
 
 
 def _redact_headers(headers: Any) -> dict[str, str]:
@@ -88,6 +94,15 @@ class _CaptureServer(ThreadingHTTPServer):
         self.counter = itertools.count(1)
         self.write_lock = threading.Lock()
         super().__init__(("0.0.0.0", cfg.port), _Handler)
+
+    def server_bind(self) -> None:
+        # Bypass HTTPServer.server_bind's socket.getfqdn(host) reverse-DNS lookup,
+        # which hangs for tens of seconds on hosts without reverse DNS for their
+        # own name (notably macOS CI runners) — we never read server_name.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = cast("str", host)
+        self.server_port = port
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -138,6 +153,7 @@ class _Handler(BaseHTTPRequestHandler):
             status, resp_headers = 502, {"Content-Type": "application/json"}
             payload = json.dumps({"error": f"capture proxy upstream error: {exc.reason}"}).encode()
 
+        resp_body = _decode_body(payload)
         self._record(
             {
                 "seq": seq,
@@ -145,9 +161,19 @@ class _Handler(BaseHTTPRequestHandler):
                 "ts": time.time(),  # buffered-response completion time (§2.3 RTT / §2.2 TTFT)
                 "status": status,
                 "headers": _redact_headers(resp_headers),
-                "body": _decode_body(payload),
+                "body": resp_body,
             }
         )
+        if cfg.tally is not None:
+            # Gate 1 counts inference ROUNDS, decided by request path (not by whether a
+            # `usage` block came back) so a usage-less dialect — Ollama-native, an SSE
+            # stream without `include_usage` — still advances the tally (F1). Tokens are
+            # recorded when extractable, else `None` (a round with no token spend).
+            if self.command == "POST":
+                cfg.tally.observe_post()
+            if is_inference_request(self.command, self.path):
+                usage = extract_usage(resp_body)
+                cfg.tally.record(tokens=total_tokens(usage) if usage is not None else None)
 
         self.send_response(status)
         self.send_header("Content-Type", resp_headers.get("Content-Type", "application/json"))

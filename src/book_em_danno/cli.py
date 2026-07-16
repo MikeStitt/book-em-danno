@@ -20,7 +20,14 @@ from .commands import sandbox as sandbox_cmd
 from .config.loader import DannoConfigError, load_config
 from .config.schema import DannoConfig
 from .core import registry
-from .core.exec import CommandFailedError, CommandNotFoundError, Runner, console, log_err
+from .core.exec import (
+    CommandFailedError,
+    CommandNotFoundError,
+    Runner,
+    console,
+    log_err,
+    log_warn,
+)
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -282,14 +289,22 @@ def bench(
     keep_sandboxes: bool = typer.Option(
         False, "--keep-sandboxes", help="Leave the disposable sandboxes up for debugging."
     ),
+    save_captures: bool = typer.Option(
+        True,
+        "--save-captures/--no-save-captures",
+        help="Persist each permutation's harness<->backend wire capture (JSONL + derived "
+        "metrics/transcripts) under <out>/captures. On by default. Capture itself is ALWAYS "
+        "on in bench (it feeds the runaway-gate token/round tally); --no-save-captures runs "
+        "the recording proxy but keeps nothing on disk.",
+    ),
     capture: bool = typer.Option(
         False,
         "--capture",
-        help="Record each permutation's harness<->backend wire traffic (Ollama + openai/NVIDIA) "
-        "as JSONL under <out>/captures/. Unlocks the token-split and context telemetry.",
+        hidden=True,
+        help="Deprecated no-op: capture is always on in bench (it powers the runaway gates).",
     ),
     capture_dir: Path = typer.Option(
-        None, "--capture-dir", help="Where to write capture JSONL (default <out>/captures/)."
+        None, "--capture-dir", help="Where to persist capture JSONL (default <out>/captures/)."
     ),
     sample: bool = typer.Option(
         False,
@@ -342,6 +357,16 @@ def bench(
     )
     from danno_validator.suites.config import DEFAULT_BENCHMARKS_FILE, load_benchmarks
 
+    if not save_captures and capture_dir is not None:
+        # Contradictory flags — fail loud at the boundary before any config I/O (F4). There is
+        # no sensible "both": --no-save-captures persists nothing, so --capture-dir (where to
+        # persist) would be silently discarded.
+        log_err(
+            "--no-save-captures conflicts with --capture-dir: nothing is persisted, so a "
+            "capture directory is meaningless. Drop one."
+        )
+        raise typer.Exit(code=2)
+
     cfg = _load(target / "danno.toml")
     bench_path = benchmarks or (target / DEFAULT_BENCHMARKS_FILE)
     try:
@@ -360,6 +385,8 @@ def bench(
     except ValueError as exc:  # unknown --harness / [harnesses] name (fail loud)
         log_err(str(exc))
         raise typer.Exit(code=2) from exc
+    if capture:
+        log_warn("--capture is deprecated and a no-op: capture is always on in bench.")
     opts = BenchOptions(
         target=target,
         harness=harnesses[0],
@@ -369,7 +396,7 @@ def bench(
         out_dir=out,
         keep_sandboxes=keep_sandboxes,
         dry_run=dry_run,
-        capture=capture or capture_dir is not None,
+        save_captures=save_captures,
         capture_dir=capture_dir,
         sample=sample,
         sample_interval=sample_interval,

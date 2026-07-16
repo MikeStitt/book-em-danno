@@ -82,6 +82,10 @@ CLAURST_MODEL_FLAG = "-m"
 CLAURST_RESUME_FLAG = "--resume"
 CLAURST_SKIP_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
 CLAURST_CWD_FLAG = "--cwd"
+# Claude-Code-faithful agent-loop bound (claurst's own default is ~10). danno passes the
+# resolved runaway-gate `max_turns` as the polite-stop; the external watchdog kills a grace
+# margin above it (`.docs/plan-bench-runaway-gates.md`).
+CLAURST_MAX_TURNS_FLAG = "--max-turns"
 
 # Relay-free local Ollama (plan W3, verified S1 2026-07-11 on sbx AND legacy): the
 # danno fork build's reqwest DOES honor the sandbox egress proxy, so claurst reaches
@@ -888,6 +892,7 @@ def claurst_run(
     workspace: str | Path | None = None,
     env_file: str | Path | None = None,
     capture_port: int | None = None,
+    max_turns: int | None = None,
 ) -> ClaurstTurn:
     """Drive one headless `claurst -p --output-format stream-json` turn in `name`.
 
@@ -920,6 +925,8 @@ def claurst_run(
         argv += [CLAURST_CWD_FLAG, str(workspace)]
     if session is not None:
         argv += [CLAURST_RESUME_FLAG, session]
+    if max_turns is not None:
+        argv += [CLAURST_MAX_TURNS_FLAG, str(max_turns)]
     argv.append(prompt)
     cmd = [*sandbox_cli.base(), "exec"]
     if env_file is not None:
@@ -1076,7 +1083,7 @@ def occ_run(
     workspace: str | Path | None = None,
     env_file: str | Path | None = None,
     capture_port: int | None = None,
-    max_turns: int = OCC_DEFAULT_MAX_TURNS,
+    max_turns: int | None = None,
 ) -> OccTurn:
     """Drive one headless occ turn in sandbox `name` (the occ counterpart of `claurst_run`).
 
@@ -1108,7 +1115,8 @@ def occ_run(
     ]
     if m_value is not None:
         node_argv += [OCC_MODEL_FLAG, m_value]
-    node_argv += [OCC_MAX_TURNS_FLAG, str(max_turns), OCC_PRINT_FLAG, prompt]
+    mt = max_turns if max_turns is not None else OCC_DEFAULT_MAX_TURNS
+    node_argv += [OCC_MAX_TURNS_FLAG, str(mt), OCC_PRINT_FLAG, prompt]
 
     cmd = [*sandbox_cli.base(), "exec"]
     if workspace is not None:

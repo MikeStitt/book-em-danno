@@ -319,5 +319,8 @@ temp/
 .danno-bench/
 .danno-benchmark/
 
+# slow-tier pytest --basetemp (throwaway sandbox workspaces + gate-probe artefacts)
+.gvtmp/
+
 # danno --capture wire-traffic recordings (sandbox start/shell default dir)
 .danno/

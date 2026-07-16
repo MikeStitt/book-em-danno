@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 
 import pytest
 
@@ -11,6 +12,19 @@ from book_em_danno.core.exec import (
     Runner,
     require_cmd,
 )
+
+
+class _FakeProbe:
+    """A fixed GateProbe for watchdog tests (stands in for the live capture tally)."""
+
+    def __init__(self, *, calls: int = 0, tokens: int = 0) -> None:
+        self._calls, self._tokens = calls, tokens
+
+    def inference_calls(self) -> int:
+        return self._calls
+
+    def tokens(self) -> int:
+        return self._tokens
 
 
 def _patch_capture(
@@ -147,3 +161,90 @@ def test_require_cmd_found() -> None:
 def test_require_cmd_missing_fails_loud() -> None:
     with pytest.raises(CommandNotFoundError):
         require_cmd("definitely-not-a-real-binary-xyz")
+
+
+# --- runaway-gate watchdog (M2), real subprocesses -----------------------------
+
+_SLEEP = [sys.executable, "-c", "import time; time.sleep(30)"]
+
+
+def test_watchdog_timeout_kills_wedged_process() -> None:
+    # Gate 3: a process that never returns is killed at timeout_s (no probe needed).
+    runner = Runner()
+    with runner.watching(timeout_s=0.5) as watch:
+        res = runner.capture(_SLEEP)
+    assert watch.breach is not None
+    assert watch.breach.gate == "timeout"
+    assert res.ok is False  # killed → non-zero exit
+
+
+def test_watchdog_max_turns_kills_runaway_via_probe() -> None:
+    # Gate 1: the live probe already exceeds max_turns → killed on the first poll.
+    runner = Runner()
+    with runner.watching(probe=_FakeProbe(calls=100), max_turns=10, timeout_s=30) as watch:
+        runner.capture(_SLEEP)
+    assert watch.breach is not None
+    assert watch.breach.gate == "runaway"
+    assert (watch.breach.observed, watch.breach.limit) == (100, 10)
+
+
+def test_watchdog_max_tokens_kills_over_budget_via_probe() -> None:
+    # Gate 2: the token tally exceeds max_tokens → over-budget kill.
+    runner = Runner()
+    with runner.watching(probe=_FakeProbe(tokens=5000), max_tokens=1000, timeout_s=30) as watch:
+        runner.capture(_SLEEP)
+    assert watch.breach is not None
+    assert watch.breach.gate == "over-budget"
+
+
+def test_watchdog_no_breach_completes_and_captures_output() -> None:
+    # A well-behaved process finishes normally under the watchdog: no breach, output kept.
+    runner = Runner()
+    with runner.watching(probe=_FakeProbe(calls=1), max_turns=1000, timeout_s=30) as watch:
+        res = runner.capture([sys.executable, "-c", "print('hello')"])
+    assert watch.breach is None
+    assert res.stdout.strip() == "hello"
+    assert res.ok is True
+
+
+def test_watchdog_calls_on_kill_after_a_kill() -> None:
+    # The reaper (in-VM harness cleanup) runs exactly once, after the process is killed.
+    called: list[str] = []
+    runner = Runner()
+    with runner.watching(timeout_s=0.4, on_kill=lambda: called.append("reaped")) as watch:
+        runner.capture(_SLEEP)
+    assert watch.breach is not None
+    assert called == ["reaped"]
+
+
+def test_watchdog_on_kill_not_called_without_a_breach() -> None:
+    # A clean completion must NOT trigger the reaper.
+    called: list[str] = []
+    runner = Runner()
+    with runner.watching(
+        timeout_s=30, max_turns=1000, on_kill=lambda: called.append("reaped")
+    ) as watch:
+        runner.capture([sys.executable, "-c", "print('ok')"])
+    assert watch.breach is None
+    assert called == []
+
+
+def test_watchdog_on_kill_failure_is_suppressed() -> None:
+    # A reaper that raises must not mask the breach (best-effort cleanup).
+    def boom() -> None:
+        raise RuntimeError("reap failed")
+
+    runner = Runner()
+    with runner.watching(timeout_s=0.4, on_kill=boom) as watch:
+        runner.capture(_SLEEP)
+    assert watch.breach is not None  # breach still recorded despite the reaper error
+
+
+def test_watching_context_restores_normal_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = Runner()
+    with runner.watching(timeout_s=1):
+        pass
+    assert runner._watch is None  # restored on exit
+    # after the block, capture() uses the normal (mockable) subprocess.run path again
+    _patch_capture(monkeypatch, stdout="normal", returncode=0)
+    assert runner.capture(["echo", "hi"]).stdout == "normal"

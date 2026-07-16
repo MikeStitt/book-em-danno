@@ -16,6 +16,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from book_em_danno.capture.usage import extract_usage as _extract_usage
+from book_em_danno.capture.usage import is_inference_request
+
 # The local Ollama/NVIDIA path runs non-streaming (`CLAUDE_CODE_STREAMING=0`) and the
 # proxy buffers the whole response, so there is a single response timestamp per call:
 # "time to first token" is really the whole-response time. Labelled so it is never
@@ -59,79 +62,12 @@ class TurnWireMetrics:
     requests: list[RequestMetric] = field(default_factory=list)
 
 
-def _normalize_usage(usage: dict) -> dict[str, int | None]:
-    """A model call's `usage` block → `{prompt, completion, total, cached}`, agnostic to
-    which wire format produced it. The token-count keys differ by API:
-
-    - chat-completions (OpenAI/Ollama/NVIDIA): `prompt_tokens` / `completion_tokens`
-    - Responses API (o-series via `@ai-sdk/openai`) & Anthropic: `input_tokens` /
-      `output_tokens`
-
-    `cached` (prompt tokens served from cache) reads OpenAI chat's
-    `prompt_tokens_details.cached_tokens`, the Responses API's
-    `input_tokens_details.cached_tokens`, or Anthropic's `cache_read_input_tokens`."""
-    prompt = usage.get("prompt_tokens")
-    if prompt is None:
-        prompt = usage.get("input_tokens")
-    completion = usage.get("completion_tokens")
-    if completion is None:
-        completion = usage.get("output_tokens")
-    details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
-    cached = details.get("cached_tokens")
-    if cached is None:
-        cached = usage.get("cache_read_input_tokens")
-    return {
-        "prompt": prompt,
-        "completion": completion,
-        "total": usage.get("total_tokens"),
-        "cached": cached,
-    }
-
-
-def _chunk_usage(chunk: dict) -> dict | None:
-    """The `usage` block carried by one SSE data chunk, whichever format it is:
-    chat-completions puts `usage` at the top level of the final chunk; the Responses
-    API nests it in the `response` object on the `response.completed` event."""
-    usage = chunk.get("usage")
-    if isinstance(usage, dict):
-        return usage
-    resp = chunk.get("response")
-    if isinstance(resp, dict) and isinstance(resp.get("usage"), dict):
-        return resp["usage"]
-    return None
-
-
-def _extract_usage(body: Any) -> dict[str, int | None] | None:
-    """Pull normalized `usage` from a response body — a parsed JSON object (non-stream,
-    both chat-completions and Responses carry `usage` at the top level) or an SSE text
-    blob (`data: {…}` lines; the last chunk carrying `usage` wins)."""
-    if isinstance(body, dict):
-        usage = body.get("usage")
-        return _normalize_usage(usage) if isinstance(usage, dict) else None
-    if isinstance(body, str):
-        found: dict[str, int | None] | None = None
-        for line in body.splitlines():
-            line = line.strip()
-            if not line.startswith("data:"):
-                continue
-            data = line[len("data:") :].strip()
-            if not data or data == "[DONE]":
-                continue
-            try:
-                chunk = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-            usage = _chunk_usage(chunk) if isinstance(chunk, dict) else None
-            if usage is not None:
-                found = _normalize_usage(usage)
-        return found
-    return None
-
-
 def parse_capture_records(records: list[dict]) -> list[RequestMetric]:
-    """Pair request/response records by `seq` and derive one `RequestMetric` per model
-    call. Records without an extractable `usage` (e.g. `/api/tags`, `/models`) are
-    skipped — only inference calls become metrics."""
+    """Pair request/response records by `seq` and derive one `RequestMetric` per inference
+    round. Inclusion is decided by request path (`is_inference_request`), NOT by whether
+    `usage` was extractable — so `request_count` matches the live Gate-1 tally across every
+    dialect (a usage-less round becomes a metric row with `None` token fields). Discovery /
+    health calls (`/api/tags`, `/v1/models`) are skipped."""
     requests = {r["seq"]: r for r in records if r.get("direction") == "request"}
     responses = {r["seq"]: r for r in records if r.get("direction") == "response"}
     metrics: list[RequestMetric] = []
@@ -139,10 +75,10 @@ def parse_capture_records(records: list[dict]) -> list[RequestMetric]:
         resp = responses.get(seq)
         if resp is None:
             continue
-        usage = _extract_usage(resp.get("body"))
-        if usage is None:
-            continue
         req = requests[seq]
+        if not is_inference_request(req.get("method", ""), req.get("path", "")):
+            continue
+        usage = _extract_usage(resp.get("body")) or _EMPTY_USAGE
         rtt = _rtt(req.get("ts"), resp.get("ts"))
         completion = usage["completion"]
         tok_per_s = (
@@ -163,6 +99,16 @@ def parse_capture_records(records: list[dict]) -> list[RequestMetric]:
             )
         )
     return metrics
+
+
+# A usage-less inference round (Ollama-native, SSE without include_usage) still counts as a
+# round; its token fields are simply unknown.
+_EMPTY_USAGE: dict[str, int | None] = {
+    "prompt": None,
+    "completion": None,
+    "total": None,
+    "cached": None,
+}
 
 
 def _rtt(req_ts: Any, resp_ts: Any) -> float | None:

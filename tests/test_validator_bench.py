@@ -344,24 +344,55 @@ def test_run_turn_for_claurst_returns_callable() -> None:
     assert callable(aut.run_turn_for("claurst", None))
 
 
-def test_setup_bench_capture_off_is_a_noop() -> None:
-    # No --capture → the original config, no binding, the default egress, no relay port.
+def test_setup_bench_capture_no_save_is_always_on_but_temp(tmp_path: Path) -> None:
+    # Capture is ALWAYS on (it powers the runaway gates); --no-save-captures just routes
+    # the artifacts to a temp dir instead of <out>/captures — the proxy still runs.
     cfg = _config()
-    opts = bench.BenchOptions(target=Path("."), harness="opencode", capture=False)
-    cfg_for_run, binding, allow, port = bench._setup_bench_capture(cfg, opts, Path("/out"))
-    assert cfg_for_run is cfg  # the original config, unrewritten
-    assert binding is None
-    assert allow == bench.sb.DEFAULT_ALLOW_HOSTS
-    assert port is None
+    opts = bench.BenchOptions(target=Path("."), harness="opencode", save_captures=False)
+    cfg_for_run, binding, allow, port = bench._setup_bench_capture(cfg, opts, tmp_path)
+    assert binding is not None and port is not None  # proxy runs → feeds the gate tally
+    assert tmp_path not in binding.capture_dir.parents  # NOT persisted under <out>
+    assert "host.docker.internal" in cfg_for_run.backends["ollama"].base_url
 
 
-def test_setup_bench_capture_on_rewrites_backend_and_opens_port(tmp_path: Path) -> None:
-    # --capture rewrites the ollama backend base_url at a proxy, opens its egress port,
-    # and reports that port as the occ/claurst relay upstream (capture_port).
+def test_run_bench_no_save_captures_cleans_temp_on_abort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # F4: the --no-save-captures temp capture root is removed in a finally, so an abort
+    # AFTER capture setup can't strand full wire captures (prompts included) in /tmp.
+    opts = bench.BenchOptions(
+        target=Path("."), harness="opencode", save_captures=False, out_dir=tmp_path
+    )
+    captured: dict[str, Path] = {}
+    real_setup = bench._setup_bench_capture
+
+    def _spy(config: DannoConfig, o: bench.BenchOptions, out: Path):  # type: ignore[no-untyped-def]
+        result = real_setup(config, o, out)
+        assert result[1] is not None
+        captured["root"] = result[1].capture_dir.parent  # the mkdtemp root
+        return result
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("abort mid-run")
+
+    monkeypatch.setattr(bench, "_setup_bench_capture", _spy)
+    monkeypatch.setattr(bench, "_setup_bench_sampler", _boom)  # raise right after capture setup
+
+    with pytest.raises(RuntimeError, match="abort mid-run"):
+        bench.run_bench(_config(), BenchmarksConfig(), opts, Runner())
+
+    assert captured["root"].name.startswith("danno-bench-cap-")
+    assert not captured["root"].exists()  # cleaned up despite the abort
+
+
+def test_setup_bench_capture_default_saves_under_out_and_opens_port(tmp_path: Path) -> None:
+    # Default (save) rewrites the ollama backend base_url at a proxy, opens its egress port,
+    # persists under <out>/captures, and reports that port as the occ/claurst relay upstream.
     cfg = _config()
-    opts = bench.BenchOptions(target=Path("."), harness="opencode", capture=True)
+    opts = bench.BenchOptions(target=Path("."), harness="opencode")  # save_captures defaults True
     cfg_for_run, binding, allow, port = bench._setup_bench_capture(cfg, opts, tmp_path)
     assert binding is not None and port is not None
+    assert binding.capture_dir == tmp_path / "captures"  # persisted under <out>
     # base_url now dials host.docker.internal:<proxy-port> (the recording proxy).
     assert "host.docker.internal" in cfg_for_run.backends["ollama"].base_url
     assert cfg.backends["ollama"].base_url == "http://h:11434/v1"  # original untouched
@@ -495,6 +526,68 @@ def test_sandbox_name_sanitises_instance_ids() -> None:
     name = bench._sandbox_name(Path("/tmp/proj"), "swe-astropy__astropy-12907")
     assert "__" not in name  # underscores -> hyphens for a valid sandbox name
     assert name.startswith("danno-")
+
+
+def _gate_verdict(fc, rationale: str):  # type: ignore[no-untyped-def]
+    from danno_validator.oracle import TurnVerdict
+
+    return TurnVerdict(
+        failure_class=fc,
+        promised_action=False,
+        tool_call_count=2,
+        side_effect=False,
+        rationale=rationale,
+    )
+
+
+def test_result_row_serialises_gate_observability_for_a_killed_cell(tmp_path: Path) -> None:
+    from book_em_danno.core.exec import GateBreach
+    from danno_validator.oracle import FailureClass
+    from danno_validator.suites.base import BenchVerdict
+
+    v = BenchVerdict(
+        task_id="python/proverb",
+        suite="aider",
+        passed=False,
+        verdict=_gate_verdict(FailureClass.RUNAWAY, "runaway: 11 rounds > 8"),
+        tool_calls=2,
+        tokens=100,
+        cost=0.0,
+        latency_s=12.34,
+        model="ollama/stub",
+        rounds=11,
+        gate=GateBreach("runaway", 11, 8),
+        survivors=(4321,),
+        termination="gate_kill",
+    )
+    row = bench._result_row(v, num_ctx_by_model={}, out_dir=tmp_path, capture_dir=None)
+    assert row["termination"] == "gate_kill"
+    assert row["rounds"] == 11  # Gate-1 count...
+    assert row["tool_calls"] == 2  # ...a distinct axis from tool_calls
+    assert row["gate"] == {"gate": "runaway", "observed": 11, "limit": 8}
+    assert row["survivors"] == [4321]
+
+
+def test_result_row_omits_gate_fields_for_a_clean_ungated_cell(tmp_path: Path) -> None:
+    from danno_validator.oracle import FailureClass
+    from danno_validator.suites.base import BenchVerdict
+
+    v = BenchVerdict(
+        task_id="python/proverb",
+        suite="aider",
+        passed=True,
+        verdict=_gate_verdict(FailureClass.PASS, "ok"),
+        tool_calls=3,
+        tokens=200,
+        cost=0.0,
+        latency_s=5.0,
+        model="ollama/stub",
+    )
+    row = bench._result_row(v, num_ctx_by_model={}, out_dir=tmp_path, capture_dir=None)
+    assert row["termination"] == "completed"  # always present
+    assert "rounds" not in row  # ungated → no round count
+    assert "gate" not in row  # no breach
+    assert "survivors" not in row  # clean
 
 
 def test_run_bench_dry_run_does_not_provision(tmp_path: pytest.TempPathFactory) -> None:

@@ -22,6 +22,7 @@ from book_em_danno.config.schema import DannoConfig
 from danno_validator import occ
 from danno_validator.claurst import CLAURST_VERSION
 from danno_validator.matrix import ConfigVariant
+from danno_validator.suites.config import GatesConfig
 from danno_validator.telemetry.sampler import read_memory
 
 _OLLAMA_PREFIX = "ollama/"
@@ -152,18 +153,21 @@ def collect_provenance(
     sample_interval_s: float | None,
     warmup: list[dict] | None = None,
     host_url: str = ollama.DEFAULT_HOST_URL,
+    gates: GatesConfig | None = None,
 ) -> dict:
     """Assemble the full provenance payload for a bench run (always written).
 
     `warmup` is the per-tag pre-warm record (`ollama.warm_model`) — empty when `--no-warm`
     or no local models — so a reader can tell whether the timed cells started from a warm
-    model or paid a cold load."""
+    model or paid a cold load. `gates` records the resolved runaway-gate config so a
+    cross-run comparison knows what caps were in force (`.docs/plan-bench-runaway-gates.md`)."""
     return {
         "danno": danno_version(),
         "host": host_descriptor(),
         "harness_versions": harness_provenance(harness, config),
         "sample_interval_s": sample_interval_s,
         "warmup": warmup or [],
+        "gates": gates.model_dump() if gates is not None else None,
         "models": {v.model_ref: model_provenance(v.model_ref, host_url) for v in variants},
     }
 

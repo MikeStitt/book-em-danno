@@ -188,6 +188,7 @@ def authed_occ_run(
     env_file: Path | None,
     capture_port: int | None = None,
     model_override: str | None = None,
+    max_turns: int | None = None,
 ) -> TurnFn:
     """A `TurnFn` that drives `occ_run` with `env_file` bound, for `run_sweep`.
 
@@ -225,6 +226,7 @@ def authed_occ_run(
             workspace=workspace,
             env_file=env_file,
             capture_port=capture_port,
+            max_turns=max_turns,
         )
 
     return run

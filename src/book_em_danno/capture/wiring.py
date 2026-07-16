@@ -20,6 +20,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from book_em_danno.capture.gate import GateTally
 from book_em_danno.capture.proxy import CaptureProxyConfig, capture_proxy
 from book_em_danno.config.schema import DannoConfig, OllamaBackend, OpenAIBackend
 
@@ -96,11 +97,15 @@ def plan_capture(config: DannoConfig, capture_dir: Path) -> tuple[DannoConfig, l
 
 
 @contextmanager
-def captures_running(targets: Sequence[CaptureTarget]) -> Iterator[None]:
+def captures_running(
+    targets: Sequence[CaptureTarget], tally: GateTally | None = None
+) -> Iterator[None]:
     """Run every target's capture proxy for the duration of the block (one ExitStack).
 
     Ordering invariant (caller's job): enter this BEFORE provisioning/launching the
-    harness and exit it AFTER the last turn — the proxy must be up for every request."""
+    harness and exit it AFTER the last turn — the proxy must be up for every request.
+    `tally`, when set (runaway gates), is shared across all of a cell's backend proxies
+    so the watchdog sees the cell's combined inference-call + token totals."""
     with contextlib.ExitStack() as stack:
         for target in targets:
             stack.enter_context(
@@ -109,6 +114,7 @@ def captures_running(targets: Sequence[CaptureTarget]) -> Iterator[None]:
                         upstream=target.upstream,
                         capture_file=target.capture_file,
                         port=target.proxy_port,
+                        tally=tally,
                     )
                 )
             )
@@ -170,10 +176,13 @@ class CaptureBinding:
         ]
 
     def permutation(
-        self, *, suite: str, task_id: str, model: str | None
+        self, *, suite: str, task_id: str, model: str | None, tally: GateTally | None = None
     ) -> AbstractContextManager[None]:
-        """A `captures_running` context whose files are namespaced by this permutation."""
-        return captures_running(self.permutation_targets(suite=suite, task_id=task_id, model=model))
+        """A `captures_running` context whose files are namespaced by this permutation.
+        `tally` (runaway gates) is shared across this cell's backend proxies."""
+        return captures_running(
+            self.permutation_targets(suite=suite, task_id=task_id, model=model), tally=tally
+        )
 
     def _perm_segment(self, *, suite: str, task_id: str, model: str | None) -> Path:
         """The `<suite>/<task>/<model-slug>` sub-path shared by every per-permutation
