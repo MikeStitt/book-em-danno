@@ -149,28 +149,30 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_buffered(seq, 404, "application/json", data)
 
     def _send_wire(self, seq: int, wire: WireResponse) -> None:
-        assembled = bytearray()
+        assembled = b"".join(data for _, data in wire.chunks)
+        # Record before writing the body: the client reads the full response and
+        # returns as soon as the bytes land, so a caller inspecting the transcript
+        # right after (e.g. stub.records()) would otherwise race the not-yet-written
+        # response record. Recording first — under the write lock — closes that gap.
+        self._record_response(seq, 200, wire.content_type, assembled)
         self.send_response(200)
         self.send_header("Content-Type", wire.content_type)
         if not wire.stream:
-            total = sum(len(data) for _, data in wire.chunks)
-            self.send_header("Content-Length", str(total))
+            self.send_header("Content-Length", str(len(assembled)))
         self.end_headers()
         for delay, data in wire.chunks:
             if delay > 0:
                 time.sleep(delay)
             self.wfile.write(data)
             self.wfile.flush()
-            assembled += data
-        self._record_response(seq, 200, wire.content_type, bytes(assembled))
 
     def _send_buffered(self, seq: int, status: int, content_type: str, data: bytes) -> None:
+        self._record_response(seq, status, content_type, data)  # record first — see _send_wire
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
-        self._record_response(seq, status, content_type, data)
 
     def _record_response(self, seq: int, status: int, content_type: str, data: bytes) -> None:
         self._record(
