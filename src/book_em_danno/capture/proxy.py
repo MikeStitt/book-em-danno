@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import itertools
 import json
+import socketserver
 import threading
 import time
 import urllib.error
@@ -93,6 +94,15 @@ class _CaptureServer(ThreadingHTTPServer):
         self.counter = itertools.count(1)
         self.write_lock = threading.Lock()
         super().__init__(("0.0.0.0", cfg.port), _Handler)
+
+    def server_bind(self) -> None:
+        # Bypass HTTPServer.server_bind's socket.getfqdn(host) reverse-DNS lookup,
+        # which hangs for tens of seconds on hosts without reverse DNS for their
+        # own name (notably macOS CI runners) — we never read server_name.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = cast("str", host)
+        self.server_port = port
 
 
 class _Handler(BaseHTTPRequestHandler):
