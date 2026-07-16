@@ -24,8 +24,11 @@ def test_load_example_ok() -> None:
     assert cfg.agents["build"] == "qwen3-coder-next"
     # assert [t.name for t in cfg.tools] == ["ados"]
     # assert cfg.tools[0].install_to == "sandbox"
-    assert [p.package for p in cfg.npm] == ["opencode-planner", "@plannotator/opencode@latest"]
-    assert cfg.npm[1].config == {"workflow": "plan-agent", "planningAgents": ["plan"]}
+    # The example ships only the npm plugin Bun can auto-install from the sandbox; the
+    # plannotator plugin is commented out there (its `setup` curls plannotator.ai, which
+    # the egress proxy denies). The configured-plugin + `setup` parse path is covered by
+    # the synthetic fixture in test_npm_plugins_load below.
+    assert [p.package for p in cfg.npm] == ["opencode-planner"]
 
 
 def test_load_maximal_example_ok() -> None:

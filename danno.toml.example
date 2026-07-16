@@ -217,13 +217,17 @@ pm                  = "anthropic/claude-sonnet-4-6"  # raw ref → passed throug
 [[npm]]
 package = "opencode-planner"       # bare plugin → the string "opencode-planner"
 
-[[npm]]
-package = "@plannotator/opencode@latest"
-# Optional in-container post-create steps (e.g. a slash-command installer), run via
-# `docker sandbox exec <name> bash -lc …` after the sandbox is created.
-setup   = ["curl -fsSL https://plannotator.ai/install.sh | bash"]
-
-# A configured plugin renders as the [package, config] tuple OpenCode documents.
-[npm.config]
-workflow       = "plan-agent"
-planningAgents = ["plan"]
+# plannotator's install endpoint (https://plannotator.ai/install.sh) is not reachable
+# from the sandbox — the egress proxy denies it (403) and only the Ollama host is on the
+# default allow-list. Left here, commented, as the canonical example of a configured
+# plugin + in-container `setup` step; uncomment and allow-list the host to use it.
+#[[npm]]
+#package = "@plannotator/opencode@latest"
+## Optional in-container post-create steps (e.g. a slash-command installer), run via
+## `docker sandbox exec <name> bash -lc …` after the sandbox is created.
+#setup   = ["curl -fsSL https://plannotator.ai/install.sh | bash"]
+#
+## A configured plugin renders as the [package, config] tuple OpenCode documents.
+#[npm.config]
+#workflow       = "plan-agent"
+#planningAgents = ["plan"]
