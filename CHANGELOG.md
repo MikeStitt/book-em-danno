@@ -3,6 +3,12 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.16.1] - 2026-07-16
+
+### Bug Fixes
+
+- *(exec)* Isolate captured subprocess stdin from the terminal
+
 ## [0.16.0] - 2026-07-16
 
 ### Bug Fixes
