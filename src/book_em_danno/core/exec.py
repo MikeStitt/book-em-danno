@@ -268,6 +268,14 @@ class Runner:
         `CommandFailedError` on a non-zero exit (e.g. a workspace reset that must
         succeed). The command is logged only under `--verbose` (machine-driven; no
         copy-paste line).
+
+        stdin is redirected from `DEVNULL` (both this path and `_capture_watched`):
+        a captured command is machine-driven, never interactive, so it must not
+        inherit the caller's terminal. Otherwise a child that drains stdin — e.g.
+        `opencode run <msg>`, which concatenates piped stdin onto the prompt — blocks
+        reading the TTY until the human hits Ctrl-D, hanging every headless harness
+        turn (`claurst`, which ignores stdin, is unaffected). DEVNULL makes it read
+        EOF at once.
         """
         log_debug(f"capturing: {shlex.join(cmd)}", verbose=self.verbose)
         if self._watch is not None:
@@ -275,7 +283,13 @@ class Runner:
         # `errors="replace"` for parity with the watched path (F3): telemetry wants
         # best-effort text, never a strict UnicodeDecodeError on a stray byte.
         result = subprocess.run(
-            cmd, cwd=cwd, env=env, capture_output=True, text=True, errors="replace"
+            cmd,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
         )
         if check and result.returncode != 0:
             raise CommandFailedError(
@@ -309,6 +323,7 @@ class Runner:
             cmd,
             cwd=cwd,
             env=env,
+            stdin=subprocess.DEVNULL,  # never inherit the caller's TTY (see capture docstring)
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

@@ -154,6 +154,43 @@ def test_capture_uses_capture_output_and_text(monkeypatch: pytest.MonkeyPatch) -
     assert captured["capture_output"] is True and captured["text"] is True
 
 
+def test_capture_isolates_stdin_from_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A captured command must not inherit the caller's TTY: opencode run drains
+    # stdin and would block until Ctrl-D otherwise (see capture docstring).
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        exec_mod.subprocess,
+        "run",
+        lambda cmd, **kw: (captured.update(kw), subprocess.CompletedProcess(cmd, 0, "", ""))[1],
+    )
+    Runner().capture(["opencode", "run", "hi"])
+    assert captured["stdin"] is subprocess.DEVNULL
+
+
+def test_capture_watched_isolates_stdin_from_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Same TTY isolation on the watchdog (Popen) path taken under watching().
+    import io
+
+    captured: dict[str, object] = {}
+
+    class _FakeProc:
+        returncode = 0
+
+        def __init__(self, cmd, **kw):  # type: ignore[no-untyped-def]
+            captured.update(kw)
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
+
+        def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+            return 0
+
+    monkeypatch.setattr(exec_mod.subprocess, "Popen", _FakeProc)
+    runner = Runner()
+    with runner.watching():
+        runner.capture(["opencode", "run", "hi"])
+    assert captured["stdin"] is subprocess.DEVNULL
+
+
 def test_require_cmd_found() -> None:
     assert require_cmd("python3") or require_cmd("python")
 
