@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from book_em_danno.capture.usage import extract_usage as _extract_usage
+from book_em_danno.capture.usage import is_inference_request
 
 # The local Ollama/NVIDIA path runs non-streaming (`CLAUDE_CODE_STREAMING=0`) and the
 # proxy buffers the whole response, so there is a single response timestamp per call:
@@ -62,9 +63,11 @@ class TurnWireMetrics:
 
 
 def parse_capture_records(records: list[dict]) -> list[RequestMetric]:
-    """Pair request/response records by `seq` and derive one `RequestMetric` per model
-    call. Records without an extractable `usage` (e.g. `/api/tags`, `/models`) are
-    skipped — only inference calls become metrics."""
+    """Pair request/response records by `seq` and derive one `RequestMetric` per inference
+    round. Inclusion is decided by request path (`is_inference_request`), NOT by whether
+    `usage` was extractable — so `request_count` matches the live Gate-1 tally across every
+    dialect (a usage-less round becomes a metric row with `None` token fields). Discovery /
+    health calls (`/api/tags`, `/v1/models`) are skipped."""
     requests = {r["seq"]: r for r in records if r.get("direction") == "request"}
     responses = {r["seq"]: r for r in records if r.get("direction") == "response"}
     metrics: list[RequestMetric] = []
@@ -72,10 +75,10 @@ def parse_capture_records(records: list[dict]) -> list[RequestMetric]:
         resp = responses.get(seq)
         if resp is None:
             continue
-        usage = _extract_usage(resp.get("body"))
-        if usage is None:
-            continue
         req = requests[seq]
+        if not is_inference_request(req.get("method", ""), req.get("path", "")):
+            continue
+        usage = _extract_usage(resp.get("body")) or _EMPTY_USAGE
         rtt = _rtt(req.get("ts"), resp.get("ts"))
         completion = usage["completion"]
         tok_per_s = (
@@ -96,6 +99,16 @@ def parse_capture_records(records: list[dict]) -> list[RequestMetric]:
             )
         )
     return metrics
+
+
+# A usage-less inference round (Ollama-native, SSE without include_usage) still counts as a
+# round; its token fields are simply unknown.
+_EMPTY_USAGE: dict[str, int | None] = {
+    "prompt": None,
+    "completion": None,
+    "total": None,
+    "cached": None,
+}
 
 
 def _rtt(req_ts: Any, resp_ts: Any) -> float | None:

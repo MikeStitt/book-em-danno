@@ -111,6 +111,11 @@ def test_run_bench_task_pass(tmp_path: Path) -> None:
     assert v.tool_calls == 1
     assert v.tokens == 42
     assert task.calls == ["reset", "grade"]  # reset before the turn, grade after
+    # Ungated cell: the gate-observability fields stay at their "no gates" defaults.
+    assert v.termination == "completed"
+    assert v.gate is None
+    assert v.rounds is None
+    assert v.survivors is None
 
 
 def test_run_bench_task_fail_classifies_turn(tmp_path: Path) -> None:
@@ -258,9 +263,12 @@ def _run_turn_wedged(runner, name, prompt, **kw):  # type: ignore[no-untyped-def
     return _FakeTurn()
 
 
-def test_run_bench_task_gate_timeout_kills_and_classifies(tmp_path: Path) -> None:
+def test_run_bench_task_gate_timeout_kills_and_classifies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # End-to-end through run_bench_task (real subprocess, no Docker): a wedged turn under
     # a 0.3s Gate 3 is killed and recorded as a `timeout` verdict, not a normal stall/pass.
+    monkeypatch.setattr(base, "_surviving_harness_pids", lambda runner, sandbox: ())
     task = _FakeTask(_passed=False)
     v = base.run_bench_task(
         Runner(),
@@ -276,3 +284,47 @@ def test_run_bench_task_gate_timeout_kills_and_classifies(tmp_path: Path) -> Non
     assert v.passed is False
     assert "timeout" in (v.error_summary or "")
     assert task.calls == ["reset", "grade"]  # still graded after the kill
+    # A killed cell records the full breach + a gate_kill termination, distinct from `passed`.
+    assert v.termination == "gate_kill"
+    assert v.gate is not None and v.gate.gate == "timeout"
+    assert v.gate.limit == 0.3
+    assert v.rounds == 0  # gated but no inference round reached the (absent) proxy
+    assert v.survivors == ()  # probe stubbed: no leaked harness
+
+
+def test_run_bench_task_rounds_snapshot_excludes_grading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `rounds` (the Gate-1 count) must be snapshotted BEFORE grading, so grading — which execs
+    # the instance's tests in the VM and never dials the capture proxy — cannot inflate it.
+    # Prove the ordering: the turn ticks 3 rounds; grading would (wrongly) tick a 4th.
+    from book_em_danno.capture.gate import GateTally
+
+    tally = GateTally()
+    monkeypatch.setattr(base, "GateTally", lambda: tally)
+    monkeypatch.setattr(base, "_surviving_harness_pids", lambda runner, sandbox: ())
+
+    def _turn(runner, name, prompt, **kw):  # type: ignore[no-untyped-def]
+        for _ in range(3):
+            tally.record(tokens=5)  # three inference rounds during the turn
+        return _FakeTurn()
+
+    class _GradeBumpsTally(_FakeTask):
+        def grade(self, runner: Runner, sandbox: str, workspace: Path) -> bool:
+            tally.record(tokens=5)  # grading must NOT be counted as a round
+            return super().grade(runner, sandbox, workspace)
+
+    v = base.run_bench_task(
+        Runner(),
+        "box",
+        task=_GradeBumpsTally(_passed=True),
+        suite="aider",
+        workspace=tmp_path,
+        model="ollama/x",
+        run_turn=_turn,
+        gates=ResolvedGates(max_turns=10, max_tokens=None, timeout_s=30.0),
+    )
+    assert v.rounds == 3  # snapshotted before grade bumped the tally to 4
+    assert v.tool_calls == 1  # rounds (3) is a distinct axis from tool_calls (1)
+    assert v.termination == "completed" and v.gate is None
+    assert v.survivors == ()

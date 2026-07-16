@@ -19,8 +19,10 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 # Default file name looked up next to the project's danno.toml.
 DEFAULT_BENCHMARKS_FILE = "benchmarks.toml"
 
-# Harness names a gate override may target (mirrors `BenchmarksConfig.harnesses`).
-HARNESS_NAMES = ("opencode", "claurst", "occ", "claude")
+# The harnesses danno can benchmark. Single source of truth for the name set — both
+# `BenchmarksConfig.harnesses` and `GatesConfig.harness` key off this alias, so the four
+# names can never drift out of sync across the two fields.
+HarnessName = Literal["opencode", "claurst", "occ", "claude"]
 
 
 class AiderPolyglotConfig(BaseModel):
@@ -71,7 +73,7 @@ class GatesConfig(GateLimits):
     max_turns: int | None = 50
     max_tokens: int | None = 2_000_000
     timeout_s: float | None = 1800.0
-    harness: dict[Literal["opencode", "claurst", "occ", "claude"], GateLimits] = {}
+    harness: dict[HarnessName, GateLimits] = {}
     model: dict[str, GateLimits] = {}
 
 
@@ -137,7 +139,7 @@ class BenchmarksConfig(BaseModel):
     # sidecars under <out>/<harness>/, with a combined comparison report at the root). Empty
     # (the default) means the single opencode default; `--harness` on the CLI overrides this.
     # An unknown name fails loud at load (Working Rule 8).
-    harnesses: list[Literal["opencode", "claurst", "occ", "claude"]] = []
+    harnesses: list[HarnessName] = []
     gates: GatesConfig = GatesConfig()
     aider_polyglot: AiderPolyglotConfig = AiderPolyglotConfig()
     swebench: SwebenchConfig = SwebenchConfig()

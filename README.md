@@ -78,7 +78,7 @@ docker desktop start
 #
 # An example command (loopback-only — the safer default; the sandbox reaches it
 # through its host proxy):
-# OLLAMA_HOST=127.0.0.1:11434 OLLAMA_KEEP_ALIVE=30m OLLAMA_KV_CACHE_TYPE=q8_0 ollama serve
+# OLLAMA_HOST=127.0.0.1:11434 OLLAMA_KEEP_ALIVE=30m ollama serve
 
 danno doctor
 
@@ -318,9 +318,17 @@ co-fit evict each other; warming each right before its block keeps it resident f
 cells). It's on by default; pass `--no-warm` to also measure cold-start. Every warm result
 (already-resident vs cold-loaded, and the load time) is recorded in `provenance.json` and
 summarized in the report — so an eviction-forced reload shows up as an extra cold-load, a
-direct thrash signal. With `--capture`, `report.html` also plots per-cell **first-call vs
-steady-state** request latency: a red first-call bar is a model load that leaked into a
-timed cell — what pre-warm exists to prevent.
+direct thrash signal. `report.html` also plots per-cell **first-call vs steady-state**
+request latency: a red first-call bar is a model load that leaked into a timed cell — what
+pre-warm exists to prevent.
+
+Wire **capture is always on** in `danno bench`: the recording proxy is the *runaway-gate
+sensor* — it counts each cell's inference rounds and tokens live so the gates (round /
+token / wall-clock caps in `benchmarks.toml [gates]`) can stop a runaway. The
+per-permutation JSONL is persisted under `<out>/captures` by default; pass
+`--no-save-captures` to run the gate proxy but keep nothing on disk (captures can contain
+prompts), or `--capture-dir <path>` to persist elsewhere (the two are mutually exclusive).
+The old `bench --capture` flag is a deprecated no-op.
 
 ## `danno.toml` quickstart
 
@@ -646,15 +654,15 @@ policy differently:
   legacy proxy's built-ins, with the `--allow-host` rule as the single host hole.
 
 ```text
-                  ┌──────────────────── your Mac (host) ────────────────────┐
-  internet¹ ◀─────▶                                     Ollama :11434
-  cloud API ◀─allow─▶   Docker microVM ── allow ───────▶ (agent dials
-                    │     harness + agents                 host.docker.internal,
-                    │        │                             proxy rewrites→localhost)
-  your LAN  ──DENY──│        └─ project mount (rw)                              │
-  other host ports ─DENY                                                       │
-                    └──────────────────────────────────────────────────────────┘
-  ¹ backend-dependent: legacy = any domain; sbx balanced = curated lists only
+                         ┌──────────────────── your Mac (host) ───────────────────────────┐
+      internet¹ ◀───────▶│                                Ollama :11434                   │
+      cloud API ◀─allow─▶│   Docker microVM ── allow ───▶ (agent dials                    │
+                         │     harness + agents                 host.docker.internal,     │
+                         │        │                             proxy rewrites→localhost) │
+         your LAN  ─DENY─│        └─ project mount (rw)                                   │
+  other host ports ─DENY─│                                                                │
+                         └────────────────────────────────────────────────────────────────┘
+  ¹ backend-dependent: docker sanbox = any domain; sbx balanced = curated lists only
 ```
 
 **What each backend allows and denies** (both columns live-verified 2026-07-10):
@@ -701,37 +709,37 @@ real agent on your code without giving it your laptop. The whole system is **thr
 layers**; once you see them, everything else follows.
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────────────────┐
 │  YOUR MAC (host)                                                       │
 │                                                                        │
 │   ~/work/acme/                ← your repo (the "workspace")            │
 │     ├── src/ …                                                         │
-│     ├── CLAUDE.md             ← ① REPO layer: agent instructions       │
+│     ├── CLAUDE.md             ← (1) REPO layer: agent instructions     │
 │     └── .claude/  /.opencode/    (committed, shared, travels w/ git)   │
 │                                                                        │
-│   ~/.danno/agent-home/        ← ② AGENT-HOME layer: chat history,      │
+│   ~/.danno/agent-home/        ← (2) AGENT-HOME layer: chat history,    │
 │     └── danno-work-acme-claude/   settings, onboarding (per sandbox)   │
 │                                                                        │
-│   $CLAUDE_CODE_OAUTH_TOKEN    ← ③ AUTH layer: a token in your env      │
-└───────────────┬───────────────────────────────────────────────────────┘
-                │  danno mounts ① + ②, injects ③, launches the agent
+│   $CLAUDE_CODE_OAUTH_TOKEN    ← (3) AUTH layer: a token in your env    │
+└───────────────┬────────────────────────────────────────────────────────┘
+                │  danno mounts (1) + (2), injects (3), launches the agent
                 ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  SANDBOX microVM  (disposable; `rebuild` wipes everything inside it)   │
-│   /Users/you/work/acme   ← ① mounted at the SAME path, read-write      │
-│   agent home (relocated to ②)  ← survives rebuild because it's on host │
-│   token in env only      ← ③ never written to the VM's disk            │
-└──────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│  SANDBOX microVM  (disposable; `rebuild` wipes everything inside it)     │
+│   /Users/you/work/acme   ← (1) mounted at the SAME path, read-write      │
+│   agent home (relocated to (2))  ← survives rebuild because it's on host │
+│   token in env only      ← (3) never written to the VM's disk            │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-| Layer | What's in it | Where it lives | Survives `rebuild`? |
-|---|---|---|---|
-| ① **Repo** | code + agent instructions (`CLAUDE.md`, `.claude/`, generated `.opencode/`) | your repo on the host, mounted in | ✅ (it's your repo) |
-| ② **Agent home** | chat history, settings, onboarding/theme | a host folder, one per sandbox | ✅ |
-| ③ **Auth** | the API/subscription token | your shell env → injected per launch | ✅ (re-injected) |
+| Layer              | What's in it | Where it lives | Survives `rebuild`? |
+|--------------------|---|---|---|
+| (1) **Repo**       | code + agent instructions (`CLAUDE.md`, `.claude/`, generated `.opencode/`) | your repo on the host, mounted in | ✅ (it's your repo) |
+| (2) **Agent home** | chat history, settings, onboarding/theme | a host folder, one per sandbox | ✅ |
+| (3) **Auth**       | the API/subscription token | your shell env → injected per launch | ✅ (re-injected) |
 
 The microVM itself is **disposable**. Nothing important should live only inside it.
-All three layers are durable: ① is your repo, ③ is re-injected each launch, and ②
+All three layers are durable: (1) is your repo, (3) is re-injected each launch, and (3)
 lives in a host folder keyed by `agent_home` (configured under `[sandbox]`, see the
 [agent_home quickstart](#where-the-agents-history-lives-sandbox-agent_home) above).
 
@@ -847,10 +855,10 @@ danno hides it for you.
 
 | | Claude Code | opencode |
 |---|---|---|
-| ① Repo config | `CLAUDE.md`, `.claude/` (you commit it) | `.opencode/opencode.jsonc` (**danno generates it from `danno.toml`**) |
-| ② Agent home | one dir: `~/.claude/` (+`~/.claude.json`) | XDG dirs: `~/.config/opencode/`, `~/.local/share/opencode/` (sessions in a sqlite `opencode.db`) |
-| ② Relocated by | `CLAUDE_CONFIG_DIR` | `XDG_CONFIG_HOME` only — the data dir / sqlite stays VM-local because virtiofs can't run WAL, so opencode sessions reset on rebuild |
-| ③ Auth | `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` in env | local Ollama needs none (baked `baseURL`); cloud providers via env keys |
+| (1) Repo config | `CLAUDE.md`, `.claude/` (you commit it) | `.opencode/opencode.jsonc` (**danno generates it from `danno.toml`**) |
+| (2) Agent home | one dir: `~/.claude/` (+`~/.claude.json`) | XDG dirs: `~/.config/opencode/`, `~/.local/share/opencode/` (sessions in a sqlite `opencode.db`) |
+| (2) Relocated by | `CLAUDE_CONFIG_DIR` | `XDG_CONFIG_HOME` only — the data dir / sqlite stays VM-local because virtiofs can't run WAL, so opencode sessions reset on rebuild |
+| (3) Auth | `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` in env | local Ollama needs none (baked `baseURL`); cloud providers via env keys |
 
 You set the **same** `agent_home` knob; danno translates it for both agents. The one
 conceptual difference: with Claude you *write* the repo config (`CLAUDE.md`); with
@@ -884,9 +892,6 @@ edit `danno.toml`, not the generated file (see
 
 ## Development
 
-- **Gate:** `ninja check` = `ruff check` + `ruff format --check` + `mypy` +
-  `pytest` (fast suite). Run the live tests with `uv run pytest -m slow` (they skip
-  cleanly when Docker/Ollama are down).
 - **Setup:**
   ```bash
   uv sync --locked --dev        # install deps into .venv
@@ -902,6 +907,47 @@ edit `danno.toml`, not the generated file (see
   the `chore(release): vX.Y.Z` PR it opens for you. The workflows do everything
   else. Full process, prerequisites, and caveats:
   [`plans/releasing.md`](plans/releasing.md).
+- **Tests:** two tiers, both run with `pytest`.
+  - **Unit / fast** (default; no Docker, no network) — the bulk of `tests/*.py`:
+    ```shell
+    uv run pytest
+    ```
+    config schema + generator (`test_generate`, `test_loader`), the
+    advise-by-default `Runner` and its runaway watchdog (`test_exec`,
+    `test_exec_watchdog_hostile`), the capture proxy + gate sensor
+    (`test_capture_proxy`, `test_capture_gate`, `test_gate_sensor_dialects`),
+    the stub AI (`test_stubai_server`), and the `danno validate` / `danno bench`
+    orchestration against fakes (`test_validator_*`, incl.
+    `test_validator_suites`/`test_validator_bench` for the bench-task engine and
+    its gate-observability rows). Run the tier with `uv run pytest`, or one
+    module: `uv run pytest tests/test_validator_bench.py`. This is the `pytest`
+    step of `ninja check`.
+  - **End-to-end / live** (`-m slow`, under `tests/slow/`) — provision a REAL
+    Docker sandbox, point a harness at the stub AI through the capture proxy,
+    and drive full turns; they skip cleanly when Docker/Ollama are down.
+    Run all
+    with
+    ```shell
+    uv run pytest -m slow
+    ```
+    or target a suite:
+    - `tests/slow/test_gates_termination_matrix.py` — the runaway-gate
+      termination matrix: clean-finish / runaway / token-budget / wall-clock /
+      post-kill recovery × opencode / occ / claurst. Narrow to one harness with
+      `-k occ` (each cell provisions its own sandbox, so run one at a time).
+    - `tests/slow/test_gates_lifecycle.py` + `tests/slow/test_gates_drift.py` —
+      the `danno bench` CLI end-to-end: `--no-save-captures` leaves no residue,
+      provenance + the per-row gate fields (`termination` / `rounds` / `gate` /
+      `survivors`) are recorded, and the opencode `agent.steps` drift canary.
+    - `tests/slow/test_capture.py`, `test_live.py`, `test_ollama_v1.py` — live
+      wire capture and the Ollama `/v1` passthrough contract.
+
+    The gate suites write throwaway sandbox workspaces; keep them out of the tree
+    with a scratch `--basetemp`:
+    `uv run pytest -m slow tests/slow/test_gates_*.py --basetemp=./.gvtmp`.
+- **Gate:** `ninja check` = `ruff check` + `ruff format --check` + `mypy` +
+  `pytest` (the fast tier only). The `-m slow` tier is opt-in and not part of the
+  gate.
 
 ## Where the docs live
 

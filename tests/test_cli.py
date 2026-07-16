@@ -32,6 +32,17 @@ def test_collapsed_subcommands_are_gone() -> None:
         assert result.exit_code != 0  # no longer a command
 
 
+def test_bench_no_save_captures_with_capture_dir_fails_loud(tmp_path: Path) -> None:
+    # F4: --no-save-captures persists nothing, so --capture-dir has no meaning — the two
+    # flags are contradictory and must fail loud at the boundary, not silently discard the dir.
+    result = runner.invoke(
+        app,
+        ["bench", "--no-save-captures", "--capture-dir", str(tmp_path), "--target", str(tmp_path)],
+    )
+    assert result.exit_code == 2
+    assert "conflicts with --capture-dir" in result.stdout
+
+
 def test_install_accepts_apply_after_subcommand() -> None:
     """Gap A regression guard: `--apply` is a per-command option on `install` (the
     old global placement rejected `install --apply`). Asserted against the parsed

@@ -1,8 +1,10 @@
 """Unit tests for GateTally and the capture proxy feeding it live.
 
-The proxy test drives a real proxy against a stub upstream (no Docker): an inference
-response carries `usage`, a discovery response does not — only the former advances the
-tally, matching Gate 1's "inference rounds, not discovery hits" rule.
+The proxy test drives a real proxy against a stub upstream (no Docker): a POST to an
+inference endpoint advances the tally, a discovery `GET` does not — matching Gate 1's
+"inference rounds, not discovery hits" rule, which the proxy decides by request path
+(`is_inference_request`), not by whether a `usage` block came back. The usage-less-dialect
+coverage lives in `test_gate_sensor_dialects` (the F1 net).
 """
 
 from __future__ import annotations
@@ -79,7 +81,7 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-def test_proxy_feeds_tally_only_on_usage_bearing_responses(tmp_path: Path) -> None:
+def test_proxy_feeds_tally_on_inference_posts_not_discovery(tmp_path: Path) -> None:
     tally = GateTally()
     with _upstream() as up_port:
         cfg = CaptureProxyConfig(
@@ -96,8 +98,9 @@ def test_proxy_feeds_tally_only_on_usage_bearing_responses(tmp_path: Path) -> No
                     headers={"Content-Type": "application/json"},
                 )
                 urllib.request.urlopen(req, timeout=10).read()
-            # one discovery call (no usage) — must NOT advance the tally
+            # one discovery call (GET /api/tags) — must NOT advance the tally
             urllib.request.urlopen(f"http://127.0.0.1:{cfg.port}/api/tags", timeout=10).read()
 
     assert tally.inference_calls() == 2
     assert tally.tokens() == 30  # 2 × 15
+    assert not tally.blind()  # saw inference rounds, so not a blind cell

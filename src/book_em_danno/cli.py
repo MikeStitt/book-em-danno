@@ -357,6 +357,16 @@ def bench(
     )
     from danno_validator.suites.config import DEFAULT_BENCHMARKS_FILE, load_benchmarks
 
+    if not save_captures and capture_dir is not None:
+        # Contradictory flags — fail loud at the boundary before any config I/O (F4). There is
+        # no sensible "both": --no-save-captures persists nothing, so --capture-dir (where to
+        # persist) would be silently discarded.
+        log_err(
+            "--no-save-captures conflicts with --capture-dir: nothing is persisted, so a "
+            "capture directory is meaningless. Drop one."
+        )
+        raise typer.Exit(code=2)
+
     cfg = _load(target / "danno.toml")
     bench_path = benchmarks or (target / DEFAULT_BENCHMARKS_FILE)
     try:
