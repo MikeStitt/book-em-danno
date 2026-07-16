@@ -14,14 +14,12 @@ only the "model" is stubbed.
        └─ transcript.jsonl          PORT,  │    → host.docker.internal:PROXY_PORT
                                     tally) │
 
-⚠️ NOT YET LIVE-VERIFIED. These fixtures encode the documented provisioning + wiring API
-but have not been run against a live sandbox (GV2/GV3 authored 2026-07-15, Docker run
-pending). First live run must confirm, and correct here if wrong:
-  - the loop tool name/args the stub emits match a tool the harness actually advertises
-    (else the harness reports an unknown/hallucinated tool instead of looping) — see
-    `LOOP_TOOL`; the stub's recorded-404 / unknown-tool traffic makes any gap self-document;
-  - occ/claurst local routing dials the proxy (they need a backend literally named `ollama`
-    + the in-VM relay — memory `sbx-migration-w1-w2-done-pr76-ready`);
+LIVE-VERIFIED 2026-07-16 (full `pytest -m slow` green across opencode/occ/claurst). The
+first live run confirmed the three things the wiring depended on:
+  - the stub's loop tool matches a tool each harness actually advertises (no unknown/
+    hallucinated-tool substitution) — see `LOOP_TOOL`;
+  - occ/claurst local routing dials the proxy (backend named `ollama` + the in-VM relay —
+    memory `sbx-migration-w1-w2-done-pr76-ready`);
   - opencode honors `agent.steps` at the template's version (V1 runner) — the V5 canary.
 """
 
