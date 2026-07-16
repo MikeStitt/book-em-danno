@@ -129,6 +129,17 @@ def test_provenance_records_the_gates(tmp_path: Path) -> None:
     # each verdict row + the harness VERSION — assert those once F5 lands.
     assert "gates" in provenance, "provenance must record the runaway-gate caps"
     assert provenance["gates"].get("max_turns") == 5
+    # End-to-end gate observability on the bench.json row for this clean, gated cell: the
+    # survivor probe ran against the REAL sandbox (returned clean → no `survivors`), the
+    # Gate-1 round count is recorded (one Finish round), and it reads as a completed cell with
+    # no breach — the real-run counterpart of the Tier-A `_result_row` unit tests.
+    rows = json.loads((out / "bench.json").read_text(encoding="utf-8"))["results"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["termination"] == "completed"
+    assert row["rounds"] >= 1  # populated with real inference rounds (exact count is an
+    #   opencode internal this drift file deliberately does not pin); grading is excluded.
+    assert "gate" not in row and "survivors" not in row  # clean cell, no leaked harness
 
 
 @pytest.mark.skipif(OLLAMA_DOWN or not model_present("gemma4:26b"), reason="no live Ollama model")

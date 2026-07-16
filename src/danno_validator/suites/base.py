@@ -21,7 +21,7 @@ from book_em_danno.capture.gate import GateTally
 from book_em_danno.capture.proxy import read_captures
 from book_em_danno.capture.wiring import CaptureBinding
 from book_em_danno.commands import sandbox_cli
-from book_em_danno.core.exec import Runner, log_warn
+from book_em_danno.core.exec import GateBreach, Runner, log_warn
 from danno_validator.driver import Turn, TurnFn, opencode_run
 from danno_validator.oracle import FailureClass, TurnVerdict, classify_turn, gate_verdict
 from danno_validator.suites.config import ResolvedGates, watchdog_max_turns
@@ -81,6 +81,13 @@ class BenchVerdict:
     model: str | None = None  # the model ref this row ran (the permutation axis)
     resource: ResourceSummary | None = None  # §5 peak/mean rollups (with --sample)
     wire: TurnWireMetrics | None = None  # §1/§2/§6 derived wire metrics (with --capture)
+    # Runaway-gate observability (only populated when the cell ran under gates):
+    rounds: int | None = None  # gate-tally inference rounds — the Gate-1 axis, distinct from
+    #   `tool_calls`; excludes grading (the tally stops before `task.grade`). None if ungated.
+    gate: GateBreach | None = None  # the breach that killed the cell (gate/observed/limit)
+    survivors: tuple[int, ...] | None = None  # harness PIDs alive after the turn; () = clean
+    termination: str = "completed"  # "gate_kill" if a gate killed the cell, else "completed"
+    #   (orthogonal to `passed`: a killed cell is a gate event regardless of grading)
 
 
 def error_verdict(task_id: str, suite: str, detail: str) -> BenchVerdict:
@@ -130,6 +137,37 @@ def _reap_harness(runner: Runner, sandbox: str) -> None:
         why=f"reap harness processes in '{sandbox}' after runaway-gate kill",
         check=False,
     )
+
+
+# Harness-only survivor probe. The alternatives are bracketed (`[o]pencode`, not `opencode`)
+# so `pgrep -f` does not match its OWN `bash -lc` wrapper (whose cmdline carries the pattern),
+# which would report a phantom survivor on an idle sandbox. Unlike `_REAP_PATTERN` this omits
+# the occ Ollama relay (`DANNO_RELAY`): the relay is a persistent in-VM helper, not the turn's
+# harness, so it is never a 'survivor'.
+_SURVIVOR_PATTERN = r"[o]pencode|[c]laurst|[i]ndex\.mjs"
+
+
+def _surviving_harness_pids(runner: Runner, sandbox: str) -> tuple[int, ...]:
+    """Harness PIDs still alive in `sandbox` after the turn (and any post-kill reap). The
+    post-turn invariant is that this is empty: a clean cell's harness exits and a killed one is
+    reaped, so a non-empty result means a runaway leaked past the kill and will burn VM CPU
+    (and, in a shared sandbox, bleed into the next cell). Best-effort — never raises (a missing
+    sandbox CLI or already-gone sandbox reads as no survivors, not an errored row)."""
+    try:
+        result = runner.capture(
+            [
+                *sandbox_cli.base(),
+                "exec",
+                sandbox,
+                "bash",
+                "-lc",
+                f"pgrep -f '{_SURVIVOR_PATTERN}' || true",
+            ],
+            check=False,
+        )
+    except OSError:
+        return ()
+    return tuple(int(p) for p in result.stdout.split() if p.strip().isdigit())
 
 
 def run_bench_task(
@@ -216,7 +254,21 @@ def run_bench_task(
         )
     if capture is not None:
         wire = _derive_wire(capture, suite=suite, task_id=task.id, model=model)
+    # Gate-1 rounds are read from the tally now (before grading), so grading — which execs the
+    # instance's tests in the VM, never touching the capture proxy — cannot inflate the count.
+    rounds = tally.inference_calls() if tally is not None else None
     passed = task.grade(runner, sandbox, workspace)
+    survivors: tuple[int, ...] | None = None
+    if gates is not None:
+        # Post-turn invariant: no harness left running (a clean turn exits; a killed one is
+        # reaped by on_kill). A survivor means the runaway leaked — fail loud (Working Rule 8).
+        survivors = _surviving_harness_pids(runner, sandbox)
+        if survivors:
+            log_warn(
+                f"surviving harness process(es) {list(survivors)} in '{sandbox}' after "
+                f"{suite}/{task.id} {model}: a runaway leaked past the kill/reap and will burn "
+                "VM CPU (and, in a shared sandbox, bleed into the next cell)."
+            )
     if breach is not None:
         # A killed cell is a gate event regardless of what grading finds in the workspace.
         verdict = gate_verdict(breach, tool_call_count=turn.tool_call_count)
@@ -237,6 +289,10 @@ def run_bench_task(
         model=model,
         resource=resource,
         wire=wire,
+        rounds=rounds,
+        gate=breach,
+        survivors=survivors,
+        termination="gate_kill" if breach is not None else "completed",
     )
 
 

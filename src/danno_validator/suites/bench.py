@@ -526,12 +526,22 @@ def _result_row(
         "model": v.model,
         "passed": v.passed,
         "verdict": str(v.verdict.failure_class),
+        "termination": v.termination,  # gate_kill vs completed — orthogonal to `passed`
         "tool_calls": v.tool_calls,
         "tokens": v.tokens,
         "cost": v.cost,
         "latency_s": round(v.latency_s, 1),
         "error": v.error_summary,
     }
+    if v.rounds is not None:
+        # The Gate-1 inference-round count, distinct from tool_calls (a runaway tool-loop is
+        # one turn of many rounds); grading is excluded from it.
+        row["rounds"] = v.rounds
+    if v.gate is not None:
+        # The full breach the watchdog recorded, not just the slug in `verdict`.
+        row["gate"] = {"gate": v.gate.gate, "observed": v.gate.observed, "limit": v.gate.limit}
+    if v.survivors:
+        row["survivors"] = list(v.survivors)  # harness PIDs that leaked past the kill (fail-loud)
     wire = _wire_summary(v.wire, num_ctx_by_model.get(v.model or ""))
     if wire is not None:
         row["wire"] = wire

@@ -528,6 +528,68 @@ def test_sandbox_name_sanitises_instance_ids() -> None:
     assert name.startswith("danno-")
 
 
+def _gate_verdict(fc, rationale: str):  # type: ignore[no-untyped-def]
+    from danno_validator.oracle import TurnVerdict
+
+    return TurnVerdict(
+        failure_class=fc,
+        promised_action=False,
+        tool_call_count=2,
+        side_effect=False,
+        rationale=rationale,
+    )
+
+
+def test_result_row_serialises_gate_observability_for_a_killed_cell(tmp_path: Path) -> None:
+    from book_em_danno.core.exec import GateBreach
+    from danno_validator.oracle import FailureClass
+    from danno_validator.suites.base import BenchVerdict
+
+    v = BenchVerdict(
+        task_id="python/proverb",
+        suite="aider",
+        passed=False,
+        verdict=_gate_verdict(FailureClass.RUNAWAY, "runaway: 11 rounds > 8"),
+        tool_calls=2,
+        tokens=100,
+        cost=0.0,
+        latency_s=12.34,
+        model="ollama/stub",
+        rounds=11,
+        gate=GateBreach("runaway", 11, 8),
+        survivors=(4321,),
+        termination="gate_kill",
+    )
+    row = bench._result_row(v, num_ctx_by_model={}, out_dir=tmp_path, capture_dir=None)
+    assert row["termination"] == "gate_kill"
+    assert row["rounds"] == 11  # Gate-1 count...
+    assert row["tool_calls"] == 2  # ...a distinct axis from tool_calls
+    assert row["gate"] == {"gate": "runaway", "observed": 11, "limit": 8}
+    assert row["survivors"] == [4321]
+
+
+def test_result_row_omits_gate_fields_for_a_clean_ungated_cell(tmp_path: Path) -> None:
+    from danno_validator.oracle import FailureClass
+    from danno_validator.suites.base import BenchVerdict
+
+    v = BenchVerdict(
+        task_id="python/proverb",
+        suite="aider",
+        passed=True,
+        verdict=_gate_verdict(FailureClass.PASS, "ok"),
+        tool_calls=3,
+        tokens=200,
+        cost=0.0,
+        latency_s=5.0,
+        model="ollama/stub",
+    )
+    row = bench._result_row(v, num_ctx_by_model={}, out_dir=tmp_path, capture_dir=None)
+    assert row["termination"] == "completed"  # always present
+    assert "rounds" not in row  # ungated → no round count
+    assert "gate" not in row  # no breach
+    assert "survivors" not in row  # clean
+
+
 def test_run_bench_dry_run_does_not_provision(tmp_path: pytest.TempPathFactory) -> None:
     opts = bench.BenchOptions(target=Path("."), harness="claurst", dry_run=True)
     cfg = BenchmarksConfig()
