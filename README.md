@@ -325,10 +325,14 @@ pre-warm exists to prevent.
 Wire **capture is always on** in `danno bench`: the recording proxy is the *runaway-gate
 sensor* — it counts each cell's inference rounds and tokens live so the gates (round /
 token / wall-clock caps in `benchmarks.toml [gates]`) can stop a runaway. The
-per-permutation JSONL is persisted under `<out>/captures` by default; pass
-`--no-save-captures` to run the gate proxy but keep nothing on disk (captures can contain
-prompts), or `--capture-dir <path>` to persist elsewhere (the two are mutually exclusive).
-The old `bench --capture` flag is a deprecated no-op.
+per-permutation JSONL (plus a readable transcript) is persisted under `<out>/captures` and
+`<out>/transcripts` by default. Pass `--no-save-captures` to run the gate proxy as a pure
+sensor that writes **no capture bytes to disk** — no directory, no JSONL, no transcript, no
+message bodies retained (captures can contain prompts); the report's numeric wire metrics
+(`<out>/metrics` + `bench.json`) still derive live from the proxy, so you keep the numbers
+without keeping the prompts. Or pass `--capture-dir <path>` to persist elsewhere
+(`--no-save-captures` and `--capture-dir` are mutually exclusive). The old `bench --capture`
+flag is a deprecated no-op.
 
 ## `danno.toml` quickstart
 
@@ -936,7 +940,7 @@ edit `danno.toml`, not the generated file (see
       post-kill recovery × opencode / occ / claurst. Narrow to one harness with
       `-k occ` (each cell provisions its own sandbox, so run one at a time).
     - `tests/slow/test_gates_lifecycle.py` + `tests/slow/test_gates_drift.py` —
-      the `danno bench` CLI end-to-end: `--no-save-captures` leaves no residue,
+      the `danno bench` CLI end-to-end: `--no-save-captures` writes no capture bytes,
       provenance + the per-row gate fields (`termination` / `rounds` / `gate` /
       `survivors`) are recorded, and the opencode `agent.steps` drift canary.
     - `tests/slow/test_capture.py`, `test_live.py`, `test_ollama_v1.py` — live

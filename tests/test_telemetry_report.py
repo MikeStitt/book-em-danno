@@ -91,6 +91,21 @@ def test_html_is_self_contained_and_has_pills() -> None:
     assert "1/2 passed" in html_doc
 
 
+def test_no_save_captures_note_rendered() -> None:
+    # Under --no-save-captures the payload carries captures_persisted=False: both renderers
+    # state the numbers were derived live and nothing was written. A save-mode payload (the
+    # default, missing the key) shows no such note.
+    payload = _payload(_row())
+    payload["captures_persisted"] = False
+    md = report.render_markdown(payload)
+    assert "not persisted (`--no-save-captures`)" in md
+    html_doc = report.render_html(payload)
+    assert "not persisted" in html_doc
+
+    assert "not persisted" not in report.render_markdown(_payload(_row()))
+    assert "not persisted" not in report.render_html(_payload(_row()))
+
+
 def test_missing_wire_and_resource_degrade_to_dashes() -> None:
     # A row with no capture/sample (flat fields only) must still render, no KeyError.
     bare = _row()

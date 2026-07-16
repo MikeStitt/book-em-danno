@@ -121,6 +121,11 @@ def render_markdown(payload: dict, provenance: dict | None = None) -> str:
         f"- models: {', '.join(payload.get('models') or []) or '—'}",
         f"- **{passed}/{len(rows)} passed**",
     ]
+    if not payload.get("captures_persisted", True):
+        lines.append(
+            "- captures: not persisted (`--no-save-captures`) — wire metrics below were "
+            "derived live; no capture JSONL/transcript was written to disk"
+        )
     if provenance:
         lines += _provenance_md(provenance)
     lines += [
@@ -477,6 +482,11 @@ def render_html(payload: dict, provenance: dict | None = None) -> str:
         f"models: {html.escape(', '.join(payload.get('models') or []) or '—')}</p>",
         f'<p class="meta tally">{passed}/{len(rows)} passed</p>',
     ]
+    if not payload.get("captures_persisted", True):
+        meta.append(
+            '<p class="meta">captures: not persisted (<code>--no-save-captures</code>) — '
+            "wire metrics were derived live; no capture JSONL/transcript was written to disk</p>"
+        )
     if provenance:
         meta += [
             f'<p class="meta">{html.escape(line.lstrip("- "))}</p>'

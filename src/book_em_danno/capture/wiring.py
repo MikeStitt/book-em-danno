@@ -21,7 +21,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from book_em_danno.capture.gate import GateTally
-from book_em_danno.capture.proxy import CaptureProxyConfig, capture_proxy
+from book_em_danno.capture.proxy import CaptureProxyConfig, _CaptureServer, capture_proxy
+from book_em_danno.capture.summary import CallSummary
 from book_em_danno.config.schema import DannoConfig, OllamaBackend, OpenAIBackend
 
 # The sandbox dials the host via this name; the Docker egress proxy rewrites it to
@@ -96,18 +97,38 @@ def plan_capture(config: DannoConfig, capture_dir: Path) -> tuple[DannoConfig, l
     return new_config, targets
 
 
+@dataclass(frozen=True)
+class RunningCaptures:
+    """A live handle over a cell's running proxies, exposing their merged body-free
+    summaries. Held open for the block; its `read_summaries()` stays valid after the block
+    exits (the servers outlive `serve_forever`), so the metrics-only path can roll up numbers
+    once the harness turn is done — with no bodies ever written to disk."""
+
+    _servers: tuple[_CaptureServer, ...]
+
+    def read_summaries(self) -> list[CallSummary]:
+        """Every proxy's summaries combined and ordered by `seq` — mirroring how
+        `wire_metrics.metrics_from_files` combines per-file records before rolling up."""
+        merged = [s for server in self._servers for s in server.read_summaries()]
+        merged.sort(key=lambda s: s.seq)
+        return merged
+
+
 @contextmanager
 def captures_running(
-    targets: Sequence[CaptureTarget], tally: GateTally | None = None
-) -> Iterator[None]:
-    """Run every target's capture proxy for the duration of the block (one ExitStack).
+    targets: Sequence[CaptureTarget], tally: GateTally | None = None, *, persist: bool = True
+) -> Iterator[RunningCaptures]:
+    """Run every target's capture proxy for the duration of the block (one ExitStack),
+    yielding a `RunningCaptures` handle over their live summaries.
 
     Ordering invariant (caller's job): enter this BEFORE provisioning/launching the
     harness and exit it AFTER the last turn — the proxy must be up for every request.
     `tally`, when set (runaway gates), is shared across all of a cell's backend proxies
-    so the watchdog sees the cell's combined inference-call + token totals."""
+    so the watchdog sees the cell's combined inference-call + token totals. `persist=False`
+    (`--no-save-captures`) runs the proxies as pure gate sensors: they feed the tally and
+    accumulate body-free summaries but write no JSONL to disk."""
     with contextlib.ExitStack() as stack:
-        for target in targets:
+        servers = [
             stack.enter_context(
                 capture_proxy(
                     CaptureProxyConfig(
@@ -115,10 +136,13 @@ def captures_running(
                         capture_file=target.capture_file,
                         port=target.proxy_port,
                         tally=tally,
+                        persist=persist,
                     )
                 )
             )
-        yield
+            for target in targets
+        ]
+        yield RunningCaptures(_servers=tuple(servers))
 
 
 def capture_allow_hosts(targets: Sequence[CaptureTarget], base: Sequence[str]) -> tuple[str, ...]:
@@ -158,6 +182,10 @@ class CaptureBinding:
 
     targets: tuple[CaptureTarget, ...]
     capture_dir: Path
+    # When False (`--no-save-captures`), the per-permutation proxies run as pure gate sensors
+    # (tally + in-RAM summaries) and write no capture JSONL/transcript to disk; the report's
+    # wire metrics still roll up from the live summaries. Default preserves save-mode.
+    persist: bool = True
 
     def permutation_targets(
         self, *, suite: str, task_id: str, model: str | None
@@ -177,11 +205,15 @@ class CaptureBinding:
 
     def permutation(
         self, *, suite: str, task_id: str, model: str | None, tally: GateTally | None = None
-    ) -> AbstractContextManager[None]:
-        """A `captures_running` context whose files are namespaced by this permutation.
-        `tally` (runaway gates) is shared across this cell's backend proxies."""
+    ) -> AbstractContextManager[RunningCaptures]:
+        """A `captures_running` context whose files are namespaced by this permutation,
+        yielding the `RunningCaptures` handle over its live summaries. `tally` (runaway gates)
+        is shared across this cell's backend proxies. When `persist` is False the proxies write
+        nothing to disk — the caller rolls the numbers up from the handle's summaries."""
         return captures_running(
-            self.permutation_targets(suite=suite, task_id=task_id, model=model), tally=tally
+            self.permutation_targets(suite=suite, task_id=task_id, model=model),
+            tally=tally,
+            persist=self.persist,
         )
 
     def _perm_segment(self, *, suite: str, task_id: str, model: str | None) -> Path:

@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from book_em_danno.capture.gate import GateTally
+from book_em_danno.capture.summary import CallSummary
 from book_em_danno.capture.usage import extract_usage, is_inference_request, total_tokens
 from book_em_danno.core.exec import CommandFailedError
 
@@ -64,6 +65,12 @@ class CaptureProxyConfig:
     # When set (`danno bench`'s runaway gates), each usage-bearing response feeds this live
     # tally so the exec watchdog can trip Gate 1 (round count) / Gate 2 (tokens) mid-cell.
     tally: GateTally | None = None
+    # Whether to WRITE the full request/response JSONL to `capture_file`. The body-free
+    # `CallSummary` list (and the `tally`) are kept in RAM regardless; only the on-disk
+    # bodies are gated. `False` (`--no-save-captures`) writes NOTHING to disk — no dir, no
+    # file — while the report's numbers still roll up from the summaries (see
+    # `.docs/plan-no-capture-truely-does-not-capture.md`).
+    persist: bool = True
 
 
 def _redact_headers(headers: Any) -> dict[str, str]:
@@ -87,13 +94,27 @@ def _decode_body(raw: bytes) -> Any:
 
 class _CaptureServer(ThreadingHTTPServer):
     """Threading HTTP server carrying the proxy config, a request-id counter, and a
-    lock so concurrent handler threads append to the capture file atomically."""
+    lock so concurrent handler threads append to the capture file atomically. It also
+    accumulates a body-free `CallSummary` per completed call (the always-in-RAM sensor
+    the report's wire metrics roll up from, independent of whether bodies hit disk)."""
 
     def __init__(self, cfg: CaptureProxyConfig) -> None:
         self.cfg = cfg
         self.counter = itertools.count(1)
         self.write_lock = threading.Lock()
+        self._summaries: list[CallSummary] = []
+        self._summary_lock = threading.Lock()
         super().__init__(("0.0.0.0", cfg.port), _Handler)
+
+    def add_summary(self, summary: CallSummary) -> None:
+        with self._summary_lock:
+            self._summaries.append(summary)
+
+    def read_summaries(self) -> list[CallSummary]:
+        """The body-free summaries seen so far, in arrival order. Safe to call after the
+        server is shut down — the list outlives `serve_forever` on the server object."""
+        with self._summary_lock:
+            return list(self._summaries)
 
     def server_bind(self) -> None:
         # Bypass HTTPServer.server_bind's socket.getfqdn(host) reverse-DNS lookup,
@@ -122,17 +143,19 @@ class _Handler(BaseHTTPRequestHandler):
     def _proxy(self, body: bytes | None) -> None:
         cfg = self._server.cfg
         seq = next(self._server.counter)
-        self._record(
-            {
-                "seq": seq,
-                "direction": "request",
-                "ts": time.time(),  # epoch seconds; response-request delta = per-call RTT (§2.3)
-                "method": self.command,
-                "path": self.path,
-                "headers": _redact_headers(self.headers),
-                "body": _decode_body(body or b""),
-            }
-        )
+        ts_request = time.time()  # epoch seconds; response-request delta = per-call RTT (§2.3)
+        if cfg.persist:  # bodies to disk ONLY when persisting (--no-save-captures skips this)
+            self._record(
+                {
+                    "seq": seq,
+                    "direction": "request",
+                    "ts": ts_request,
+                    "method": self.command,
+                    "path": self.path,
+                    "headers": _redact_headers(self.headers),
+                    "body": _decode_body(body or b""),
+                }
+            )
 
         if cfg.pass_headers:
             headers = {k: v for k, v in self.headers.items() if k.lower() not in _DROP_UPSTREAM}
@@ -153,16 +176,35 @@ class _Handler(BaseHTTPRequestHandler):
             status, resp_headers = 502, {"Content-Type": "application/json"}
             payload = json.dumps({"error": f"capture proxy upstream error: {exc.reason}"}).encode()
 
+        ts_response = time.time()  # buffered-response completion time (§2.3 RTT / §2.2 TTFT)
         resp_body = _decode_body(payload)
-        self._record(
-            {
-                "seq": seq,
-                "direction": "response",
-                "ts": time.time(),  # buffered-response completion time (§2.3 RTT / §2.2 TTFT)
-                "status": status,
-                "headers": _redact_headers(resp_headers),
-                "body": resp_body,
-            }
+        if cfg.persist:
+            self._record(
+                {
+                    "seq": seq,
+                    "direction": "response",
+                    "ts": ts_response,
+                    "status": status,
+                    "headers": _redact_headers(resp_headers),
+                    "body": resp_body,
+                }
+            )
+        # Body-free numbers, ALWAYS in RAM: usage is extracted only for inference rounds (as
+        # the on-disk parser does — discovery/health rows carry `None` and are filtered out of
+        # the roll-up). The summary is the single source the report's wire metrics derive from,
+        # so `--no-save-captures` still yields full token/latency/context numbers with no bodies
+        # ever written. `extract_usage` never returns message text — only counts.
+        is_inference = is_inference_request(self.command, self.path)
+        usage = extract_usage(resp_body) if is_inference else None
+        self._server.add_summary(
+            CallSummary(
+                seq=seq,
+                method=self.command,
+                path=self.path,
+                ts_request=ts_request,
+                ts_response=ts_response,
+                usage=usage,
+            )
         )
         if cfg.tally is not None:
             # Gate 1 counts inference ROUNDS, decided by request path (not by whether a
@@ -171,8 +213,7 @@ class _Handler(BaseHTTPRequestHandler):
             # recorded when extractable, else `None` (a round with no token spend).
             if self.command == "POST":
                 cfg.tally.observe_post()
-            if is_inference_request(self.command, self.path):
-                usage = extract_usage(resp_body)
+            if is_inference:
                 cfg.tally.record(tokens=total_tokens(usage) if usage is not None else None)
 
         self.send_response(status)
@@ -191,14 +232,18 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def capture_proxy(cfg: CaptureProxyConfig) -> Iterator[CaptureProxyConfig]:
-    """Run the recording proxy on `0.0.0.0:<cfg.port>` for the duration of the block.
+def capture_proxy(cfg: CaptureProxyConfig) -> Iterator[_CaptureServer]:
+    """Run the recording proxy on `0.0.0.0:<cfg.port>` for the duration of the block,
+    yielding the server so its body-free `read_summaries()` can be read afterward.
 
     Binds 0.0.0.0 so the sandbox VM can reach it via `host.docker.internal`. Fails
-    loud (Working Rule 8) if the port is already taken. Truncates the capture file on
-    entry; read records back with `read_captures`."""
-    cfg.capture_file.parent.mkdir(parents=True, exist_ok=True)
-    cfg.capture_file.write_text("", encoding="utf-8")
+    loud (Working Rule 8) if the port is already taken. When `cfg.persist` (the default),
+    truncates the capture file on entry so `read_captures` returns just this run's records;
+    when NOT persisting (`--no-save-captures`), touches NO path at all — no dir is created,
+    no file is written — while the summaries + tally still populate in RAM."""
+    if cfg.persist:
+        cfg.capture_file.parent.mkdir(parents=True, exist_ok=True)
+        cfg.capture_file.write_text("", encoding="utf-8")
     try:
         server = _CaptureServer(cfg)
     except OSError as exc:
@@ -208,7 +253,7 @@ def capture_proxy(cfg: CaptureProxyConfig) -> Iterator[CaptureProxyConfig]:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield cfg
+        yield server
     finally:
         server.shutdown()
         server.server_close()

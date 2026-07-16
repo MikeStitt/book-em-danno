@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from book_em_danno.capture.summary import CallSummary
 from book_em_danno.capture.usage import normalize_usage
 from danno_validator.telemetry import wire_metrics as wm
 
@@ -195,6 +196,55 @@ def test_metrics_from_files_reads_jsonl(tmp_path: Path) -> None:
     cap.write_text("\n".join(json.dumps(r) for r in lines) + "\n", encoding="utf-8")
     roll = wm.metrics_from_files([cap])
     assert roll.input_tokens == 100 and roll.output_tokens == 20
+
+
+def _summary(seq: int, req_ts: float, resp_ts: float, body: dict, path: str) -> CallSummary:
+    """A body-free CallSummary equivalent to a captured (request, response) pair — usage is
+    extracted just as the live proxy does, so the two derivation paths take identical input."""
+    return CallSummary(
+        seq=seq,
+        method="POST",
+        path=path,
+        ts_request=req_ts,
+        ts_response=resp_ts,
+        usage=wm._extract_usage(body),
+    )
+
+
+def test_metrics_from_summaries_parity_with_files(tmp_path: Path) -> None:
+    # §7 parity: for identical traffic, rolling up from live body-free summaries yields the
+    # SAME TurnWireMetrics as reading the on-disk JSONL — so the report is byte-identical
+    # regardless of --save-captures / --no-save-captures. A discovery call (/api/tags) is
+    # included to prove both paths filter it out the same way.
+    bodies = [
+        (1, 100.0, 102.0, _resp_body(4000, 100, cached=1000), "/v1/chat/completions"),
+        (2, 102.0, 105.0, _resp_body(4200, 200, cached=1200), "/v1/chat/completions"),
+        (3, 105.0, 105.1, {"models": []}, "/api/tags"),
+    ]
+    records = [rec for seq, rq, rs, body, path in bodies for rec in _pair(seq, rq, rs, body, path)]
+    cap = tmp_path / "c.jsonl"
+    cap.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    summaries = [_summary(seq, rq, rs, body, path) for seq, rq, rs, body, path in bodies]
+    assert wm.metrics_from_summaries(summaries) == wm.metrics_from_files([cap])
+
+
+def test_metrics_from_summaries_usage_less_round_still_counts() -> None:
+    # An inference round whose response carried no extractable usage is still a metric row
+    # (matching the Gate-1 tally), with None token fields — never dropped.
+    summaries = [
+        CallSummary(
+            seq=1,
+            method="POST",
+            path="/api/chat",
+            ts_request=0.0,
+            ts_response=1.0,
+            usage=None,
+        )
+    ]
+    roll = wm.metrics_from_summaries(summaries)
+    assert roll.request_count == 1
+    assert roll.requests[0].prompt_tokens is None
 
 
 def test_render_transcript_is_readable_and_redaction_safe() -> None:

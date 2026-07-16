@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from book_em_danno.capture.summary import CallSummary
 from book_em_danno.capture.usage import extract_usage as _extract_usage
 from book_em_danno.capture.usage import is_inference_request
 
@@ -78,27 +79,59 @@ def parse_capture_records(records: list[dict]) -> list[RequestMetric]:
         req = requests[seq]
         if not is_inference_request(req.get("method", ""), req.get("path", "")):
             continue
-        usage = _extract_usage(resp.get("body")) or _EMPTY_USAGE
-        rtt = _rtt(req.get("ts"), resp.get("ts"))
-        completion = usage["completion"]
-        tok_per_s = (
-            round(completion / rtt, 1)
-            if completion is not None and rtt is not None and rtt > 0
-            else None
-        )
         metrics.append(
-            RequestMetric(
+            _request_metric(
                 seq=seq,
                 path=req.get("path", ""),
-                rtt_s=rtt,
-                prompt_tokens=usage["prompt"],
-                completion_tokens=completion,
-                cached_tokens=usage["cached"],
-                total_tokens=usage["total"],
-                tok_per_s=tok_per_s,
+                req_ts=req.get("ts"),
+                resp_ts=resp.get("ts"),
+                usage=_extract_usage(resp.get("body")),
             )
         )
     return metrics
+
+
+def _request_metric(
+    *, seq: int, path: str, req_ts: Any, resp_ts: Any, usage: dict[str, int | None] | None
+) -> RequestMetric:
+    """Build one `RequestMetric` from a call's routing + timestamps + normalized `usage`.
+    Shared by the on-disk parser (`parse_capture_records`) and the live-summary parser
+    (`metrics_from_summaries`) so the two derivation paths cannot drift — the report is
+    identical whether captures were persisted or not."""
+    u = usage or _EMPTY_USAGE
+    rtt = _rtt(req_ts, resp_ts)
+    completion = u["completion"]
+    tok_per_s = (
+        round(completion / rtt, 1)
+        if completion is not None and rtt is not None and rtt > 0
+        else None
+    )
+    return RequestMetric(
+        seq=seq,
+        path=path,
+        rtt_s=rtt,
+        prompt_tokens=u["prompt"],
+        completion_tokens=completion,
+        cached_tokens=u["cached"],
+        total_tokens=u["total"],
+        tok_per_s=tok_per_s,
+    )
+
+
+def metrics_from_summaries(summaries: list[CallSummary]) -> TurnWireMetrics:
+    """Roll up a permutation's body-free `CallSummary` list (the `--no-save-captures` path)
+    into the same `TurnWireMetrics` the on-disk parser produces. Inclusion is decided by
+    request path (`is_inference_request`), matching `parse_capture_records` and the live
+    Gate-1 tally, so a usage-less round still becomes a metric row with `None` token fields."""
+    metrics = [
+        _request_metric(
+            seq=s.seq, path=s.path, req_ts=s.ts_request, resp_ts=s.ts_response, usage=s.usage
+        )
+        for s in summaries
+        if is_inference_request(s.method, s.path)
+    ]
+    metrics.sort(key=lambda m: m.seq)
+    return rollup(metrics)
 
 
 # A usage-less inference round (Ollama-native, SSE without include_usage) still counts as a
