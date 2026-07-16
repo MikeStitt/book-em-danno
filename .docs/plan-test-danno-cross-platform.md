@@ -88,12 +88,43 @@ Native = cmd/PowerShell; WSL2/Linux = POSIX baseline (expected OK unless noted).
   (POSIX target); note `shlex` emits POSIX quoting on **all** OSes, so string-compare tests
   won't spuriously differ. Risk: interpolating a **Windows host path** (backslash/drive)
   into a sandbox command — audit those sites.
+- **H11 — runaway-gate watchdog kill is POSIX-only AND exercised by the FAST suite (added
+  2026-07-16).** `core/exec.py:133` `_kill_process_group` calls
+  `os.killpg(os.getpgid(proc.pid), signal.SIGKILL)` (`exec.py:140`); the watched-capture path
+  spawns with `start_new_session=True` (`exec.py:331`). None of `os.killpg`/`os.getpgid`/
+  `signal.SIGKILL` exist on native Windows and the `except` only catches
+  `ProcessLookupError`/`PermissionError` (`exec.py:141`), so an `AttributeError` there is
+  **unguarded → hard break** on cmd/PowerShell; WSL2/Linux OK. **Why this outranks the other
+  shell hazards:** unlike H1 (mocked in tests), the **fast** suite spawns *real* subprocesses
+  on this path — `tests/test_exec.py:203-288` (7 watchdog sleep-then-kill tests) and all 4
+  tests in `tests/test_exec_watchdog_hostile.py` (real parent+grandchild process GROUPS). So
+  H11 turns the **Tier-2 Windows gate red on its own, before `sbx`/Docker is even involved** —
+  it is the first thing to fix for a green Windows gate. Fix shape: guard the POSIX kill / add
+  a Windows kill path (`taskkill /T /F` or `CREATE_NEW_PROCESS_GROUP` + `CTRL_BREAK_EVENT`).
 
 ### Filesystem / permissions
-- **H4 — `os.chmod(0o600)` on secret env-files.** `sandbox.py:693` + every "chmod-600
-  env-file" (`run.py:180`, `baseline.py:64`, `bench.py:220/668`). On **native Windows**
-  `os.chmod` only toggles read-only — **secret is effectively unprotected** (security, not
-  cosmetic). WSL2/Linux OK. *Native fix later = a Windows-ACL path.*
+- **H4 — `os.chmod(0o600)` on secret env-files.** All secrets funnel through **one**
+  chokepoint: `_build_env_file` (`sandbox.py:757`) writes a temp env-file and `p.chmod(0o600)`
+  (`sandbox.py:762`), attached to the launch as `--env-file` (`sandbox.py:988`). Reused
+  everywhere — validator sweep (`run.py:204`), claude baseline (`baseline.py:71`),
+  `benchmark.py:228`, bench suites (`suites/bench.py:252`). On **native Windows** `os.chmod`
+  only toggles read-only — **secret is effectively unprotected** (security, not cosmetic).
+  WSL2/Linux OK. No fast test asserts env-file perms, so this is a **silent** gap (unlike
+  H11 it does not turn CI red — it just fails to protect).
+  - **Fix direction (SUPERSEDES the earlier "Windows-ACL path" note; decided 2026-07-16):**
+    do **not** build a Windows-ACL. Route the sbx path's secrets to **`sbx secret set`**
+    instead — then no host-side secret file is written on that path, so there is nothing to
+    chmod and H4 **stops existing on the path Windows uses** (Windows is sbx-only: legacy
+    `docker sandbox` isn't present there per `plan-sbx-migration.md`, and where it *is*
+    present — macOS — chmod works). Bonus: `sbx secret` injects auth **post-egress at the
+    proxy**, so the raw key never lands in-VM as an agent-readable env var. Two caveats before
+    claiming the win: (1) the env-file is **mixed** — secrets + non-secret config
+    (`OLLAMA_BASE_URL`, `HOME`, `XDG_CONFIG_HOME`, `OPENAI_BASE_URL`, …); to make the chmod
+    line literally go away, non-secret config must move to `--env KEY=VAL`. (2) It is a
+    **different delivery model** (proxy header-injection vs `{env:api_key_env}` /
+    `OPENAI_API_KEY` that harnesses read from their env) — each harness × provider
+    (Anthropic, NVIDIA NIM) must be live-verified to accept proxy-injected auth, else fall
+    back to env delivery for that case and the win narrows.
 - **H5 — temp paths.** `tempfile.mkstemp/mkdtemp` (`sandbox.py:690`, `tools.py:130`)
   cross-platform (uses `%TEMP%`) → OK, but inherits H4's perms gap.
 - **H6 — path sep / CRLF.** `pathlib` portable; watch string path-concat and CRLF drift in
@@ -117,8 +148,9 @@ Native = cmd/PowerShell; WSL2/Linux = POSIX baseline (expected OK unless noted).
   is also the Tier-2 blocker** (see CI ninja-install below).
 
 **Hypothesis:** WSL2 ≈ Linux → most works (only H7–H9 remote-Ollama config). cmd/PowerShell
-hard breaks = **H1, H4, H10**; pure-Python surfaces (import, `--help`, config-gen) likely
-work even there.
+hard breaks = **H1, H10, H11** (and H4 fails *silently* — unprotected secret, not a crash);
+pure-Python surfaces (import, `--help`, config-gen) likely work even there. **H11 is the
+gate-reddening one** — it fails the fast suite on native Windows with no Docker/Ollama needed.
 
 ## Prerequisites
 
@@ -188,7 +220,8 @@ needed **code vs config** — that list is part of the deliverable.
 ## What CAN and CANNOT run in hosted CI
 
 - **CAN:** the whole gate (lint/format/type + the **fast, non-`slow`** unit suite). This is
-  precisely the surface where H1/H3/H4/H6/H10 either pass or reveal real bugs on Windows.
+  precisely the surface where H1/H3/H4/H6/H10/H11 either pass or reveal real bugs on Windows
+  (H11 is the one guaranteed to fail the fast suite until the exec.py kill path is fixed).
 - **CANNOT:** the run leg (**no Docker Desktop sandbox** on hosted runners; Windows/macOS
   runners have no Docker at all by default) and any **Ollama**-backed bench. Those are
   `-m slow`/live and stay in **Tier 1**. Do not attempt them in `check.yml`.
@@ -236,7 +269,10 @@ The first Windows run will fail some `not slow` tests. Triage each into:
 - **(b) legitimately POSIX-only test** → mark `@pytest.mark.skipif(sys.platform == "win32", reason=…)` + file an issue.
 Likely (b) offenders: tests that spawn real `bash`/`docker`, assert `chmod`/perms, use
 hardcoded `/tmp`, or compare path strings with `/`. (`shlex.join` output is POSIX on all
-OSes, so those assertions are safe.)
+OSes, so those assertions are safe.) **Do NOT reflexively skip the watchdog tests
+(`test_exec.py:203-288`, `test_exec_watchdog_hostile.py`) as case (b)** — they spawn real
+subprocesses and fail because of **H11, a real portability bug** (case (a)); the fix is the
+Windows kill path in `core/exec.py`, not a skip-mark.
 
 ## Sketch (illustrative, not final)
 
@@ -273,7 +309,7 @@ jobs:
 ## Deliverables
 
 1. `.docs/windows-portability-report.md` — Tier-1 surfaces×envs matrix filled in, per-shell
-   transcripts/exit codes, prioritized file-referenced fix backlog (H1–H10).
+   transcripts/exit codes, prioritized file-referenced fix backlog (H1–H11).
 2. An updated `check.yml` (or a companion `check-windows.yml`) implementing Changes 1–3,
    plus the fast-suite triage output (Change 4) as skip-marks + issues.
 3. A support-policy recommendation (D1) and a CI-required-status recommendation (D5).
@@ -282,7 +318,8 @@ jobs:
 ## Decision points (owner: user)
 
 - **D1 — Which shells/OSes does danno officially support?** Likely: **WSL2 + Linux + macOS
-  = supported; native cmd/PowerShell = best-effort or unsupported** given H1/H4/H10.
+  = supported; native cmd/PowerShell = best-effort or unsupported** given H1/H10/H11 (and the
+  H4 secret gap). Note H11 must be fixed regardless to get a green Windows CI gate.
 - **D2 — GPUs?** Does the **Windows PC** or the **Linux box** have an NVIDIA GPU? If yes,
   test **Ollama local** there (moots the Mac; single-box native-x86 grade + local GPU model).
 - **D3 — Repoint approach:** host-side port-forward (now) vs upstream-host code lever (later).
@@ -294,7 +331,9 @@ jobs:
 - **R1 — Docker sandbox × WSL2 nested virt** — verify `docker sandbox` works through WSL
   integration (I5 from the companion doc).
 - **R2 — Secret exposure on native Windows (H4)** — do **not** ship cloud-auth benches on
-  native Windows until a Windows-ACL replacement exists.
+  native Windows until secrets move to `sbx secret` (see H4 fix direction; the earlier
+  "Windows-ACL replacement" plan is superseded — Windows is sbx-only, so the sbx-secret route
+  retires the gap rather than reimplementing host-side perms).
 - **R3 — LAN latency** on Mac-served inference — expected negligible (Ollama streams);
   record tokens/s vs a local baseline.
 - **R4 — Toolchain gate (H10)** — `ninja check` / pre-commit may need a POSIX shell natively.
