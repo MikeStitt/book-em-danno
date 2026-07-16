@@ -33,6 +33,7 @@ commits by [git-cliff](https://git-cliff.org).
 ### Features
 
 - *(bench)* Record runaway-gate observability on each bench.json row
+- *(bench)* --no-save-captures writes nothing to disk
 
 ### Refactor
 
