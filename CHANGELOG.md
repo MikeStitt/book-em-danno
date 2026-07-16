@@ -3,11 +3,62 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.16.0] - 2026-07-16
+
+### Bug Fixes
+
+- *(bench)* Reap the in-VM harness after a runaway-gate kill
+- *(bench)* Count Gate-1 rounds by request path, not usage presence (F1)
+- *(exec)* Reap the process tree and surface reader errors on gate kill (F2/F3)
+- *(bench)* Own the --no-save-captures temp dir; reject --capture-dir conflict (F4)
+- *(config)* Drop unreachable plannotator installer from the example
+- *(stubai)* Skip getfqdn in server_bind to unhang macOS CI
+- *(stubai)* Record response before sending body to close transcript race
+
+### Documentation
+
+- *(bench)* Plan long-lived validation scripts for the runaway gates
+- *(bench)* Record the PR #88 runaway-gates review findings
+- *(bench)* Detail why each PR #88 finding matters and its fix design
+- *(bench)* Record GV1 done + Q1 resolution in the validation plan
+- *(readme)* Highlight the unit vs end-to-end pytest tiers
+- *(bench)* Mark GV2/GV3 fixtures live-verified after green slow run
+
+### Features
+
+- *(bench)* Record runaway-gate observability on each bench.json row
+
+### Refactor
+
+- *(telemetry)* Dedupe usage extraction onto capture/usage
+- *(bench)* HarnessName alias for the name set; document always-on capture (F8/F6)
+
+### Testing
+
+- *(bench)* GV0 stub AI + gate-sensor/watchdog validation scripts
+- *(bench)* Author Tier B gate-validation suites GV2/GV3 (not live-verified)
+- *(bench)* Fix GV2/GV3 findings from first live run
+- *(bench)* Make GV2/GV3 termination matrix green against real sandboxes
+- *(slow)* Make sandbox e2e tests sbx-only; drop plannotator from npm live test
+
 ## [0.15.1] - 2026-07-13
 
 ### Bug Fixes
 
 - *(telemetry)* Parse OpenAI Responses-API captures (usage + transcript)
+
+### Documentation
+
+- *(bench)* Design runaway gates + capture-always-on for danno bench
+- *(bench)* Record runaway-gates implementation status
+
+### Features
+
+- *(bench)* Add runaway-gate config schema and resolution
+- *(bench)* Add runaway-gate sensor and watchdog mechanism
+- *(bench)* Enforce runaway gates per cell via the watchdog
+- *(bench)* Make capture always-on; add --no-save-captures
+- *(bench)* Native polite-stop caps (grace margin) + gates provenance
 
 ## [0.15.0] - 2026-07-13
 
