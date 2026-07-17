@@ -1,11 +1,13 @@
 # danno.toml — the MODEL matrix for the Aider Polyglot sweep.
 #
 # `danno bench` sweeps every [models.*] entry below against every harness in the
-# adjacent benchmarks.toml (occ / opencode / claurst), for every selected exercise.
-# `danno install` also derives .opencode/opencode.jsonc from this file.
+# adjacent benchmarks.toml (claude / occ / opencode / claurst), for every selected
+# exercise. `danno install` also derives .opencode/opencode.jsonc from this file.
 #
-# Four models: three local (Ollama) + one paid cloud (OpenAI o4-mini). Filter to a
-# subset with `danno bench --only <model-name>` (repeatable).
+# Five models: three local (Ollama) + one paid cloud (OpenAI o4-mini) + Claude Opus
+# 4.8 (the claude reference harness's own model, on an inert backend). The OpenAI-
+# compatible harnesses sweep the first four; `claude` sweeps only the inert opus row.
+# Filter to a subset with `danno bench --only <model-name>` (repeatable).
 
 [project]
 target = "."
@@ -35,6 +37,14 @@ api_key_env = "OPENAI_API_KEY"
 # Native @ai-sdk/openai (Responses API) beats the hardcoded openai-compatible SDK.
 [backends.danno-openai.overrides.opencode]
 npm = "@ai-sdk/openai"
+
+# Inert backend for the `claude` reference harness: Claude Code talks straight to
+# api.anthropic.com with its own OAuth token and picks the model via `--model`, so
+# danno emits no base_url/api_key here. A model on this backend is swept ONLY by the
+# `claude` harness (its `tag` becomes `--model`); the OpenAI-compatible harnesses
+# (occ/opencode/claurst) never dial it.
+[backends.anthropic]
+kind = "inert"
 
 # --- Models ---------------------------------------------------------------------
 # Local models MUST support tool-calling. context_budget = OpenCode's client-side
@@ -79,6 +89,14 @@ reasoning_effort = "high"
 
   [models.o4-mini.overrides.opencode.options]
   max_completion_tokens = 200000
+
+# Claude Opus 4.8 — the `claude` reference harness's model. On the inert backend so
+# `tag` is passed verbatim to Claude Code's `--model`; this pins the reference row to
+# opus 4.8 instead of Claude Code's install default. No context_budget/output_limit/
+# overrides (forbidden on an inert backend — danno emits no config block for it).
+[models.claude-opus-4-8]
+backend = "anthropic"
+tag     = "claude-opus-4-8"
 
 # --- Agent -> model. bench sweeps all [models] above regardless; these set the
 #     interactive/default routing. build+plan default to the Unsloth qwen (best

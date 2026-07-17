@@ -14,7 +14,7 @@
 # plus a combined comparison report at the root. occ and claurst route to local
 # Ollama; opencode runs the same models via the local relay. (Add "claude" only
 # with a cloud danno.toml — the reference harness serves its own Anthropic model.)
-harnesses = ["occ", "opencode", "claurst"]
+harnesses = ["claude", "occ", "opencode", "claurst"]
 
 # --- Runaway gates: per-cell BACKSTOPS, not fairness normalizers ----------------
 # Set high enough that no legitimate solve trips them; they exist to kill a runaway
