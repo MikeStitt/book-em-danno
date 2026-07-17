@@ -186,6 +186,31 @@ def _claude_inert_models(config: DannoConfig, only: Sequence[str] | None) -> lis
     return names
 
 
+def _openai_compat_variants(config: DannoConfig, only: Sequence[str] | None) -> list[ConfigVariant]:
+    """The model matrix for an OpenAI-compatible harness (opencode/occ/claurst): the
+    declared catalog minus inert-backend models.
+
+    An inert model's `tag` is a native `--model` alias (claude's lever), not an endpoint
+    danno can dial — occ/claurst/opencode raise loud on it (`resolve_occ_model` etc.). So
+    the default sweep excludes them: they belong to the `claude` reference row, not this
+    matrix (the counterpart of `_claude_inert_models`, which keeps ONLY inert models). An
+    explicit `--only` naming an inert model for such a harness is an impossible pairing —
+    fail loud (Working Rule 8) rather than silently drop it to an empty sweep."""
+    variants = model_variants(config, only=only)
+    inert = {
+        v.model_name
+        for v in variants
+        if isinstance(config.backends[config.models[v.model_name].backend], InertBackend)
+    }
+    if only is not None and inert:
+        raise ValueError(
+            f"models {sorted(inert)} are on an inert backend (the claude reference row only) "
+            f"and can't be dialed by an OpenAI-compatible harness (opencode/occ/claurst). "
+            f"Drop them from --only, or run them with --harness claude."
+        )
+    return [v for v in variants if v.model_name not in inert]
+
+
 def _harness_dial_ref(harness: str, config: DannoConfig, variant: ConfigVariant) -> str | None:
     """The ref occ/claurst must actually dial for `variant`, or None (report ref stands).
 
@@ -697,7 +722,10 @@ def run_bench(
             else [baseline.baseline_variant(None)]
         )
     else:
-        variants = model_variants(config, only=opts.only)
+        # opencode/occ/claurst dial an endpoint danno controls, so their matrix is the
+        # OpenAI-compatible models only — inert models (claude's `--model` rows) are
+        # excluded, else this harness would raise loud trying to reach one mid-sweep.
+        variants = _openai_compat_variants(config, opts.only)
     out_dir = opts.out_dir or Path(".danno-bench") / now.strftime("%Y-%m-%dT%H-%M-%S")
     report = BenchReport(out_dir=out_dir, dry_run=opts.dry_run)
 

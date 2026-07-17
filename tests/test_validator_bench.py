@@ -307,6 +307,52 @@ def test_run_bench_claude_sweeps_declared_inert_models(
     assert captured["model_refs"] == ["claude-opus-4-8", "claude-sonnet-4-6"]  # bare tags
 
 
+def test_openai_compat_variants_excludes_inert_models() -> None:
+    cfg = _claude_config()
+    # occ/opencode/claurst sweep the OpenAI-compatible models only — the inert claude
+    # rows (opus/sonnet) are excluded, since danno can't dial them.
+    assert [v.model_name for v in bench._openai_compat_variants(cfg, None)] == ["qwen"]
+    # a mixed --only keeps the local model and drops nothing it was asked for
+    assert [v.model_name for v in bench._openai_compat_variants(cfg, ["qwen"])] == ["qwen"]
+
+
+def test_openai_compat_variants_explicit_only_inert_fails_loud() -> None:
+    cfg = _claude_config()
+    # asking a config-driven harness to run an inert (claude-only) model is impossible;
+    # fail loud rather than silently collapse to an empty sweep (Working Rule 8).
+    with pytest.raises(ValueError, match="inert backend"):
+        bench._openai_compat_variants(cfg, ["opus"])
+
+
+def test_run_bench_non_claude_harness_skips_inert_models(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # With inert claude models declared alongside a local model, --harness occ must sweep
+    # ONLY the local model — never the inert rows (which would raise loud mid-sweep).
+    captured: dict[str, object] = {}
+
+    def fake_write(
+        report,
+        *,
+        config_path,
+        harness,
+        variants,
+        num_ctx_by_model=None,
+        capture_dir=None,
+        captures_persisted=True,
+    ):  # type: ignore[no-untyped-def]
+        captured["model_names"] = [v.model_name for v in variants]
+        path = report.out_dir / "bench.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"harness": harness, "results": []}) + "\n", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(bench, "_write_results", fake_write)
+    opts = bench.BenchOptions(target=tmp_path, harness="occ", out_dir=tmp_path / "out")
+    bench.run_bench(_claude_config(), BenchmarksConfig(), opts, Runner())
+    assert captured["model_names"] == ["qwen"]  # inert opus/sonnet excluded
+
+
 def test_run_turn_for_opencode_pins_build_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, object] = {}
 
