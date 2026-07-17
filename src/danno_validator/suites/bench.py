@@ -35,6 +35,12 @@ from danno_validator import baseline
 from danno_validator.driver import seed_workspace
 from danno_validator.level0 import DEFAULT_RUN_AGENT
 from danno_validator.matrix import ConfigVariant, model_variants
+from danno_validator.suites.aider import (
+    doctor_toolchains,
+    install_toolchains,
+    languages_in,
+    toolchain_egress,
+)
 from danno_validator.suites.aut import (
     CLAUDE,
     CLAURST,
@@ -348,9 +354,20 @@ def _run_aider(
         return []
     name = _sandbox_name(opts.target, "aider")
     image = resolve_image(opts.harness)
-    log_info(f"[bench] aider — provision {opts.harness} sandbox '{name}'")
+    languages = languages_in(ap.select)
+    # The exercises' toolchains need their distribution hosts on top of the capture/ollama
+    # egress — added to the allow-list VERBATIM (still explicit hosts, never `"**"`).
+    allow_hosts = allow_hosts + toolchain_egress(languages)
+    log_info(f"[bench] aider — provision {opts.harness} sandbox '{name}' (langs: {languages})")
     sb.provision(runner, name, workspace, harness=image, allow_hosts=allow_hosts)
     install_harness(runner, name, opts.harness, config)
+    install_toolchains(runner, name, languages)
+    present = doctor_toolchains(runner, name, languages)
+    missing = [lang for lang, ok in present.items() if not ok]
+    if missing:
+        # Fail loud per-suite (Working Rule 8): a selected language whose toolchain didn't
+        # install will error every one of its exercises — surface it up front, not per row.
+        log_warn(f"[bench] aider — toolchain(s) NOT present after install: {missing}")
     checkout = clone_polyglot(runner, ap.source, temp_checkout_dir())
     verdicts: list[BenchVerdict] = []
     try:

@@ -81,9 +81,9 @@ class _FakeTask:
     def reset(self, runner: Runner, sandbox: str, workspace: Path) -> None:
         self.calls.append("reset")
 
-    def grade(self, runner: Runner, sandbox: str, workspace: Path) -> bool:
+    def grade(self, runner: Runner, sandbox: str, workspace: Path) -> base.GradeResult:
         self.calls.append("grade")
-        return self._passed
+        return base.GradeResult(passed=self._passed)
 
 
 def _run_turn_returning(turn: _FakeTurn) -> base.TurnFn:
@@ -310,7 +310,7 @@ def test_run_bench_task_rounds_snapshot_excludes_grading(
         return _FakeTurn()
 
     class _GradeBumpsTally(_FakeTask):
-        def grade(self, runner: Runner, sandbox: str, workspace: Path) -> bool:
+        def grade(self, runner: Runner, sandbox: str, workspace: Path) -> base.GradeResult:
             tally.record(tokens=5)  # grading must NOT be counted as a round
             return super().grade(runner, sandbox, workspace)
 
