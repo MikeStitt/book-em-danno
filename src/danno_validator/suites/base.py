@@ -23,6 +23,7 @@ from book_em_danno.capture.proxy import read_captures
 from book_em_danno.capture.wiring import CaptureBinding, RunningCaptures
 from book_em_danno.commands import sandbox_cli
 from book_em_danno.core.exec import GateBreach, Runner, log_warn
+from danno_validator import harnesses
 from danno_validator.driver import Turn, TurnFn, opencode_run
 from danno_validator.oracle import FailureClass, TurnVerdict, classify_turn, gate_verdict
 from danno_validator.suites.config import ResolvedGates, watchdog_max_turns
@@ -161,8 +162,12 @@ def error_verdict(task_id: str, suite: str, detail: str) -> BenchVerdict:
 # `sbx exec` kill does NOT propagate into the VM (verified live), so without this a killed
 # runaway keeps burning VM CPU there — and, in the shared aider sandbox, bleeds into the
 # next cell. The pattern is broad by design: the sandbox is danno-owned and runs one harness
-# turn at a time (opencode / occ `index.mjs` / claurst, plus the occ in-VM Ollama relay).
-_REAP_PATTERN = "opencode|claurst|index\\.mjs|DANNO_RELAY"
+# turn at a time (opencode / occ `index.mjs` / claurst, plus the occ in-VM Ollama relay). It
+# is the union of every registered harness's `reap_patterns`, so adding a harness needs no
+# edit here — the registry is the single source of truth.
+_REAP_PATTERN = "|".join(
+    pattern for name in harnesses.all_names() for pattern in harnesses.get(name).reap_patterns
+)
 
 
 def _reap_harness(runner: Runner, sandbox: str) -> None:
@@ -186,8 +191,11 @@ def _reap_harness(runner: Runner, sandbox: str) -> None:
 # so `pgrep -f` does not match its OWN `bash -lc` wrapper (whose cmdline carries the pattern),
 # which would report a phantom survivor on an idle sandbox. Unlike `_REAP_PATTERN` this omits
 # the occ Ollama relay (`DANNO_RELAY`): the relay is a persistent in-VM helper, not the turn's
-# harness, so it is never a 'survivor'.
-_SURVIVOR_PATTERN = r"[o]pencode|[c]laurst|[i]ndex\.mjs"
+# harness, so it is never a 'survivor'. It is the union of every registered harness's
+# `survivor_patterns` (the registry is the single source of truth).
+_SURVIVOR_PATTERN = "|".join(
+    pattern for name in harnesses.all_names() for pattern in harnesses.get(name).survivor_patterns
+)
 
 
 def _surviving_harness_pids(runner: Runner, sandbox: str) -> tuple[int, ...]:

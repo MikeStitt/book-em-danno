@@ -19,8 +19,7 @@ from pathlib import Path
 
 from book_em_danno.commands import ollama
 from book_em_danno.config.schema import DannoConfig
-from danno_validator import occ
-from danno_validator.claurst import CLAURST_VERSION
+from danno_validator import harnesses
 from danno_validator.matrix import ConfigVariant
 from danno_validator.suites.config import GatesConfig
 from danno_validator.telemetry.sampler import read_memory
@@ -52,15 +51,9 @@ def _git_commit() -> str | None:
 def harness_provenance(harness: str, config: DannoConfig) -> dict:
     """The danno-known version pins for the harness that ran (§7.3). opencode/claude are
     image-provided (the prebuilt sandbox ships the binary), so danno pins no version —
-    only claurst (release tag) and occ (repo + commit ref) are danno-owned."""
-    info: dict = {"harness": harness}
-    if harness == "claurst":
-        info["claurst_version"] = CLAURST_VERSION
-    elif harness == "occ":
-        repo, ref = occ.occ_repo_ref(config)
-        info["occ_repo"] = repo
-        info["occ_ref"] = ref
-    return info
+    only claurst (release tag) and occ (repo + commit ref) are danno-owned. Each harness
+    owns its pins via `Harness.provenance`; this merges them under the `harness` label."""
+    return {"harness": harness, **harnesses.get(harness).provenance(config)}
 
 
 def _read_cpuinfo() -> dict:

@@ -14,15 +14,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+
+from danno_validator import harnesses
 
 # Default file name looked up next to the project's danno.toml.
 DEFAULT_BENCHMARKS_FILE = "benchmarks.toml"
 
-# The harnesses danno can benchmark. Single source of truth for the name set — both
-# `BenchmarksConfig.harnesses` and `GatesConfig.harness` key off this alias, so the four
-# names can never drift out of sync across the two fields.
-HarnessName = Literal["opencode", "claurst", "occ", "claude"]
+
+def _validate_harness_name(name: str) -> str:
+    """Fail loud on a `benchmarks.toml` harness name the registry doesn't know (Working
+    Rule 8). The valid set is the live registry (`harnesses.all_names()`), so adding a
+    harness needs no edit here — the single source of truth is the registry itself."""
+    valid = harnesses.all_names()
+    if name not in valid:
+        raise ValueError(f"unknown harness '{name}'. Valid harnesses: {', '.join(valid)}.")
+    return name
 
 
 class AiderPolyglotConfig(BaseModel):
@@ -73,8 +80,15 @@ class GatesConfig(GateLimits):
     max_turns: int | None = 50
     max_tokens: int | None = 2_000_000
     timeout_s: float | None = 1800.0
-    harness: dict[HarnessName, GateLimits] = {}
+    harness: dict[str, GateLimits] = {}
     model: dict[str, GateLimits] = {}
+
+    @field_validator("harness")
+    @classmethod
+    def _check_harness_keys(cls, value: dict[str, GateLimits]) -> dict[str, GateLimits]:
+        for name in value:
+            _validate_harness_name(name)
+        return value
 
 
 @dataclass(frozen=True)
@@ -139,10 +153,17 @@ class BenchmarksConfig(BaseModel):
     # sidecars under <out>/<harness>/, with a combined comparison report at the root). Empty
     # (the default) means the single opencode default; `--harness` on the CLI overrides this.
     # An unknown name fails loud at load (Working Rule 8).
-    harnesses: list[HarnessName] = []
+    harnesses: list[str] = []
     gates: GatesConfig = GatesConfig()
     aider_polyglot: AiderPolyglotConfig = AiderPolyglotConfig()
     swebench: SwebenchConfig = SwebenchConfig()
+
+    @field_validator("harnesses")
+    @classmethod
+    def _check_harnesses(cls, value: list[str]) -> list[str]:
+        for name in value:
+            _validate_harness_name(name)
+        return value
 
     def any_enabled(self) -> bool:
         return self.aider_polyglot.enabled or self.swebench.enabled

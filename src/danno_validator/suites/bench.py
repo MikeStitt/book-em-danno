@@ -29,12 +29,12 @@ from book_em_danno.capture.wiring import (
 from book_em_danno.commands import ollama, sandbox_cli
 from book_em_danno.commands import sandbox as sb
 from book_em_danno.config.generate import generate
-from book_em_danno.config.schema import DannoConfig, InertBackend
+from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import CommandFailedError, Runner, log_info, log_warn
-from danno_validator import baseline
+from danno_validator import baseline, harnesses
 from danno_validator.driver import seed_workspace
 from danno_validator.level0 import DEFAULT_RUN_AGENT
-from danno_validator.matrix import ConfigVariant, model_variants
+from danno_validator.matrix import ConfigVariant
 from danno_validator.suites.aider import (
     doctor_toolchains,
     install_toolchains,
@@ -42,9 +42,6 @@ from danno_validator.suites.aider import (
     toolchain_egress,
 )
 from danno_validator.suites.aut import (
-    CLAUDE,
-    CLAURST,
-    OCC,
     install_harness,
     resolve_image,
     run_turn_for,
@@ -102,11 +99,6 @@ class BenchReport:
     results_json: Path | None = None
 
 
-# The harnesses-under-test `danno bench` can drive (occ/claurst/opencode on the local +
-# cloud matrix; claude sweeps its inert-backend models, or one `(default model)` row if
-# none are declared). Ordered for a stable report layout.
-BENCH_HARNESSES: tuple[str, ...] = (sb.DEFAULT_HARNESS, CLAURST, OCC, CLAUDE)
-
 _OLLAMA_PREFIX = "ollama/"
 
 
@@ -116,15 +108,15 @@ def resolve_bench_harnesses(
     """The de-duplicated, order-preserving list of harnesses to benchmark, with precedence
     `--harness` (CLI) > `benchmarks.toml [harnesses]` > the single opencode default.
 
-    Fails loud (Working Rule 8) on an unknown harness name from either source, naming the
-    valid set, rather than provisioning a sandbox for a typo."""
+    The valid set is the harness registry (`harnesses.all_names()`) — no local name-set to
+    keep in sync. Fails loud (Working Rule 8) on an unknown harness name from either source,
+    naming the valid set, rather than provisioning a sandbox for a typo."""
+    valid = harnesses.all_names()
     chosen: list[str] = list(cli_harnesses or bench_cfg.harnesses) or [sb.DEFAULT_HARNESS]
     seen: dict[str, None] = {}
     for name in chosen:
-        if name not in BENCH_HARNESSES:
-            raise ValueError(
-                f"unknown --harness '{name}'. Valid harnesses: {', '.join(BENCH_HARNESSES)}."
-            )
+        if name not in valid:
+            raise ValueError(f"unknown --harness '{name}'. Valid harnesses: {', '.join(valid)}.")
         seen.setdefault(name, None)
     return list(seen)
 
@@ -153,90 +145,35 @@ def _teardown(runner: Runner, name: str, *, keep: bool) -> None:
 def _variant_cloud_env_lines(harness: str, config: DannoConfig, model_name: str) -> list[str]:
     """The cloud-provider auth env-file lines for one bench variant, or [] for a local model.
 
-    Reuses the exact builders `danno sandbox start` uses, so bench authenticates a cloud
-    model identically per harness: occ needs the `OPENAI_BASE_URL`/`OPENAI_API_KEY` mapping;
-    claurst and opencode read the provider key under its own `{api_key_env}` name (opencode's
-    generated provider block references `{env:<api_key_env>}`). Fails loud (Working Rule 8)
-    when the key var is unset. `model_name` is the danno.toml `[models]` key (a raw
-    `<provider>/<tag>` ref, which the matrix never yields for a cloud row, resolves to [])."""
-    if harness == OCC:
-        return sb.occ_cloud_env_lines(config, model_name)
-    if harness == CLAURST:
-        return sb.claurst_cloud_env_lines(config, model_name)
-    if harness == sb.DEFAULT_HARNESS:  # opencode
-        return sb.cloud_api_key_env_lines(config, model_name)
-    return []  # claude: the cloud reference HUT carries its own auth (never a [models] key)
+    Delegates to the harness registry (`Harness.cloud_env_lines`), which reuses the exact
+    builders `danno sandbox start` uses: occ needs the `OPENAI_BASE_URL`/`OPENAI_API_KEY`
+    mapping; claurst and opencode read the provider key under its own `{api_key_env}` name;
+    the claude reference row carries its own auth (→ []). Fails loud (Working Rule 8) when
+    the key var is unset. `model_name` is the danno.toml `[models]` key."""
+    return harnesses.get(harness).cloud_env_lines(config, model_name)
 
 
+# The model-matrix helpers now live on the harness side (`harnesses._dialer` /
+# `harnesses.claude`); these thin seams keep the historical bench names/signatures the
+# tests exercise while the branching lives in the registry.
 def _claude_inert_models(config: DannoConfig, only: Sequence[str] | None) -> list[str]:
-    """The declared inert-backend model names claude should sweep, sorted (`only`-filtered).
-
-    claude selects its model by `--model`, so only inert-backend [models] (whose `tag` is
-    the raw `--model` value) are meaningful to it — local/cloud OpenAI-compatible models
-    are opencode/occ/claurst's matrix, not claude's. Empty → the caller falls back to the
-    single install-default reference row."""
-    names = [
-        n
-        for n in sorted(config.models)
-        if isinstance(config.backends[config.models[n].backend], InertBackend)
-    ]
-    if only is not None:
-        keep = set(only)
-        names = [n for n in names if n in keep]
-    return names
+    """The declared inert-backend model names claude should sweep (registry-backed)."""
+    return harnesses.claude.inert_model_names(config, only)
 
 
 def _openai_compat_variants(config: DannoConfig, only: Sequence[str] | None) -> list[ConfigVariant]:
-    """The model matrix for an OpenAI-compatible harness (opencode/occ/claurst): the
-    declared catalog minus inert-backend models.
-
-    An inert model's `tag` is a native `--model` alias (claude's lever), not an endpoint
-    danno can dial — occ/claurst/opencode raise loud on it (`resolve_occ_model` etc.). So
-    the default sweep excludes them: they belong to the `claude` reference row, not this
-    matrix (the counterpart of `_claude_inert_models`, which keeps ONLY inert models). An
-    explicit `--only` naming an inert model for such a harness is an impossible pairing —
-    fail loud (Working Rule 8) rather than silently drop it to an empty sweep."""
-    variants = model_variants(config, only=only)
-    inert = {
-        v.model_name
-        for v in variants
-        if isinstance(config.backends[config.models[v.model_name].backend], InertBackend)
-    }
-    if only is not None and inert:
-        raise ValueError(
-            f"models {sorted(inert)} are on an inert backend (the claude reference row only) "
-            f"and can't be dialed by an OpenAI-compatible harness (opencode/occ/claurst). "
-            f"Drop them from --only, or run them with --harness claude."
-        )
-    return [v for v in variants if v.model_name not in inert]
+    """The dialer model matrix: the declared catalog minus inert-backend models
+    (registry-backed; fails loud on an inert `--only` for a dialer)."""
+    return harnesses._dialer.openai_compat_variants(config, only)
 
 
 def _harness_dial_ref(harness: str, config: DannoConfig, variant: ConfigVariant) -> str | None:
-    """The ref occ/claurst must actually dial for `variant`, or None (report ref stands).
+    """The ref this harness must actually dial for `variant`, or None (report ref stands).
 
-    The matrix reports the generic `<backend>/<tag>` ref (`variant.model_ref`) so the
-    comparison grid and §6.3 headroom lookups key consistently. But occ/claurst detect
-    local-vs-cloud by the ref's leading segment (`startswith("ollama/")`), so an Ollama
-    backend named anything other than the literal `ollama` (e.g. `danno-ollama/…`) is
-    misread as cloud and falls back to Anthropic — the item-3 bug. Reuse the exact
-    resolvers `danno sandbox start` dials with (`resolve_occ_model`/`resolve_claurst_model`,
-    from the `[models]` name) so bench dials a ref their locality check understands: Ollama
-    → `ollama/<tag>`, cloud → each harness's own provider namespace. opencode (whose provider
-    is the backend name in the generated `opencode.jsonc`) and claude need no override."""
-    if harness == OCC:
-        return sb.resolve_occ_model(config, variant.model_name)
-    if harness == CLAURST:
-        return sb.resolve_claurst_model(config, variant.model_name)
-    if harness == CLAUDE:
-        # claude picks its model by `--model <alias|id>`, not an OpenAI-compatible ref.
-        # Only an INERT-backend model's tag is that value (e.g. "claude-opus-4-8"); a
-        # local/cloud model or the synthetic reference row (`baseline_variant`, whose
-        # model_name isn't in [models]) → None → claude's install default.
-        model = config.models.get(variant.model_name)
-        if model is not None and isinstance(config.backends[model.backend], InertBackend):
-            return model.tag
-        return None
-    return None
+    Delegates to the harness registry (`Harness.dial_ref`): occ/claurst normalize an Ollama
+    backend not literally named `ollama` (the item-3 bug); claude maps an inert model's tag
+    to its `--model` value; opencode needs no override."""
+    return harnesses.get(harness).dial_ref(config, variant)
 
 
 def _merge_env_lines(base: list[str], extra: list[str]) -> list[str]:
@@ -264,9 +201,10 @@ def _build_bench_env_files(
     before any sandbox is provisioned. Files are de-duplicated by content, so local variants
     share one file and all variants on the same cloud backend share another. `config` is the
     (capture-rewritten) config the run drives from, so occ cloud's `OPENAI_BASE_URL` points
-    at the `--capture` proxy when capture is on. claude is special: a single model-independent
-    auth file (fails loud without a host token, exactly like the baseline)."""
-    if opts.harness == CLAUDE:
+    at the `--capture` proxy when capture is on. A reference harness (claude) is special: a
+    single model-independent auth file (it carries its own auth; fails loud without a host
+    token, exactly like the baseline)."""
+    if harnesses.get(opts.harness).kind is harnesses.HarnessKind.REFERENCE:
         auth = baseline._build_claude_auth_env_file()  # fails loud without a host token
         return {v.model_ref: auth for v in variants}
     defaults = sb.harness_env(opts.harness, sb.DEFAULT_OLLAMA_URL)
@@ -314,8 +252,8 @@ def _setup_bench_capture(
             "--capture cannot record built-in cloud refs (no danno base_url lever): "
             f"{', '.join(uncap)}"
         )
-    if opts.harness == CLAUDE:
-        log_warn("--capture does not record the claude reference row (api.anthropic.com).")
+    if not harnesses.get(opts.harness).supports_capture:
+        log_warn(f"--capture does not record the {opts.harness} reference row (its own endpoint).")
     binding = CaptureBinding(
         targets=tuple(targets), capture_dir=capture_dir, persist=opts.save_captures
     )
@@ -710,22 +648,11 @@ def run_bench(
 ) -> BenchReport:
     """Run the enabled suites across the model matrix against `opts.harness`."""
     now = now or datetime.now(UTC)
-    # claude picks its model by `--model`, not the OpenAI-compatible `-m` matrix. So it
-    # sweeps only its INERT-backend models (each tag → `--model`); the local ollama/cloud
-    # matrix is irrelevant to it. With no inert model declared, it collapses to a single
-    # `claude-code` reference row on the install default (see baseline_variant).
-    if opts.harness == CLAUDE:
-        claude_models = _claude_inert_models(config, opts.only)
-        variants = (
-            model_variants(config, only=claude_models)
-            if claude_models
-            else [baseline.baseline_variant(None)]
-        )
-    else:
-        # opencode/occ/claurst dial an endpoint danno controls, so their matrix is the
-        # OpenAI-compatible models only — inert models (claude's `--model` rows) are
-        # excluded, else this harness would raise loud trying to reach one mid-sweep.
-        variants = _openai_compat_variants(config, opts.only)
+    # The harness owns its model matrix (`Harness.model_matrix`): a dialer (opencode/occ/
+    # claurst) sweeps the OpenAI-compatible catalog minus inert models; the claude reference
+    # row sweeps its inert-backend models (each tag → `--model`), or a single install-default
+    # `claude-code` row when none are declared.
+    variants = harnesses.get(opts.harness).model_matrix(config, opts.only)
     out_dir = opts.out_dir or Path(".danno-bench") / now.strftime("%Y-%m-%dT%H-%M-%S")
     report = BenchReport(out_dir=out_dir, dry_run=opts.dry_run)
 
