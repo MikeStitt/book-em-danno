@@ -21,14 +21,35 @@ class Overrides(BaseModel):
     diff (see `generate.deep_merge` / `generate.override_warnings`).
 
     The payload below each harness key is intentionally OPEN (that is the hatch); the
-    harness KEYS are CLOSED — a typo or an out-of-scope harness (e.g. `occ`, which has
-    no generated config file) fails loud via `extra="forbid"`. Attached to the elements
+    harness KEYS are CLOSED to the harnesses that HAVE a danno-generated config surface
+    (opencode's opencode.jsonc, claurst's registry overlay) — a typo or an out-of-scope
+    harness (e.g. `occ`, which has no generated config file) fails loud. The valid key
+    set is the harness registry's override-capable set (`Harness.overrides_key`), so
+    adding a config-generating harness needs no edit here. Attached to the elements
     whose danno.toml section maps 1:1 to a generated region: `[backends.<n>]`,
     `[models.<n>]`, `[agents.<n>]`, `[defaults]`."""
 
-    model_config = ConfigDict(extra="forbid")
-    opencode: dict[str, Any] | None = None
-    claurst: dict[str, Any] | None = None
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_out_of_scope_harness(cls, data: Any) -> Any:
+        """Fail loud on an override key that isn't a config-generating harness (Working
+        Rule 8). The valid set comes from the harness registry, imported lazily: the
+        registry lives in danno_validator, which imports book_em_danno, so a module-load
+        import here would cycle (same reason `commands/sandbox.py` imports it locally)."""
+        if isinstance(data, dict):
+            from danno_validator.harnesses import all_names, get
+
+            valid = {key for n in all_names() if (key := get(n).overrides_key)}
+            unknown = sorted(k for k in data if k not in valid)
+            if unknown:
+                allowed = ", ".join(sorted(valid))
+                raise ValueError(
+                    f"override harness key(s) {unknown} out of scope; a config-generating "
+                    f"harness is required. Valid: {allowed}."
+                )
+        return data
 
 
 class Project(BaseModel):
@@ -264,7 +285,10 @@ class DannoConfig(BaseModel):
         # claurst has no danno-owned TOP-LEVEL config surface (danno owns only the
         # `agents` key of settings.json + the models.json overlay), so a top-level
         # claurst override would be silently ignored — reject it (Working Rule 8).
-        if self.defaults.overrides is not None and self.defaults.overrides.claurst is not None:
+        if (
+            self.defaults.overrides is not None
+            and getattr(self.defaults.overrides, "claurst", None) is not None
+        ):
             raise ValueError(
                 "[defaults.overrides.claurst] has no target: claurst has no danno-owned "
                 "top-level config. Use per-backend/model/agent overrides instead."

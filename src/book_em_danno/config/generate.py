@@ -107,10 +107,13 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
 
 
 def _override(overrides: Overrides | None, harness: str) -> dict[str, Any] | None:
-    """The override payload for `harness` ('opencode'/'claurst'), or None if unset."""
+    """The override payload for `harness` ('opencode'/'claurst'), or None if unset.
+
+    `Overrides` stores each harness block as an open extra (`extra="allow"`), so an
+    unset harness key has no attribute — default to None rather than raising."""
     if overrides is None:
         return None
-    payload: dict[str, Any] | None = getattr(overrides, harness)
+    payload: dict[str, Any] | None = getattr(overrides, harness, None)
     return payload or None
 
 

@@ -256,8 +256,9 @@ foo = "bar"
 
 
 def test_out_of_scope_harness_key_fails_loud() -> None:
-    # `occ` is out of scope for overrides — a closed harness key set rejects it.
-    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+    # `occ` is out of scope for overrides (no generated config surface) — the
+    # registry-derived key set rejects it loud.
+    with pytest.raises(ValidationError, match="out of scope"):
         _cfg(
             """
 [backends.b]
