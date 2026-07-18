@@ -14,6 +14,7 @@ module binds them into the registry value.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 
 from book_em_danno.commands import sandbox as sb
 from book_em_danno.config.schema import DannoConfig
@@ -24,10 +25,10 @@ from danno_validator.harnesses._dialer import openai_compat_variants
 from danno_validator.matrix import ConfigVariant
 
 
-def _install(runner: Runner, sandbox: str, config: DannoConfig | None = None) -> None:
+def _install(runner: Runner, sandbox: str, config: DannoConfig | None = None) -> list[list[str]]:
     """Install the danno-pinned claurst binary (curl-fetched, idempotent). `config`
     is unused: claurst has a fixed install-time version."""
-    _impl.install_claurst(runner, sandbox)
+    return [_impl.install_claurst(runner, sandbox)]
 
 
 def _cloud_env_lines(config: DannoConfig, model_name: str) -> list[str]:
@@ -36,6 +37,17 @@ def _cloud_env_lines(config: DannoConfig, model_name: str) -> list[str]:
 
 def _dial_ref(config: DannoConfig, variant: ConfigVariant) -> str | None:
     return sb.resolve_claurst_model(config, variant.model_name)
+
+
+def _resolve_start(target_abs: Path, value: str) -> tuple[str, list[str]]:
+    return sb.resolve_claurst_start(target_abs, "claurst", value)
+
+
+def _launch_argv(model: str | None, harness_args: list[str], capture_port: int | None) -> list[str]:
+    """claurst has no prebuilt binary launch: it runs via the relay-bracketed `bash -lc`
+    launch script (mirrors the headless path), with the resolved `-m` ref and any
+    `--capture` recording-proxy port folded in."""
+    return _impl.interactive_launch_script(model, harness_args, capture_port=capture_port)
 
 
 def _model_matrix(config: DannoConfig, only: Sequence[str] | None) -> list[ConfigVariant]:
@@ -53,14 +65,19 @@ register(
         wire_protocol=WireProtocol.CHAT,
         sandbox_image=_impl.CLAURST_SANDBOX_IMAGE,
         supports_capture=True,
+        capture_via_relay=True,
         overrides_key="claurst",
         reap_patterns=("claurst",),
         survivor_patterns=(r"[c]laurst",),
         install=_install,
+        env_lines=sb._claurst_env_lines,
+        launch_argv=_launch_argv,
         turn_fn=_impl.authed_claurst_run,
         cloud_env_lines=_cloud_env_lines,
         dial_ref=_dial_ref,
         model_matrix=_model_matrix,
         provenance=_provenance,
+        resolve_start=_resolve_start,
+        emit_config=sb._emit_claurst_config,
     )
 )

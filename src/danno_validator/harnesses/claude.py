@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
+from book_em_danno.commands import sandbox as sb
 from book_em_danno.config.schema import DannoConfig, InertBackend
 from book_em_danno.core.exec import Runner
 from danno_validator import baseline
@@ -23,8 +24,9 @@ from danno_validator.harnesses import Harness, HarnessKind, WireProtocol, regist
 from danno_validator.matrix import ConfigVariant, model_variants
 
 
-def _install(runner: Runner, sandbox: str, config: DannoConfig | None = None) -> None:
+def _install(runner: Runner, sandbox: str, config: DannoConfig | None = None) -> list[list[str]]:
     """No-op: claude is a prebuilt image with nothing to install post-provision."""
+    return []
 
 
 def _turn_fn(
@@ -41,6 +43,13 @@ def _turn_fn(
     if env_file is None:  # defensive: the caller builds the auth file before dispatch
         raise ValueError("claude HUT requires an auth env-file (host token)")
     return baseline._authed_claude_run(env_file, model_override)
+
+
+def _launch_argv(model: str | None, harness_args: list[str], capture_port: int | None) -> list[str]:
+    """claude is a prebuilt binary: launch it directly with any passthrough args (e.g.
+    `--model <x>` / `--resume <id>`). `model`/`capture_port` are unused here — the
+    reference row selects its model via the flags forwarded in `harness_args`."""
+    return ["claude", *harness_args]
 
 
 def _cloud_env_lines(config: DannoConfig, model_name: str) -> list[str]:
@@ -98,10 +107,14 @@ register(
         reap_patterns=(),  # claude runs in its own sandbox; not part of the HUT reap
         survivor_patterns=(),
         install=_install,
+        env_lines=sb._claude_env_lines,
+        launch_argv=_launch_argv,
         turn_fn=_turn_fn,
         cloud_env_lines=_cloud_env_lines,
         dial_ref=_dial_ref,
         model_matrix=_model_matrix,
         provenance=_provenance,
+        pre_session=sb.seed_onboarding,
+        update_advice=sb._claude_update_advice,
     )
 )

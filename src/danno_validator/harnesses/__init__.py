@@ -36,6 +36,8 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from book_em_danno.config.schema import DannoConfig
     from book_em_danno.core.exec import Runner
     from danno_validator.driver import TurnFn
@@ -88,8 +90,18 @@ class Harness:
 
     # --- provisioning seam (book_em_danno) -----------------------------------
     # Post-provision install for HUTs that aren't a prebuilt image (claurst).
-    # No-op for prebuilt-image harnesses (opencode/claude).
-    install: Callable[[Runner, str, DannoConfig | None], None]
+    # Returns the advised/run commands (so `sandbox.provision` can aggregate them);
+    # `[]` for prebuilt-image harnesses with nothing to install (opencode/claude).
+    install: Callable[[Runner, str, DannoConfig | None], list[list[str]]]
+    # The harness-specific `KEY=VAL` env-file lines for a session, given the Ollama URL
+    # and (optional) relocated config home. Auth (claude), Ollama URL (opencode), loop
+    # ceilings (occ), registry-overlay path (claurst) — see the `_*_env_lines` helpers.
+    env_lines: Callable[[str, Path | None], list[str]]
+    # The in-container argv for an interactive `sandbox start`, given (model, harness_args,
+    # capture_port). A prebuilt-binary harness is just `[<binary>, *harness_args]`
+    # (model/capture_port unused); a relay-bracketed harness (claurst/occ) returns its
+    # `bash -lc` launch script with the resolved `-m` ref and capture port folded in.
+    launch_argv: Callable[[str | None, list[str], int | None], list[str]]
 
     # --- driving seam (danno_validator) --------------------------------------
     # Factory returning the `TurnFn` for one turn, with the auth `env_file` bound.
@@ -109,6 +121,39 @@ class Harness:
     # --- telemetry -----------------------------------------------------------
     # danno-owned version pins for this harness (merged into `harness_provenance`).
     provenance: Callable[[DannoConfig], dict]
+
+    # --- interactive `sandbox start`/`shell` seams (book_em_danno) ------------
+    # Everything below is OPTIONAL (defaulted): a harness that lacks the capability
+    # leaves it unset and the call site handles the absence (fail loud / no-op).
+
+    # How `--capture` records this harness: True → point its in-VM relay at the recording
+    # proxy (claurst/occ, which read neither opencode.jsonc nor the egress proxy); False →
+    # rewrite the generated config's backend base_urls to the proxies (opencode). Only
+    # consulted when `supports_capture` is True.
+    capture_via_relay: bool = False
+
+    # `sandbox start -m <value>`: resolve the value to this harness's `-m` ref PLUS any
+    # cloud-key env-file lines, or None when the harness has no danno-dialed `-m`
+    # (claude uses its own `--model`; opencode's model comes from the generated config).
+    resolve_start: Callable[[Path, str], tuple[str, list[str]]] | None = None
+    # Emit this harness's danno-generated config into its relocated HOME before a session
+    # (claurst's registry overlay + settings.json), or None for harnesses that read no
+    # per-home config (opencode reads a repo-local .opencode/; claude/occ read none). The
+    # return value (GenerateResults) is logged inside and discarded by the caller.
+    emit_config: Callable[[Runner, Path, Path], object] | None = None
+    # A pre-session hook run (with a persistent `home`) before the in-container exec:
+    # claude pre-seeds onboarding + workspace trust so no wizard/dialog blocks the
+    # session. `(home, target_abs) -> None`; None for harnesses that need no pre-seed.
+    pre_session: Callable[[Path, Path], None] | None = None
+    # Whether this harness reads a danno-generated repo-local config file
+    # (`.opencode/opencode.jsonc`): opencode does — so `install` should exist and its
+    # `{env:VAR}` refs are reconciled before a session. Others read no such file.
+    reads_generated_config: bool = False
+    # Advise (and under --apply run) the in-container self-update for this harness, or
+    # None when it has no self-update subcommand (claurst/occ install post-provision from
+    # a pinned release/source — the update path is `danno sandbox rebuild`, so the caller
+    # fails loud pointing there). `(runner, name) -> advised command`.
+    update_advice: Callable[[Runner, str], list[str]] | None = None
 
 
 _REGISTRY: dict[str, Harness] = {}

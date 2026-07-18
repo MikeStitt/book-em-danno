@@ -23,8 +23,9 @@ from danno_validator.matrix import ConfigVariant
 from danno_validator.sweep import DEFAULT_RUN_AGENT
 
 
-def _install(runner: Runner, sandbox: str, config: DannoConfig | None = None) -> None:
+def _install(runner: Runner, sandbox: str, config: DannoConfig | None = None) -> list[list[str]]:
     """No-op: opencode is a prebuilt image with nothing to install post-provision."""
+    return []
 
 
 def _turn_fn(
@@ -67,6 +68,13 @@ def _turn_fn(
     return run
 
 
+def _launch_argv(model: str | None, harness_args: list[str], capture_port: int | None) -> list[str]:
+    """opencode is a prebuilt binary: launch it directly with any passthrough args
+    (its model comes from the generated opencode.jsonc, not `-m`; capture is via the
+    rewritten backend `base_url`, so both `model` and `capture_port` are unused)."""
+    return ["opencode", *harness_args]
+
+
 def _cloud_env_lines(config: DannoConfig, model_name: str) -> list[str]:
     return sb.cloud_api_key_env_lines(config, model_name)
 
@@ -90,14 +98,18 @@ register(
         wire_protocol=WireProtocol.CHAT,
         sandbox_image="opencode",
         supports_capture=True,
+        reads_generated_config=True,
         overrides_key="opencode",
         reap_patterns=("opencode",),
         survivor_patterns=(r"[o]pencode",),
         install=_install,
+        env_lines=sb._opencode_env_lines,
+        launch_argv=_launch_argv,
         turn_fn=_turn_fn,
         cloud_env_lines=_cloud_env_lines,
         dial_ref=_dial_ref,
         model_matrix=_model_matrix,
         provenance=_provenance,
+        update_advice=sb._opencode_update_advice,
     )
 )

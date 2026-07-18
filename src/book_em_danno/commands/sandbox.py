@@ -53,20 +53,11 @@ DEFAULT_ALLOW_HOSTS = ("localhost:11434",)
 DEFAULT_HARNESS = "opencode"
 # Auth env vars Claude Code accepts, in preference order (subscription token first).
 CLAUDE_AUTH_VARS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
-# claurst (a pure-Rust Claude-Code clone) is NOT a prebuilt `docker sandbox` image: it
-# is hosted in the `shell` image and the release binary is installed post-create (see
-# `danno_validator.claurst.install_claurst`). The logical harness label stays "claurst"
-# everywhere (naming/registry/env/launch); only the create-time Docker image differs.
-CLAURST_HARNESS = "claurst"
 # claurst's config dir inside its HOME (`~/.claurst`); danno writes its generated
 # registry overlay + settings.json here (see `_emit_claurst_config`). The models
-# filename is shared with the generator so the two cannot drift.
+# filename is shared with the generator so the two cannot drift. (The per-harness
+# identity/image/install now live in the `danno_validator.harnesses` registry.)
 _CLAURST_DIR = ".claurst"
-# occ (open-claude-code, a Node/ESM Claude-Code clone) is likewise NOT a prebuilt
-# `docker sandbox` image: it is git-cloned into the `shell` image post-create (see
-# `danno_validator.occ.install_occ`). Like claurst, the logical label stays "occ"
-# everywhere; only the create-time Docker image differs.
-OCC_HARNESS = "occ"
 # Generous level-4 agentic-loop ceilings for occ against slow local models. The fork reads
 # these from the environment (see its ADR-004); danno supplies them as env-file DEFAULTS so
 # `danno.toml [env]` (or an exported host var) can override them via `assemble_harness_env`.
@@ -82,16 +73,12 @@ def _docker_image(harness: str) -> str:
 
     Almost always the label itself (opencode/claude/… ARE images). claurst and occ are
     the exceptions — neither has a prebuilt image, so both ride the `shell` image and are
-    installed afterwards; the label is preserved for the sandbox name and registry."""
-    if harness == CLAURST_HARNESS:
-        from danno_validator.claurst import CLAURST_SANDBOX_IMAGE  # local: avoids import cycle
+    installed afterwards; the label is preserved for the sandbox name and registry. The
+    per-harness image is a registry value (`Harness.sandbox_image`); local import keeps
+    `book_em_danno` free of a top-level `danno_validator` dependency (import cycle)."""
+    from danno_validator import harnesses  # local: avoids import cycle
 
-        return CLAURST_SANDBOX_IMAGE
-    if harness == OCC_HARNESS:
-        from danno_validator.occ import OCC_SANDBOX_IMAGE  # local: avoids import cycle
-
-        return OCC_SANDBOX_IMAGE
-    return harness
+    return harnesses.get(harness).sandbox_image
 
 
 def default_name(target_abs: Path, harness: str = DEFAULT_HARNESS) -> str:
@@ -444,8 +431,13 @@ def provision(
 ) -> list[list[str]]:
     """Get the sandbox to 'ready': create + egress hole + stop (so the policy applies
     on next start). Does NOT launch the TUI — that's `start`."""
+    from danno_validator import harnesses  # local: avoids import cycle
+
     ollama.announce_lan_exposure()
-    if harness == DEFAULT_HARNESS and not (target_abs / ".opencode" / "opencode.jsonc").is_file():
+    if (
+        harnesses.get(harness).reads_generated_config
+        and not (target_abs / ".opencode" / "opencode.jsonc").is_file()
+    ):
         log_info(
             "[yellow]WARN[/yellow] target has no .opencode/opencode.jsonc — "
             "run `danno install` first so the sandbox has a config to load."
@@ -462,25 +454,14 @@ def provision(
     # The network policy only takes on a fresh VM start; stop so the next `start`
     # applies the allow-rule.
     cmds.append(stop(runner, name))
-    if harness == CLAURST_HARNESS:
-        # claurst has no prebuilt image: drop its binary into the `shell` VM. Done AFTER
-        # the stop so the install exec auto-starts the VM with the allow-policy armed
-        # (apt + the GitHub release fetch need egress). Idempotent (self-skips when
-        # already installed). The binary stays VM-local; only ~/.claurst is persisted
-        # via the relocated HOME at launch (see harness_env). Local import: claurst.py
-        # imports back into this module.
-        from danno_validator.claurst import install_claurst
-
-        cmds.append(install_claurst(runner, name))
-    if harness == OCC_HARNESS:
-        # occ has no prebuilt image either: git-clone + patch it into the `shell` VM.
-        # Same placement rationale as claurst (after stop → auto-start with egress armed;
-        # git clone + `npm install undici` need the proxy). Idempotent (stamp skip). The
-        # pins (OCC_REPO/OCC_REF) resolve from danno.toml [env] + host env, so the project
-        # config is loaded here. Local import: occ.py imports back into this module.
-        from danno_validator.occ import install_occ
-
-        cmds.append(install_occ(runner, name, _maybe_load_config(target_abs)))
+    # Post-provision install for HUTs that aren't a prebuilt image (claurst/occ drop a
+    # binary / clone into the `shell` VM). Done AFTER the stop so the install exec
+    # auto-starts the VM with the allow-policy armed (apt + the GitHub release fetch /
+    # git clone + `npm install undici` need egress). Each installer is idempotent
+    # (stamp/self-skip) and returns its command(s); prebuilt-image harnesses
+    # (opencode/claude) return no commands. occ's pins (OCC_REPO/OCC_REF) resolve from
+    # danno.toml [env] + host env, so the project config is passed through.
+    cmds.extend(harnesses.get(harness).install(runner, name, _maybe_load_config(target_abs)))
     return cmds
 
 
@@ -508,45 +489,66 @@ def harness_env(harness: str, ollama_url: str, home: Path | None = None) -> list
     Ollama line here. For claurst with a home, `CLAURST_MODELS_PATH` also points at the
     danno-generated registry overlay under `{home}/.claurst` (written by
     `_emit_claurst_config`) so its tool-gating + context window come from danno.toml.
-    """
-    if harness == CLAURST_HARNESS:
-        if home is None:
-            return []
-        # HOME relocation makes ~/.claurst == {home}/.claurst (mounted at the same path
-        # in the VM). Point claurst at the danno-generated registry overlay there so its
-        # tool-gating + context window come from danno.toml (Bug 4/7), not its catalog.
-        return [f"HOME={home}", f"CLAURST_MODELS_PATH={home / _CLAURST_DIR / _CLAURST_MODELS_FILE}"]
-    if harness == OCC_HARNESS:
-        # occ's *mandatory* OpenAI env (OPENAI_BASE_URL/KEY, CLAUDE_CODE_STREAMING) is set
-        # INLINE in the launch/headless command (like claurst's OLLAMA_HOST), NOT here, so it
-        # cannot be user-overridden. Here we supply the *tunable* agentic-loop ceilings as
-        # level-4 DEFAULTS, so danno.toml [env] can raise/lower them (see the fork's ADR-004).
-        # The clone lives VM-local at a fixed path, so only a relocated HOME (occ's own
-        # session/state) follows the mounted home; without one, occ runs entirely VM-local.
-        lines = [
-            f"CLAUDE_CODE_API_TIMEOUT={OCC_API_TIMEOUT_DEFAULT_MS}",
-            f"CLAUDE_CODE_MAX_RECURSION_DEPTH={OCC_MAX_RECURSION_DEPTH_DEFAULT}",
-        ]
-        if home is not None:
-            lines.append(f"HOME={home}")
-        return lines
-    if harness == "claude":
-        lines = []
-        for var in CLAUDE_AUTH_VARS:
-            val = os.environ.get(var)
-            if val:
-                lines.append(f"{var}={val}")
-                break
-        else:
-            raise CommandFailedError(
-                "Claude Code needs auth but neither CLAUDE_CODE_OAUTH_TOKEN nor "
-                "ANTHROPIC_API_KEY is set in danno's environment. Run `claude setup-token` "
-                "(Max/Pro subscription) and export CLAUDE_CODE_OAUTH_TOKEN, or export "
-                "ANTHROPIC_API_KEY for API billing."
-            )
-        if home is not None:
-            lines.append(f"CLAUDE_CONFIG_DIR={home}")
-        return lines
+
+    The per-harness lines are a registry seam (`Harness.env_lines`, bound to the
+    `_*_env_lines` helpers below); this stays the public entry point that dispatches to
+    it. Local import keeps `book_em_danno` free of a top-level `danno_validator`
+    dependency (import cycle)."""
+    from danno_validator import harnesses
+
+    return harnesses.get(harness).env_lines(ollama_url, home)
+
+
+def _claurst_env_lines(ollama_url: str, home: Path | None = None) -> list[str]:
+    """claurst's env-file lines: none without a home; with one, relocate HOME (so
+    `~/.claurst` == `{home}/.claurst`) and point `CLAURST_MODELS_PATH` at the
+    danno-generated registry overlay there (tool-gating + context window from
+    danno.toml, Bug 4/7). Its Ollama URL is set inline by the relay bracket."""
+    if home is None:
+        return []
+    return [f"HOME={home}", f"CLAURST_MODELS_PATH={home / _CLAURST_DIR / _CLAURST_MODELS_FILE}"]
+
+
+def _occ_env_lines(ollama_url: str, home: Path | None = None) -> list[str]:
+    """occ's env-file lines: the *tunable* agentic-loop ceilings as level-4 DEFAULTS
+    (danno.toml [env] can raise/lower them, per the fork's ADR-004) plus a relocated
+    HOME when persisted. occ's *mandatory* OpenAI env is set INLINE in the launch
+    command (like claurst's OLLAMA_HOST) so it cannot be user-overridden."""
+    lines = [
+        f"CLAUDE_CODE_API_TIMEOUT={OCC_API_TIMEOUT_DEFAULT_MS}",
+        f"CLAUDE_CODE_MAX_RECURSION_DEPTH={OCC_MAX_RECURSION_DEPTH_DEFAULT}",
+    ]
+    if home is not None:
+        lines.append(f"HOME={home}")
+    return lines
+
+
+def _claude_env_lines(ollama_url: str, home: Path | None = None) -> list[str]:
+    """claude's env-file lines: auth (prefer the CLAUDE_CODE_OAUTH_TOKEN subscription
+    token, else ANTHROPIC_API_KEY; fail loud when neither is set, Working Rule 8) plus
+    a relocated CLAUDE_CONFIG_DIR when persisted. The secret only ever lands in the
+    chmod-600 env-file, never on the command line."""
+    lines = []
+    for var in CLAUDE_AUTH_VARS:
+        val = os.environ.get(var)
+        if val:
+            lines.append(f"{var}={val}")
+            break
+    else:
+        raise CommandFailedError(
+            "Claude Code needs auth but neither CLAUDE_CODE_OAUTH_TOKEN nor "
+            "ANTHROPIC_API_KEY is set in danno's environment. Run `claude setup-token` "
+            "(Max/Pro subscription) and export CLAUDE_CODE_OAUTH_TOKEN, or export "
+            "ANTHROPIC_API_KEY for API billing."
+        )
+    if home is not None:
+        lines.append(f"CLAUDE_CONFIG_DIR={home}")
+    return lines
+
+
+def _opencode_env_lines(ollama_url: str, home: Path | None = None) -> list[str]:
+    """opencode's env-file lines: host Ollama via OLLAMA_BASE_URL, plus a relocated
+    XDG_CONFIG_HOME when persisted."""
     lines = [f"OLLAMA_BASE_URL={ollama_url}"]
     if home is not None:
         lines.append(f"XDG_CONFIG_HOME={home}/config")
@@ -709,22 +711,29 @@ def occ_cloud_env_lines(config: DannoConfig, value: str) -> list[str]:
     return [f"OPENAI_BASE_URL={backend.base_url}", f"OPENAI_API_KEY={key}"]
 
 
+def _reject_model_flag(harness: str) -> CommandFailedError:
+    """The loud rejection for `-m/--model` on a harness with no danno-dialed `-m`
+    (claude uses its own `--model`; opencode's model comes from the generated config)."""
+    return CommandFailedError(
+        "`-m/--model` on `danno sandbox start` is only supported with a harness that has "
+        f"a danno-dialed model (claurst / occ); '{harness}' does not. Claude Code uses its "
+        "own `--model` (pass it after `--`); opencode's model comes from danno.toml. "
+        "Re-run without `-m`."
+    )
+
+
 def resolve_model_for_harness(target_abs: Path, harness: str, value: str) -> str:
     """The `-m/--model` flow for `sandbox start`: load danno.toml and resolve `value`
-    for `harness`. Supported only for the danno-clone harnesses claurst and occ — claude has
-    its own `--model` and opencode's model comes from the generated opencode.jsonc, so `-m`
-    with either fails loud rather than being silently ignored. Raises `DannoConfigError`
-    (bad toml) or `CommandFailedError`."""
-    if harness not in (CLAURST_HARNESS, OCC_HARNESS):
-        raise CommandFailedError(
-            "`-m/--model` on `danno sandbox start` is only supported with `--harness claurst` "
-            "or `--harness occ`. Claude Code uses its own `--model` (pass it after `--`); "
-            "opencode's model comes from danno.toml. Re-run without `-m`."
-        )
-    config = load_config(target_abs / "danno.toml")
-    if harness == OCC_HARNESS:
-        return resolve_occ_model(config, value)
-    return resolve_claurst_model(config, value)
+    for `harness`. Supported only for harnesses that declare a `-m` resolver (claurst/occ)
+    — claude has its own `--model` and opencode's model comes from the generated
+    opencode.jsonc, so `-m` with either fails loud rather than being silently ignored.
+    Raises `DannoConfigError` (bad toml) or `CommandFailedError`."""
+    from danno_validator import harnesses
+
+    resolver = harnesses.get(harness).resolve_start
+    if resolver is None:
+        raise _reject_model_flag(harness)
+    return resolver(target_abs, value)[0]
 
 
 def resolve_claurst_start(target_abs: Path, harness: str, value: str) -> tuple[str, list[str]]:
@@ -744,14 +753,14 @@ def resolve_occ_start(target_abs: Path, harness: str, value: str) -> tuple[str, 
 
 
 def resolve_start(target_abs: Path, harness: str, value: str) -> tuple[str, list[str]]:
-    """Dispatch `sandbox start -m` to the per-harness resolver. Non-clone harnesses fail loud
-    via `resolve_model_for_harness` (which rejects `-m` for claude/opencode)."""
-    if harness == OCC_HARNESS:
-        return resolve_occ_start(target_abs, harness, value)
-    if harness == CLAURST_HARNESS:
-        return resolve_claurst_start(target_abs, harness, value)
-    resolve_model_for_harness(target_abs, harness, value)  # raises the non-clone rejection
-    raise AssertionError("unreachable")  # resolve_model_for_harness always raises here
+    """Dispatch `sandbox start -m` to the harness's registered `-m` resolver, returning
+    `(ref, env_lines)`. A harness with no danno-dialed `-m` (claude/opencode) fails loud."""
+    from danno_validator import harnesses
+
+    resolver = harnesses.get(harness).resolve_start
+    if resolver is None:
+        raise _reject_model_flag(harness)
+    return resolver(target_abs, value)
 
 
 def _build_env_file(harness_lines: list[str], env_pairs: list[str], env_files: list[str]) -> Path:
@@ -961,20 +970,24 @@ def _exec_session(
     onboarding and workspace trust are pre-seeded so neither wizard nor the trust
     dialog blocks the session. The exec runs with `check=False`: quitting the TUI or
     exiting the shell is not a danno error."""
-    if harness == "claude" and home is not None:
-        seed_onboarding(home, target_abs)
-    if harness == "claude":
-        # claude's auth injection stays exactly as-is (it is NOT danno.toml-config
-        # driven); harness_env lines win over --env/--env-file via _build_env_file.
+    from danno_validator import harnesses
+
+    h = harnesses.get(harness)
+    if h.pre_session is not None and home is not None:
+        h.pre_session(home, target_abs)
+    if h.kind is harnesses.HarnessKind.REFERENCE:
+        # A reference harness (claude) carries its own auth and is NOT danno.toml-config
+        # driven; its harness_env lines win over --env/--env-file via _build_env_file, so
+        # pass those through rather than folding them via assemble_harness_env.
         lines = harness_env(harness, ollama_url, home)
         env_path_lines, env_path_pairs, env_path_files = lines, env_pairs, env_files
     else:
-        if harness == DEFAULT_HARNESS:
+        if h.reads_generated_config:
             # opencode reads opencode.jsonc; verify every {env:VAR} it references is
             # supplied (auto-injecting host-exported ones), else fail loud up front.
             env_pairs = reconcile_env_refs(target_abs, env_pairs, env_files)
-        # opencode/claurst/occ: fold harness defaults, danno.toml [env], host env and CLI
-        # into one precedence-ordered file. assemble_harness_env already applied
+        # dialers (opencode/claurst/occ): fold harness defaults, danno.toml [env], host env
+        # and CLI into one precedence-ordered file. assemble_harness_env already applied
         # env_pairs/env_files, so pass them empty to _build_env_file (avoid double-apply).
         lines = assemble_harness_env(
             _maybe_load_config(target_abs),
@@ -1024,25 +1037,17 @@ def launch(
     the harness binary plus `harness_args` forwarded verbatim (e.g. `["--resume", "<id>"]`
     for `claude`).
 
-    claurst is the exception: it can't reach host Ollama directly (its Rust client
-    ignores the egress proxy), so its command is the relay-bracketed
-    `bash -lc` script from `claurst.interactive_launch_script` (mirrors the headless
-    path), with `model` resolved to its `-m ollama/<tag>`. `model` and
-    `capture_relay_port` (the `--capture` recording-proxy port) are claurst-only."""
-    if harness == CLAURST_HARNESS:
-        from danno_validator.claurst import interactive_launch_script  # local: import cycle
+    claurst/occ are the exception: they can't reach host Ollama directly (they ignore
+    the egress proxy), so their command is the relay-bracketed `bash -lc` launch script
+    (mirrors the headless path), with `model` resolved to its `-m ollama/<tag>`. `model`
+    and `capture_relay_port` (the `--capture` recording-proxy port) are consumed by those
+    launch scripts and ignored by the prebuilt-binary harnesses. The per-harness argv is
+    a registry seam (`Harness.launch_argv`); local import avoids the import cycle."""
+    from danno_validator import harnesses
 
-        container_argv = interactive_launch_script(
-            model, harness_args or [], capture_port=capture_relay_port
-        )
-    elif harness == OCC_HARNESS:
-        from danno_validator.occ import interactive_launch_script as occ_launch_script
-
-        container_argv = occ_launch_script(
-            model, harness_args or [], capture_port=capture_relay_port
-        )
-    else:
-        container_argv = [harness, *(harness_args or [])]
+    container_argv = harnesses.get(harness).launch_argv(
+        model, harness_args or [], capture_relay_port
+    )
     return _exec_session(
         runner,
         name,
@@ -1107,12 +1112,16 @@ def _ensure_provisioned(
             f"sandbox '{name}' is not provisioned. Run `danno sandbox start --apply` "
             f"(provisions then launches) or `danno install --apply` first."
         )
-    # claurst reads danno's generated config from its relocated HOME; emit it before the
-    # session so the launched (or hand-run) claurst sees the right models/agents. Both
-    # start and shell pass through here, keeping them in sync (SYNC REQUIREMENT). Needs a
-    # persistent agent_home (an ephemeral VM-local HOME has nowhere host-side to write).
-    if harness == CLAURST_HARNESS and home is not None:
-        _emit_claurst_config(runner, target_abs, home)
+    # A harness that reads danno's generated config from its relocated HOME (claurst)
+    # emits it before the session so the launched (or hand-run) tool sees the right
+    # models/agents. Both start and shell pass through here, keeping them in sync (SYNC
+    # REQUIREMENT). Needs a persistent agent_home (an ephemeral VM-local HOME has nowhere
+    # host-side to write). Local import avoids the import cycle.
+    from danno_validator import harnesses
+
+    emit_config = harnesses.get(harness).emit_config
+    if emit_config is not None and home is not None:
+        emit_config(runner, target_abs, home)
 
 
 @dataclass(frozen=True)
@@ -1168,14 +1177,15 @@ def _capture_session(
     `base_allow_hosts` when capture is off; warns + no-ops for any other harness. Requires
     `--apply`: the per-run proxy ports must be opened in the sandbox egress (a
     re-provision)."""
+    from danno_validator import harnesses
+
     if capture_dir is None:
         yield _CaptureWiring(base_allow_hosts)
         return
-    if harness not in (DEFAULT_HARNESS, CLAURST_HARNESS, OCC_HARNESS):
-        log_warn(
-            f"--capture supports the '{DEFAULT_HARNESS}', '{CLAURST_HARNESS}' and '{OCC_HARNESS}' "
-            f"harnesses; not capturing '{harness}'."
-        )
+    h = harnesses.get(harness)
+    if not h.supports_capture:
+        supported = ", ".join(n for n in harnesses.all_names() if harnesses.get(n).supports_capture)
+        log_warn(f"--capture supports the {supported} harnesses; not capturing '{harness}'.")
         yield _CaptureWiring(base_allow_hosts)
         return
     if not runner.apply:
@@ -1192,7 +1202,7 @@ def _capture_session(
             f"{', '.join(uncap)}"
         )
     allow = capture_allow_hosts(targets, base_allow_hosts)
-    if harness in (CLAURST_HARNESS, OCC_HARNESS):
+    if h.capture_via_relay:
         # claurst/occ read neither opencode.jsonc nor the egress proxy; both dial an in-VM
         # relay (occ reuses claurst's `_claurst_script` bracket). Point that relay at the
         # Ollama recording proxy (no opencode.jsonc rewrite).
@@ -1394,22 +1404,8 @@ def rebuild(
     return cmds
 
 
-def update(runner: Runner, name: str, harness: str = DEFAULT_HARNESS) -> list[str]:
-    """Advise how to update the harness inside the container.
-
-    The harness ships in Docker Desktop's prebuilt sandbox image, so the durable
-    update path is recreating the sandbox on a newer image; this advises the
-    in-container self-update as the quick path.
-    """
-    if harness == "claude":
-        log_info(
-            "Claude Code ships in Docker's prebuilt sandbox image; for a full update, "
-            "`danno sandbox rebuild --harness claude` after updating Docker Desktop."
-        )
-        return runner.advise(
-            [*sandbox_cli.base(), "exec", name, "claude", "update"],
-            why=f"update Claude Code inside sandbox '{name}'",
-        )
+def _opencode_update_advice(runner: Runner, name: str) -> list[str]:
+    """opencode's in-container self-update (`opencode upgrade`)."""
     log_info(
         "OpenCode ships in Docker's prebuilt sandbox image; for a full update, "
         "`danno sandbox rebuild` after updating Docker Desktop."
@@ -1418,3 +1414,34 @@ def update(runner: Runner, name: str, harness: str = DEFAULT_HARNESS) -> list[st
         [*sandbox_cli.base(), "exec", name, "opencode", "upgrade"],
         why=f"update OpenCode inside sandbox '{name}'",
     )
+
+
+def _claude_update_advice(runner: Runner, name: str) -> list[str]:
+    """claude's in-container self-update (`claude update`)."""
+    log_info(
+        "Claude Code ships in Docker's prebuilt sandbox image; for a full update, "
+        "`danno sandbox rebuild --harness claude` after updating Docker Desktop."
+    )
+    return runner.advise(
+        [*sandbox_cli.base(), "exec", name, "claude", "update"],
+        why=f"update Claude Code inside sandbox '{name}'",
+    )
+
+
+def update(runner: Runner, name: str, harness: str = DEFAULT_HARNESS) -> list[str]:
+    """Advise how to update the harness inside the container.
+
+    A prebuilt-image harness (opencode/claude) ships in Docker Desktop's sandbox image,
+    so the durable update path is recreating the sandbox on a newer image; this advises
+    the in-container self-update (`Harness.update_advice`) as the quick path. A harness
+    installed post-provision (claurst/occ) has no self-update subcommand — fail loud
+    (Working Rule 8) pointing at `danno sandbox rebuild`. Local import avoids the cycle."""
+    from danno_validator import harnesses
+
+    advice = harnesses.get(harness).update_advice
+    if advice is None:
+        raise CommandFailedError(
+            f"no in-container self-update for harness '{harness}' (it is installed "
+            f"post-provision); update it with `danno sandbox rebuild --harness {harness}`."
+        )
+    return advice(runner, name)
