@@ -25,7 +25,6 @@ first live run confirmed the three things the wiring depended on:
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import urllib.error
 import urllib.request
@@ -35,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from sandbox_runtime import sandbox_runtime_down
 
 from book_em_danno.capture.gate import GateTally
 from book_em_danno.capture.proxy import CaptureProxyConfig, capture_proxy
@@ -62,9 +62,9 @@ MODEL_TAG = "stub"
 LOOP_TOOL = "bash"
 LOOP_TOOL_ARGS: dict[str, object] = {"command": "true"}
 
-DOCKER_DOWN = shutil.which("docker") is None or (
-    subprocess.run(["docker", "info"], capture_output=True, check=False).returncode != 0
-)
+# Probe the runtime danno would actually use (`sbx ls` for sbx, else `docker info`),
+# NOT the standalone `docker` daemon — which can be down on an sbx host while sbx is up.
+DOCKER_DOWN = sandbox_runtime_down()
 OLLAMA_DOWN = not ollama.reachable()  # only V5's live-diff row needs this; V3/V4 do not
 
 
