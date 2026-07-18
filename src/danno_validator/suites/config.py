@@ -131,7 +131,7 @@ def resolve_gates(gates: GatesConfig, *, harness: str, model: str | None) -> Res
 # Grace margin for Gate 1 (`.docs/plan-bench-runaway-gates.md` §3.2, option B): the harness's
 # own `--max-turns` / `agent.steps` is set to the resolved `max_turns` (the graceful target),
 # while the external watchdog kills only at `max_turns + grace`. So a cap-honoring harness
-# (occ/claurst) stops itself cleanly FIRST, and the kill fires only for a harness that
+# (claurst) stops itself cleanly FIRST, and the kill fires only for a harness that
 # overshoots — opencode's advisory `agent.steps`, a true runaway, or step-vs-inference-call drift.
 _GATE_TURN_GRACE_MIN = 3
 _GATE_TURN_GRACE_FRAC = 0.1

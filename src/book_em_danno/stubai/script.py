@@ -75,8 +75,8 @@ class Drip:
     streaming dialect dribbles one token per `1/tokens_per_s`, while a non-streaming
     dialect buffers the whole body and delivers it after the full drip duration
     (`n_tokens / tokens_per_s`). The non-streaming path matters for harnesses that dial a
-    non-streaming dialect (e.g. occ's OpenAI chat path under `CLAUDE_CODE_STREAMING=0`):
-    without the buffered delay the timeout gate would be silently untestable for them."""
+    non-streaming dialect (e.g. an OpenAI chat path with streaming disabled): without the
+    buffered delay the timeout gate would be silently untestable for them."""
 
     text: str = "done"
     tokens_per_s: float = 10.0

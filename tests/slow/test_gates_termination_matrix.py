@@ -1,4 +1,4 @@
-"""V3 — the in-sandbox termination matrix (GV2 for opencode+occ, GV3 adds claurst).
+"""V3 — the in-sandbox termination matrix (GV2 for opencode, GV3 adds claurst).
 
 Automates `.docs/live-verify-runaway-gates.md`: provisions a REAL sandbox, points its
 harness at the stub AI (via the always-on capture proxy = gate sensor), and drives scripted
@@ -32,16 +32,12 @@ from danno_validator.suites.config import ResolvedGates
 
 pytestmark = [pytest.mark.slow, requires_docker]
 
-# GV2 = opencode + occ; claurst is the GV3 row (its local routing needs the relay confirmed).
-HARNESSES = ["opencode", "occ", "claurst"]
+# GV2 = opencode; claurst is the GV3 row (its local routing needs the relay confirmed).
+HARNESSES = ["opencode", "claurst"]
 # Harnesses whose NATIVE turn cap (`--max-turns`) reliably stops a runaway TOOL-loop before
 # the external kill fires (option B graceful self-stop). Only claurst qualifies (live-probed
 # 2026-07-15: `--max-turns=5` -> rounds=5, clean stop). NOT opencode (`agent.steps` is
-# advisory at the template version) and NOT occ: occ's `--max-turns` bounds conversational
-# TURNS, not tool recursion, so a forever tool-loop is one turn bounded instead by its
-# internal `CLAUDE_CODE_MAX_RECURSION_DEPTH` (fork default 50, far above the external cap;
-# wiring it to the gate cap is the deferred native-polite-stop work). Both occ and opencode
-# are therefore caught by danno's external Gate 1.
+# advisory at the template version), so it is caught by danno's external Gate 1.
 GRACEFUL_HARNESSES = {"claurst"}
 
 
@@ -97,9 +93,8 @@ def test_runaway_loop_is_bounded(cell, tmp_path: Path) -> None:  # type: ignore[
         assert watch.breach is None
         assert rounds <= 5 + 1  # ~max_turns rounds, no runaway kill
     else:
-        # opencode (steps advisory) + occ (--max-turns bounds turns, not tool recursion):
-        # neither self-stops a tool-loop below the cap → the external watchdog kills at
-        # max_turns + grace.
+        # opencode (steps advisory): does not self-stop a tool-loop below the cap → the
+        # external watchdog kills at max_turns + grace.
         assert watch.breach is not None and watch.breach.gate == "runaway"
         assert gate_verdict(watch.breach).failure_class.value == "runaway"
     assert not surviving_harness_pids(name)  # reaped either way

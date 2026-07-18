@@ -43,7 +43,7 @@ from ..config.generate import (
     generate_claurst,
 )
 from ..config.loader import DannoConfigError, load_config
-from ..config.schema import DannoConfig, NpmPlugin, OllamaBackend, OpenAIBackend, Sandbox
+from ..config.schema import DannoConfig, NpmPlugin, OpenAIBackend, Sandbox
 from ..core import registry
 from ..core.exec import CommandFailedError, Runner, log_info, log_warn
 from . import ollama, sandbox_cli
@@ -58,21 +58,13 @@ CLAUDE_AUTH_VARS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 # filename is shared with the generator so the two cannot drift. (The per-harness
 # identity/image/install now live in the `danno_validator.harnesses` registry.)
 _CLAURST_DIR = ".claurst"
-# Generous level-4 agentic-loop ceilings for occ against slow local models. The fork reads
-# these from the environment (see its ADR-004); danno supplies them as env-file DEFAULTS so
-# `danno.toml [env]` (or an exported host var) can override them via `assemble_harness_env`.
-# 60-min API timeout matches the relay's DANNO_RELAY_TIMEOUT default; the deep tool-recursion
-# cap keeps long local loops from hitting occ's faithful default of 50. Max-turns is left to
-# occ's `--max-turns` flag (driver.OCC_DEFAULT_MAX_TURNS), so it is not defaulted here.
-OCC_API_TIMEOUT_DEFAULT_MS = 3600000
-OCC_MAX_RECURSION_DEPTH_DEFAULT = 500
 
 
 def _docker_image(harness: str) -> str:
     """The prebuilt `docker sandbox` image backing a logical harness label.
 
-    Almost always the label itself (opencode/claude/… ARE images). claurst and occ are
-    the exceptions — neither has a prebuilt image, so both ride the `shell` image and are
+    Almost always the label itself (opencode/claude/… ARE images). claurst is the
+    exception — it has no prebuilt image, so it rides the `shell` image and is
     installed afterwards; the label is preserved for the sandbox name and registry. The
     per-harness image is a registry value (`Harness.sandbox_image`); local import keeps
     `book_em_danno` free of a top-level `danno_validator` dependency (import cycle)."""
@@ -454,13 +446,12 @@ def provision(
     # The network policy only takes on a fresh VM start; stop so the next `start`
     # applies the allow-rule.
     cmds.append(stop(runner, name))
-    # Post-provision install for HUTs that aren't a prebuilt image (claurst/occ drop a
-    # binary / clone into the `shell` VM). Done AFTER the stop so the install exec
-    # auto-starts the VM with the allow-policy armed (apt + the GitHub release fetch /
-    # git clone + `npm install undici` need egress). Each installer is idempotent
-    # (stamp/self-skip) and returns its command(s); prebuilt-image harnesses
-    # (opencode/claude) return no commands. occ's pins (OCC_REPO/OCC_REF) resolve from
-    # danno.toml [env] + host env, so the project config is passed through.
+    # Post-provision install for HUTs that aren't a prebuilt image (claurst drops a
+    # binary into the `shell` VM). Done AFTER the stop so the install exec auto-starts
+    # the VM with the allow-policy armed (apt + the GitHub release fetch need egress).
+    # Each installer is idempotent (stamp/self-skip) and returns its command(s);
+    # prebuilt-image harnesses (opencode/claude) return no commands. The project config is
+    # passed through so a harness install can resolve pins from danno.toml [env] + host env.
     cmds.extend(harnesses.get(harness).install(runner, name, _maybe_load_config(target_abs)))
     return cmds
 
@@ -507,20 +498,6 @@ def _claurst_env_lines(ollama_url: str, home: Path | None = None) -> list[str]:
     if home is None:
         return []
     return [f"HOME={home}", f"CLAURST_MODELS_PATH={home / _CLAURST_DIR / _CLAURST_MODELS_FILE}"]
-
-
-def _occ_env_lines(ollama_url: str, home: Path | None = None) -> list[str]:
-    """occ's env-file lines: the *tunable* agentic-loop ceilings as level-4 DEFAULTS
-    (danno.toml [env] can raise/lower them, per the fork's ADR-004) plus a relocated
-    HOME when persisted. occ's *mandatory* OpenAI env is set INLINE in the launch
-    command (like claurst's OLLAMA_HOST) so it cannot be user-overridden."""
-    lines = [
-        f"CLAUDE_CODE_API_TIMEOUT={OCC_API_TIMEOUT_DEFAULT_MS}",
-        f"CLAUDE_CODE_MAX_RECURSION_DEPTH={OCC_MAX_RECURSION_DEPTH_DEFAULT}",
-    ]
-    if home is not None:
-        lines.append(f"HOME={home}")
-    return lines
 
 
 def _claude_env_lines(ollama_url: str, home: Path | None = None) -> list[str]:
@@ -633,8 +610,7 @@ def cloud_api_key_env_lines(config: DannoConfig, value: str) -> list[str]:
 
     This is the form a HUT needs when it reads the provider key under the backend's own
     env var: opencode's generated provider block references `{env:<api_key_env>}`, and
-    claurst reads the same var. (occ instead needs the `OPENAI_BASE_URL`/`OPENAI_API_KEY`
-    mapping — see `occ_cloud_env_lines`.) The value lands only in the chmod-600 env-file,
+    claurst reads the same var. The value lands only in the chmod-600 env-file,
     never on a command line. Fails loud (Working Rule 8) when the var is unset/empty,
     naming it, rather than launching to a mid-session auth failure."""
     var = claurst_cloud_key_env(config, value)
@@ -649,74 +625,12 @@ def cloud_api_key_env_lines(config: DannoConfig, value: str) -> list[str]:
     return [f"{var}={val}"]
 
 
-def resolve_occ_model(config: DannoConfig, value: str) -> str:
-    """Resolve a `-m` value to occ's `<backend>/<tag>` ref (parsed by `driver.occ_model_target`).
-
-    `value` is a `[models]` name (e.g. `gemma4`) or a raw `ollama/<tag>` ref. An Ollama
-    model always yields `ollama/<tag>` (so the driver's locality detection is by prefix,
-    independent of the backend's config name); an OpenAI-compatible (cloud) model yields
-    `<backend>/<tag>` — the driver strips the backend and drives occ with the bare tag as
-    the provider model id, routing on `OPENAI_BASE_URL` (injected by `occ_cloud_env_lines`).
-    A raw non-Ollama ref is rejected: danno can't derive its key/base URL, so it must be a
-    [models] entry on a supported backend (Working Rule 8)."""
-    if "/" in value:
-        provider = value.split("/", 1)[0]
-        if provider != "ollama":
-            raise CommandFailedError(
-                f"--harness occ: a raw '{provider}/…' ref can't be wired by danno (it can't "
-                f"derive the OPENAI_BASE_URL/key). Declare it as a [models] entry on a "
-                f"supported backend (Ollama, or an OpenAI-compatible cloud) and pass that name."
-            )
-        return value
-    model = config.models.get(value)
-    if model is None:
-        raise CommandFailedError(
-            f"model '{value}' is not defined in danno.toml [models]. "
-            f"Pass a [models] entry (Ollama or an OpenAI-compatible cloud) for --harness occ."
-        )
-    backend = config.backends[model.backend]
-    if isinstance(backend, OllamaBackend):
-        return f"ollama/{model.tag}"
-    if isinstance(backend, OpenAIBackend):
-        return f"{model.backend}/{model.tag}"
-    raise CommandFailedError(
-        f"--harness occ can't reach model '{value}': backend kind '{backend.kind}' is not "
-        f"supported (use an Ollama or OpenAI-compatible backend)."
-    )
-
-
-def occ_cloud_env_lines(config: DannoConfig, value: str) -> list[str]:
-    """The env-file lines that point occ at a cloud model's provider, or [].
-
-    occ reaches an OpenAI-compatible provider via `OPENAI_BASE_URL` + `OPENAI_API_KEY`
-    (its OpenAI path), so a cloud [models] name emits BOTH: the backend's `base_url` and
-    the host value of its `api_key_env` mapped onto `OPENAI_API_KEY`. They land only in the
-    chmod-600 env-file (never a command line). Fails loud (Working Rule 8) when the key var
-    is unset. Empty for local Ollama (the relay path sets `OPENAI_BASE_URL` inline) and for
-    raw `ollama/…` refs."""
-    if "/" in value:
-        return []
-    model = config.models.get(value)
-    if model is None:
-        return []
-    backend = config.backends[model.backend]
-    if not isinstance(backend, OpenAIBackend):
-        return []
-    key = os.environ.get(backend.api_key_env)
-    if not key:
-        raise CommandFailedError(
-            f"--harness occ -m {value} needs the cloud provider key '{backend.api_key_env}', but "
-            f"it is unset in danno's environment. Export {backend.api_key_env} and re-run."
-        )
-    return [f"OPENAI_BASE_URL={backend.base_url}", f"OPENAI_API_KEY={key}"]
-
-
 def _reject_model_flag(harness: str) -> CommandFailedError:
     """The loud rejection for `-m/--model` on a harness with no danno-dialed `-m`
     (claude uses its own `--model`; opencode's model comes from the generated config)."""
     return CommandFailedError(
         "`-m/--model` on `danno sandbox start` is only supported with a harness that has "
-        f"a danno-dialed model (claurst / occ); '{harness}' does not. Claude Code uses its "
+        f"a danno-dialed model (claurst); '{harness}' does not. Claude Code uses its "
         "own `--model` (pass it after `--`); opencode's model comes from danno.toml. "
         "Re-run without `-m`."
     )
@@ -724,7 +638,7 @@ def _reject_model_flag(harness: str) -> CommandFailedError:
 
 def resolve_model_for_harness(target_abs: Path, harness: str, value: str) -> str:
     """The `-m/--model` flow for `sandbox start`: load danno.toml and resolve `value`
-    for `harness`. Supported only for harnesses that declare a `-m` resolver (claurst/occ)
+    for `harness`. Supported only for harnesses that declare a `-m` resolver (claurst)
     — claude has its own `--model` and opencode's model comes from the generated
     opencode.jsonc, so `-m` with either fails loud rather than being silently ignored.
     Raises `DannoConfigError` (bad toml) or `CommandFailedError`."""
@@ -743,13 +657,6 @@ def resolve_claurst_start(target_abs: Path, harness: str, value: str) -> tuple[s
     Ollama and `["<VAR>=<value>"]` for a cloud model (fail loud if the host var is unset)."""
     config = load_config(target_abs / "danno.toml")
     return resolve_claurst_model(config, value), claurst_cloud_env_lines(config, value)
-
-
-def resolve_occ_start(target_abs: Path, harness: str, value: str) -> tuple[str, list[str]]:
-    """`sandbox start -m <value>` for occ: the occ `<backend>/<tag>` ref PLUS any cloud
-    env-file lines (`OPENAI_BASE_URL` + `OPENAI_API_KEY`; empty for local Ollama)."""
-    config = load_config(target_abs / "danno.toml")
-    return resolve_occ_model(config, value), occ_cloud_env_lines(config, value)
 
 
 def resolve_start(target_abs: Path, harness: str, value: str) -> tuple[str, list[str]]:
@@ -900,7 +807,7 @@ def assemble_harness_env(
     env_files: list[str],
     strict: bool = False,
 ) -> list[str]:
-    """Final `KEY=VAL` env-file lines for a config-driven harness (opencode/claurst/occ),
+    """Final `KEY=VAL` env-file lines for a config-driven harness (opencode/claurst),
     applying the locked precedence (highest wins):
 
         CLI (--env / --env-file)  >  host os.environ  >  danno.toml [env]  >  harness default
@@ -986,7 +893,7 @@ def _exec_session(
             # opencode reads opencode.jsonc; verify every {env:VAR} it references is
             # supplied (auto-injecting host-exported ones), else fail loud up front.
             env_pairs = reconcile_env_refs(target_abs, env_pairs, env_files)
-        # dialers (opencode/claurst/occ): fold harness defaults, danno.toml [env], host env
+        # dialers (opencode/claurst): fold harness defaults, danno.toml [env], host env
         # and CLI into one precedence-ordered file. assemble_harness_env already applied
         # env_pairs/env_files, so pass them empty to _build_env_file (avoid double-apply).
         lines = assemble_harness_env(
@@ -1037,11 +944,11 @@ def launch(
     the harness binary plus `harness_args` forwarded verbatim (e.g. `["--resume", "<id>"]`
     for `claude`).
 
-    claurst/occ are the exception: they can't reach host Ollama directly (they ignore
-    the egress proxy), so their command is the relay-bracketed `bash -lc` launch script
-    (mirrors the headless path), with `model` resolved to its `-m ollama/<tag>`. `model`
-    and `capture_relay_port` (the `--capture` recording-proxy port) are consumed by those
-    launch scripts and ignored by the prebuilt-binary harnesses. The per-harness argv is
+    claurst is the exception: it needs `OLLAMA_HOST` set for a local turn (it dials host
+    Ollama relay-free through the egress proxy), so its command is a `bash -lc` launch
+    script (mirrors the headless path), with `model` resolved to its `-m ollama/<tag>`.
+    `model` and `capture_relay_port` (the `--capture` recording-proxy port) are consumed by
+    that launch script and ignored by the prebuilt-binary harnesses. The per-harness argv is
     a registry seam (`Harness.launch_argv`); local import avoids the import cycle."""
     from danno_validator import harnesses
 
@@ -1203,9 +1110,9 @@ def _capture_session(
         )
     allow = capture_allow_hosts(targets, base_allow_hosts)
     if h.capture_via_relay:
-        # claurst/occ read neither opencode.jsonc nor the egress proxy; both dial an in-VM
-        # relay (occ reuses claurst's `_claurst_script` bracket). Point that relay at the
-        # Ollama recording proxy (no opencode.jsonc rewrite).
+        # claurst reads neither opencode.jsonc nor the egress proxy the way opencode does;
+        # instead it dials host Ollama relay-free via `OLLAMA_HOST`. Point that at the Ollama
+        # recording proxy (no opencode.jsonc rewrite) so its wire traffic is captured.
         relay_port = _claurst_relay_capture_port(targets)
         log_info(f"--capture: recording {harness}<->Ollama wire traffic to {capture_dir}")
         with captures_running(targets):
@@ -1434,7 +1341,7 @@ def update(runner: Runner, name: str, harness: str = DEFAULT_HARNESS) -> list[st
     A prebuilt-image harness (opencode/claude) ships in Docker Desktop's sandbox image,
     so the durable update path is recreating the sandbox on a newer image; this advises
     the in-container self-update (`Harness.update_advice`) as the quick path. A harness
-    installed post-provision (claurst/occ) has no self-update subcommand — fail loud
+    installed post-provision (claurst) has no self-update subcommand — fail loud
     (Working Rule 8) pointing at `danno sandbox rebuild`. Local import avoids the cycle."""
     from danno_validator import harnesses
 

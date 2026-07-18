@@ -79,12 +79,12 @@ class Harness:
     # the cloud claude reference row talks straight to api.anthropic.com: no).
     supports_capture: bool
     # The `[<name>.overrides.<harness>]` escape-hatch key in `config/schema.py`,
-    # or None for harnesses that read no danno-generated config (claude/occ).
+    # or None for harnesses that read no danno-generated config (claude).
     overrides_key: str | None
     # Process-name fragments for the post-runaway-kill VM reap (`suites/base.py`).
-    # `reap_patterns` is the full set (incl. persistent in-VM helpers like the occ
-    # relay); `survivor_patterns` is the bracketed subset used for the survivor
-    # probe (excludes persistent helpers, which are never a turn "survivor").
+    # `reap_patterns` is the full set (incl. persistent in-VM helpers like a
+    # capture relay); `survivor_patterns` is the bracketed subset used for the
+    # survivor probe (excludes persistent helpers, which are never a turn "survivor").
     reap_patterns: tuple[str, ...]
     survivor_patterns: tuple[str, ...]
 
@@ -94,12 +94,12 @@ class Harness:
     # `[]` for prebuilt-image harnesses with nothing to install (opencode/claude).
     install: Callable[[Runner, str, DannoConfig | None], list[list[str]]]
     # The harness-specific `KEY=VAL` env-file lines for a session, given the Ollama URL
-    # and (optional) relocated config home. Auth (claude), Ollama URL (opencode), loop
-    # ceilings (occ), registry-overlay path (claurst) — see the `_*_env_lines` helpers.
+    # and (optional) relocated config home. Auth (claude), Ollama URL (opencode),
+    # registry-overlay path (claurst) — see the `_*_env_lines` helpers.
     env_lines: Callable[[str, Path | None], list[str]]
     # The in-container argv for an interactive `sandbox start`, given (model, harness_args,
     # capture_port). A prebuilt-binary harness is just `[<binary>, *harness_args]`
-    # (model/capture_port unused); a relay-bracketed harness (claurst/occ) returns its
+    # (model/capture_port unused); a relay-bracketed harness (claurst) returns its
     # `bash -lc` launch script with the resolved `-m` ref and capture port folded in.
     launch_argv: Callable[[str | None, list[str], int | None], list[str]]
 
@@ -127,7 +127,7 @@ class Harness:
     # leaves it unset and the call site handles the absence (fail loud / no-op).
 
     # How `--capture` records this harness: True → point its in-VM relay at the recording
-    # proxy (claurst/occ, which read neither opencode.jsonc nor the egress proxy); False →
+    # proxy (claurst, which reads neither opencode.jsonc nor the egress proxy); False →
     # rewrite the generated config's backend base_urls to the proxies (opencode). Only
     # consulted when `supports_capture` is True.
     capture_via_relay: bool = False
@@ -138,7 +138,7 @@ class Harness:
     resolve_start: Callable[[Path, str], tuple[str, list[str]]] | None = None
     # Emit this harness's danno-generated config into its relocated HOME before a session
     # (claurst's registry overlay + settings.json), or None for harnesses that read no
-    # per-home config (opencode reads a repo-local .opencode/; claude/occ read none). The
+    # per-home config (opencode reads a repo-local .opencode/; claude reads none). The
     # return value (GenerateResults) is logged inside and discarded by the caller.
     emit_config: Callable[[Runner, Path, Path], object] | None = None
     # A pre-session hook run (with a persistent `home`) before the in-container exec:
@@ -150,7 +150,7 @@ class Harness:
     # `{env:VAR}` refs are reconciled before a session. Others read no such file.
     reads_generated_config: bool = False
     # Advise (and under --apply run) the in-container self-update for this harness, or
-    # None when it has no self-update subcommand (claurst/occ install post-provision from
+    # None when it has no self-update subcommand (claurst installs post-provision from
     # a pinned release/source — the update path is `danno sandbox rebuild`, so the caller
     # fails loud pointing there). `(runner, name) -> advised command`.
     update_advice: Callable[[Runner, str], list[str]] | None = None
@@ -185,8 +185,7 @@ def all_names() -> tuple[str, ...]:
 # Import each submodule so importing the package self-populates the registry. Adding
 # a harness = a new module here + one name on this line. This import order is the
 # registration order, which sets the matrix/report column layout — keep it stable
-# (opencode, claurst, occ, claude), matching the former `BENCH_HARNESSES` tuple.
+# (opencode, claurst, claude), matching the former `BENCH_HARNESSES` tuple.
 from danno_validator.harnesses import opencode as opencode  # noqa: E402,F401,I001
 from danno_validator.harnesses import claurst as claurst  # noqa: E402,F401
-from danno_validator.harnesses import occ as occ  # noqa: E402,F401
 from danno_validator.harnesses import claude as claude  # noqa: E402,F401

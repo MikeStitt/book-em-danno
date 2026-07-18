@@ -162,9 +162,9 @@ def error_verdict(task_id: str, suite: str, detail: str) -> BenchVerdict:
 # `sbx exec` kill does NOT propagate into the VM (verified live), so without this a killed
 # runaway keeps burning VM CPU there — and, in the shared aider sandbox, bleeds into the
 # next cell. The pattern is broad by design: the sandbox is danno-owned and runs one harness
-# turn at a time (opencode / occ `index.mjs` / claurst, plus the occ in-VM Ollama relay). It
-# is the union of every registered harness's `reap_patterns`, so adding a harness needs no
-# edit here — the registry is the single source of truth.
+# turn at a time (opencode / claurst, and — once added — codex). It is the union of every
+# registered harness's `reap_patterns`, so adding a harness needs no edit here — the registry
+# is the single source of truth.
 _REAP_PATTERN = "|".join(
     pattern for name in harnesses.all_names() for pattern in harnesses.get(name).reap_patterns
 )
@@ -189,10 +189,9 @@ def _reap_harness(runner: Runner, sandbox: str) -> None:
 
 # Harness-only survivor probe. The alternatives are bracketed (`[o]pencode`, not `opencode`)
 # so `pgrep -f` does not match its OWN `bash -lc` wrapper (whose cmdline carries the pattern),
-# which would report a phantom survivor on an idle sandbox. Unlike `_REAP_PATTERN` this omits
-# the occ Ollama relay (`DANNO_RELAY`): the relay is a persistent in-VM helper, not the turn's
-# harness, so it is never a 'survivor'. It is the union of every registered harness's
-# `survivor_patterns` (the registry is the single source of truth).
+# which would report a phantom survivor on an idle sandbox. Unlike `_REAP_PATTERN`, this omits
+# any persistent in-VM helper (which is never a turn 'survivor'). It is the union of every
+# registered harness's `survivor_patterns` (the registry is the single source of truth).
 _SURVIVOR_PATTERN = "|".join(
     pattern for name in harnesses.all_names() for pattern in harnesses.get(name).survivor_patterns
 )

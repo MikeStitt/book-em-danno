@@ -7,7 +7,6 @@ The event shapes here were captured live from claurst 0.1.5 (M0 spike, 2026-06-2
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -138,49 +137,6 @@ def test_claurst_run_capture_dials_recording_proxy_relay_free(
     assert "OLLAMA_HOST=http://host.docker.internal:54321 claurst" in script
     assert "mktemp /tmp/danno-relay-" not in script  # no relay bracket
     assert "DANNO_RELAY_UPSTREAM_PORT" not in script
-
-
-def test_relay_source_reads_upstream_port_from_env() -> None:
-    # The relay builds its upstream from DANNO_RELAY_UPSTREAM_PORT (defaulting to 11434),
-    # so --capture redirects it without re-templating the heredoc'd relay source.
-    assert 'os.environ.get("DANNO_RELAY_UPSTREAM_PORT", "11434")' in driver._OLLAMA_RELAY_SOURCE
-
-
-def test_relay_source_compiles() -> None:
-    # The relay is embedded as a string + heredoc'd at launch, so a syntax slip would
-    # only blow up live in the VM. Compile it here to catch that at gate time.
-    compile(driver._OLLAMA_RELAY_SOURCE, "<relay>", "exec")
-
-
-def _exec_relay(monkeypatch: pytest.MonkeyPatch, log_path: str | None) -> dict[str, object]:
-    """Exec the embedded relay source in a fresh namespace (skipping serve_forever) and
-    return it, with DANNO_RELAY_LOG set/unset as the relay reads it at import time."""
-    if log_path is None:
-        monkeypatch.delenv("DANNO_RELAY_LOG", raising=False)
-    else:
-        monkeypatch.setenv("DANNO_RELAY_LOG", log_path)
-    ns: dict[str, object] = {"__name__": "relay_under_test"}  # not __main__ → no serve loop
-    exec(driver._OLLAMA_RELAY_SOURCE, ns)
-    return ns
-
-
-def test_relay_log_writes_flushed_lines_when_enabled(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    logf = tmp_path / "relay.log"
-    ns = _exec_relay(monkeypatch, str(logf))
-    log = ns["_log"]
-    log("REQ POST /v1/chat/completions clen=10 keepalive=True")  # type: ignore[operator]
-    log("RESP done 123B")  # type: ignore[operator]
-    lines = logf.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 2  # each line flushed immediately (no buffering swallowed them)
-    assert "REQ POST /v1/chat/completions" in lines[0]
-    assert "RESP done 123B" in lines[1]
-
-
-def test_relay_log_is_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    ns = _exec_relay(monkeypatch, None)
-    ns["_log"]("dropped — DANNO_RELAY_LOG unset")  # type: ignore[operator]  # must not raise
 
 
 def test_claurst_turn_parses_full_turn(monkeypatch: pytest.MonkeyPatch) -> None:

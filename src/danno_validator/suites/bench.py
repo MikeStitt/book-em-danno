@@ -146,10 +146,10 @@ def _variant_cloud_env_lines(harness: str, config: DannoConfig, model_name: str)
     """The cloud-provider auth env-file lines for one bench variant, or [] for a local model.
 
     Delegates to the harness registry (`Harness.cloud_env_lines`), which reuses the exact
-    builders `danno sandbox start` uses: occ needs the `OPENAI_BASE_URL`/`OPENAI_API_KEY`
-    mapping; claurst and opencode read the provider key under its own `{api_key_env}` name;
-    the claude reference row carries its own auth (→ []). Fails loud (Working Rule 8) when
-    the key var is unset. `model_name` is the danno.toml `[models]` key."""
+    builders `danno sandbox start` uses: claurst and opencode read the provider key under
+    its own `{api_key_env}` name; the claude reference row carries its own auth (→ []).
+    Fails loud (Working Rule 8) when the key var is unset. `model_name` is the danno.toml
+    `[models]` key."""
     return harnesses.get(harness).cloud_env_lines(config, model_name)
 
 
@@ -170,7 +170,7 @@ def _openai_compat_variants(config: DannoConfig, only: Sequence[str] | None) -> 
 def _harness_dial_ref(harness: str, config: DannoConfig, variant: ConfigVariant) -> str | None:
     """The ref this harness must actually dial for `variant`, or None (report ref stands).
 
-    Delegates to the harness registry (`Harness.dial_ref`): occ/claurst normalize an Ollama
+    Delegates to the harness registry (`Harness.dial_ref`): claurst normalizes an Ollama
     backend not literally named `ollama` (the item-3 bug); claude maps an inert model's tag
     to its `--model` value; opencode needs no override."""
     return harnesses.get(harness).dial_ref(config, variant)
@@ -193,14 +193,14 @@ def _build_bench_env_files(
     variant's bench turns.
 
     A single base set of lines is shared by every variant — the HUT's level-4 defaults
-    (occ's loop ceilings, opencode's `OLLAMA_BASE_URL`) plus `danno.toml [env]` and any
+    (opencode's `OLLAMA_BASE_URL`) plus `danno.toml [env]` and any
     `--env`/`--env-file`. A CLOUD variant additionally injects its provider auth for the
     HUT (`_variant_cloud_env_lines`), so a mixed local+cloud matrix authenticates each row
     correctly — the previous single harness-scoped file left cloud rows unauthenticated, so
-    occ fell back to api.anthropic.com and 404'd. Cloud-key resolution fails loud HERE,
-    before any sandbox is provisioned. Files are de-duplicated by content, so local variants
-    share one file and all variants on the same cloud backend share another. `config` is the
-    (capture-rewritten) config the run drives from, so occ cloud's `OPENAI_BASE_URL` points
+    a cloud row fell back to its harness's default endpoint and 404'd. Cloud-key resolution
+    fails loud HERE, before any sandbox is provisioned. Files are de-duplicated by content, so
+    local variants share one file and all variants on the same cloud backend share another.
+    `config` is the (capture-rewritten) config the run drives from, so a cloud dial points
     at the `--capture` proxy when capture is on. A reference harness (claude) is special: a
     single model-independent auth file (it carries its own auth; fails loud without a host
     token, exactly like the baseline)."""
@@ -227,7 +227,7 @@ def _setup_bench_capture(
     config: DannoConfig, opts: BenchOptions, out_dir: Path
 ) -> tuple[DannoConfig, CaptureBinding | None, tuple[str, ...], int | None]:
     """Stand up the ALWAYS-ON capture for bench: (config to run from, per-permutation
-    binding, sandbox allow-list, occ/claurst relay upstream port).
+    binding, sandbox allow-list, claurst relay upstream port).
 
     Capture is always on because the recording proxy is the runaway-gate sensor. Each
     redirectable backend's base_url is rewritten at a recording proxy (`plan_capture`,
@@ -284,9 +284,10 @@ def _seed_opencode_config(
     `host.docker.internal:11434`, which the sandbox's egress proxy rewrites to
     `localhost`) and the model registry, so a `-m ollama/<tag>` turn resolves. The
     `validate` sweep seeds it via `prepare_workspace`, but bench never did — so
-    every opencode turn failed with "Model not found: ollama/<tag>". claurst/occ/
-    claude don't read opencode.jsonc (they dial Ollama through the in-VM relay or a
-    cloud provider), so this is a no-op for them. `disable_title` matches the sweep:
+    every opencode turn failed with "Model not found: ollama/<tag>". claurst/claude
+    don't read opencode.jsonc (claurst dials host Ollama relay-free through the egress
+    proxy, or a cloud provider), so this is a no-op for them. `disable_title` matches the
+    sweep:
     no throwaway per-session title-gen call against the local model. `run_agent_steps`,
     when set, writes the runaway-gate polite-stop `steps` onto opencode's run-agent (a
     soft cap — the external watchdog is the real bound; DoR §3.4)."""
@@ -351,7 +352,7 @@ def _run_aider(
                     env_files[variant.model_ref],
                     capture_port,
                     model_override=_harness_dial_ref(opts.harness, config, variant),
-                    max_turns=resolved.max_turns,  # occ/claurst native polite-stop
+                    max_turns=resolved.max_turns,  # claurst native polite-stop
                 ),
                 model=variant.model_ref,
                 capture=capture,
@@ -424,7 +425,7 @@ def _run_swebench(
                                 env_files[variant.model_ref],
                                 capture_port,
                                 model_override=_harness_dial_ref(opts.harness, config, variant),
-                                max_turns=resolved.max_turns,  # occ/claurst native polite-stop
+                                max_turns=resolved.max_turns,  # claurst native polite-stop
                             ),
                             task.workspace_dir(workspace),
                         ),
@@ -648,7 +649,7 @@ def run_bench(
 ) -> BenchReport:
     """Run the enabled suites across the model matrix against `opts.harness`."""
     now = now or datetime.now(UTC)
-    # The harness owns its model matrix (`Harness.model_matrix`): a dialer (opencode/occ/
+    # The harness owns its model matrix (`Harness.model_matrix`): a dialer (opencode/
     # claurst) sweeps the OpenAI-compatible catalog minus inert models; the claude reference
     # row sweeps its inert-backend models (each tag → `--model`), or a single install-default
     # `claude-code` row when none are declared.
@@ -697,9 +698,9 @@ def run_bench(
 
     # One chmod-600 env-file PER model variant: shared base lines (the HUT's loop-ceiling
     # knobs, opencode's OLLAMA_BASE_URL, danno.toml [env], --env/--env-file) plus each cloud
-    # variant's provider auth (occ: OPENAI_BASE_URL/OPENAI_API_KEY; claurst/opencode: the raw
-    # {api_key_env}). Built from the capture-rewritten config so occ cloud dials the --capture
-    # proxy, and up front so a missing cloud key / claude token fails loud before provisioning.
+    # variant's provider auth (claurst/opencode: the raw {api_key_env}). Built from the
+    # capture-rewritten config so a cloud dial reaches the --capture proxy, and up front so a
+    # missing cloud key / claude token fails loud before provisioning.
     env_files = _build_bench_env_files(cfg_for_run, opts, variants)
     try:
         report.verdicts += _run_aider(

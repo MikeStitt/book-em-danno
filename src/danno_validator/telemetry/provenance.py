@@ -51,8 +51,8 @@ def _git_commit() -> str | None:
 def harness_provenance(harness: str, config: DannoConfig) -> dict:
     """The danno-known version pins for the harness that ran (§7.3). opencode/claude are
     image-provided (the prebuilt sandbox ships the binary), so danno pins no version —
-    only claurst (release tag) and occ (repo + commit ref) are danno-owned. Each harness
-    owns its pins via `Harness.provenance`; this merges them under the `harness` label."""
+    only claurst (release tag) is danno-owned. Each harness owns its pins via
+    `Harness.provenance`; this merges them under the `harness` label."""
     return {"harness": harness, **harnesses.get(harness).provenance(config)}
 
 

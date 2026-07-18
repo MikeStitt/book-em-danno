@@ -149,7 +149,7 @@ def validate(
     harness: str = typer.Option(
         sandbox_cmd.DEFAULT_HARNESS,
         "--harness",
-        help="Harness-under-test for the sweep: opencode (default), claurst, or occ.",
+        help="Harness-under-test for the sweep: opencode (default) or claurst.",
     ),
     env: list[str] = typer.Option(
         None, "--env", help="KEY=VAL credential to inject into cloud-config sweeps (repeatable)."
@@ -267,7 +267,7 @@ def bench(
     harness: list[str] = typer.Option(
         None,
         "--harness",
-        help="Harness-under-test (repeatable): opencode (default), claurst, occ, or claude "
+        help="Harness-under-test (repeatable): opencode (default), claurst, or claude "
         "(the cloud reference harness — sweeps the models declared on an inert backend, "
         "threading each tag to `claude --model`; collapses to one `(default model)` row if "
         "none are declared). Overrides benchmarks.toml [harnesses]; several harnesses produce "
@@ -518,13 +518,13 @@ def benchmark(
 _HARNESS_OPT = typer.Option(
     sandbox_cmd.DEFAULT_HARNESS,
     "--harness",
-    help="Harness: opencode, claude, claurst, or occ; non-default harnesses get their own sandbox.",
+    help="Harness: opencode, claude, or claurst; non-default harnesses get their own sandbox.",
 )
 _MODEL_OPT = typer.Option(
     None,
     "--model",
     "-m",
-    help="Model for --harness claurst or occ (a danno.toml models entry, e.g. gemma4 or an "
+    help="Model for --harness claurst (a danno.toml models entry, e.g. gemma4 or an "
     "OpenAI-compatible cloud model). clone-harnesses only; a backend danno can't wire, or a "
     "raw non-Ollama ref, is rejected loud.",
 )

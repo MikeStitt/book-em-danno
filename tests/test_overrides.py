@@ -256,7 +256,7 @@ foo = "bar"
 
 
 def test_out_of_scope_harness_key_fails_loud() -> None:
-    # `occ` is out of scope for overrides (no generated config surface) — the
+    # `claude` is out of scope for overrides (no generated config surface) — the
     # registry-derived key set rejects it loud.
     with pytest.raises(ValidationError, match="out of scope"):
         _cfg(
@@ -269,7 +269,7 @@ backend = "b"
 tag = "t"
 context_budget = 32000
 output_limit = 8192
-[models.m.overrides.occ]
+[models.m.overrides.claude]
 foo = "bar"
 """
         )

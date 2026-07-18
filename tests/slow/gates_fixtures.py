@@ -9,16 +9,16 @@ real tool calls inside the sandbox (security invariant: the HUT never runs on th
 only the "model" is stubbed.
 
     host                                  │ Docker sandbox VM
-    stub AI (STUB_PORT) ◄─ capture proxy ◄┼─ harness (opencode/occ/claurst)
+    stub AI (STUB_PORT) ◄─ capture proxy ◄┼─ harness (opencode/claurst)
        │  (script → wire dialect)  (PROXY  │    OLLAMA_BASE_URL / OPENAI_BASE_URL
        └─ transcript.jsonl          PORT,  │    → host.docker.internal:PROXY_PORT
                                     tally) │
 
-LIVE-VERIFIED 2026-07-16 (full `pytest -m slow` green across opencode/occ/claurst). The
+LIVE-VERIFIED 2026-07-16 (full `pytest -m slow` green across opencode/claurst). The
 first live run confirmed the three things the wiring depended on:
   - the stub's loop tool matches a tool each harness actually advertises (no unknown/
     hallucinated-tool substitution) — see `LOOP_TOOL`;
-  - occ/claurst local routing dials the proxy (backend named `ollama` + the in-VM relay —
+  - claurst local routing dials the proxy (backend named `ollama` + the in-VM relay —
     memory `sbx-migration-w1-w2-done-pr76-ready`);
   - opencode honors `agent.steps` at the template's version (V1 runner) — the V5 canary.
 """
@@ -71,7 +71,7 @@ OLLAMA_DOWN = not ollama.reachable()  # only V5's live-diff row needs this; V3/V
 def gen_config(harness: str) -> DannoConfig:
     """A minimal danno config whose single Ollama model dials the capture proxy instead of
     real Ollama. `default_agent`/`build` must name a defined agent or opencode rejects the
-    session. occ/claurst require the backend to be named literally `ollama` to route local."""
+    session. claurst requires the backend to be named literally `ollama` to route local."""
     return DannoConfig(
         defaults=Defaults(default_agent="build"),
         backends={
@@ -145,7 +145,7 @@ def provisioned_sandbox(name: str, harness: str, tmp_path: Path) -> Iterator[Pat
         # `.opencode/opencode.jsonc`, which bench (re)seeds POST-provision with title-gen
         # disabled. A bare pre-provision generate leaves title-gen enabled, and opencode then
         # makes 0 model calls (the "Model not found: ollama/<tag>" path _seed_opencode_config
-        # was written to fix). No-op for occ/claurst (they route via the in-VM relay).
+        # was written to fix). No-op for claurst (it routes via the in-VM relay).
         _seed_opencode_config(gen_config(harness), harness, tmp_path)
         yield tmp_path
     finally:
@@ -166,12 +166,12 @@ def run_scripted_turn(
     run_cell` uses: `runner.watching(probe=tally, ...)` wraps the harness turn fn, so a breach
     kills the cell and lands on `watch.breach`. Option B: the harness's NATIVE cap is set to
     the raw `gates.max_turns` and the external watchdog sits a grace margin above it
-    (`watchdog_max_turns`), so a cap-honoring harness (occ/claurst) stops itself first.
+    (`watchdog_max_turns`), so a cap-honoring harness (claurst) stops itself first.
 
-    Built via the canonical `run_turn_for` (not the raw driver fns) so occ/claurst get their
-    two local-routing knobs bench binds too: `capture_port=PROXY_PORT` points their in-VM
+    Built via the canonical `run_turn_for` (not the raw driver fns) so claurst gets its
+    two local-routing knobs bench binds too: `capture_port=PROXY_PORT` points its in-VM
     Ollama relay at the stub proxy (else it dials the default 11434 → 0 stub calls), and
-    `max_turns` is their `--max-turns` polite-stop. opencode ignores both — it dials the proxy
+    `max_turns` is its `--max-turns` polite-stop. opencode ignores both — it dials the proxy
     via its seeded backend `base_url` and relies on the external Gate 1."""
     turn_fn = run_turn_for(harness, None, capture_port=PROXY_PORT, max_turns=gates.max_turns)
     with runner.watching(

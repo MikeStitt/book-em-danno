@@ -314,8 +314,8 @@ def run_validate(
         # `opts.harness` selects the harness-under-test for the sweep — always a dialer
         # (claude is the separate `--baseline` reference, provisioned below). The
         # registry owns each dialer's sandbox image and post-provision install: opencode
-        # is a prebuilt image with nothing to install; claurst/occ run in a `shell` VM
-        # and install post-provision. opencode is driven by run_sweep's built-in
+        # is a prebuilt image with nothing to install; claurst runs in a `shell` VM
+        # and installs post-provision. opencode is driven by run_sweep's built-in
         # read-write run-agent ("build", the per-level default), so it injects no
         # `make_run_turn`; other dialers inject their registry `TurnFn` factory.
         harness = harnesses.get(opts.harness)

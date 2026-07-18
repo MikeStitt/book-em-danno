@@ -23,7 +23,7 @@ class Overrides(BaseModel):
     The payload below each harness key is intentionally OPEN (that is the hatch); the
     harness KEYS are CLOSED to the harnesses that HAVE a danno-generated config surface
     (opencode's opencode.jsonc, claurst's registry overlay) — a typo or an out-of-scope
-    harness (e.g. `occ`, which has no generated config file) fails loud. The valid key
+    harness (e.g. `claude`, which has no generated config file) fails loud. The valid key
     set is the harness registry's override-capable set (`Harness.overrides_key`), so
     adding a config-generating harness needs no edit here. Attached to the elements
     whose danno.toml section maps 1:1 to a generated region: `[backends.<n>]`,
@@ -126,7 +126,7 @@ class InertBackend(BaseModel):
     A model on an inert backend uses its `tag` as the raw harness model id/alias
     (e.g. "claude-opus-4-8", "sonnet"): `model_ref` returns the bare tag (no
     `<backend>/` prefix), and `danno bench --harness claude` passes it to `--model`.
-    Dialing an inert model with a config-driven harness (opencode/occ/claurst) fails
+    Dialing an inert model with a config-driven harness (opencode/claurst) fails
     loud, since there is no endpoint to reach.
     """
 
@@ -273,7 +273,7 @@ class DannoConfig(BaseModel):
     npm: list[NpmPlugin] = Field(default_factory=list)
     sandbox: Sandbox = Field(default_factory=Sandbox)
     # Agent-general environment table: any KEY=value here is injected into the
-    # env-file of every config-driven agent (opencode/claurst/occ — NOT claude,
+    # env-file of every config-driven agent (opencode/claurst — NOT claude,
     # whose auth is injected separately). Values MAY embed {env:VAR} host
     # indirection, resolved at assembly time (see sandbox.assemble_harness_env).
     # Keys are OS env var names, so they are exempt from the no-'/' danno-name
