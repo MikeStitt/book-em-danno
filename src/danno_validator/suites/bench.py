@@ -43,7 +43,6 @@ from danno_validator.suites.aider import (
 )
 from danno_validator.suites.aut import (
     install_harness,
-    resolve_image,
     run_turn_for,
 )
 from danno_validator.suites.base import BenchVerdict, error_verdict, run_bench_task
@@ -317,13 +316,15 @@ def _run_aider(
     if not (ap.enabled and ap.select):
         return []
     name = _sandbox_name(opts.target, "aider")
-    image = resolve_image(opts.harness)
     languages = languages_in(ap.select)
     # The exercises' toolchains need their distribution hosts on top of the capture/ollama
     # egress — added to the allow-list VERBATIM (still explicit hosts, never `"**"`).
     allow_hosts = allow_hosts + toolchain_egress(languages)
     log_info(f"[bench] aider — provision {opts.harness} sandbox '{name}' (langs: {languages})")
-    sb.provision(runner, name, workspace, harness=image, allow_hosts=allow_hosts)
+    # `provision` takes the harness NAME (it resolves the docker image internally via
+    # `_docker_image`, and installs the harness). Passing the image would break the
+    # registry lookup for harnesses whose image != name (claurst/codex ride `shell`).
+    sb.provision(runner, name, workspace, harness=opts.harness, allow_hosts=allow_hosts)
     install_harness(runner, name, opts.harness, config)
     install_toolchains(runner, name, languages)
     present = doctor_toolchains(runner, name, languages)
@@ -389,9 +390,7 @@ def _run_swebench(
     for task in tasks:
         name = _sandbox_name(opts.target, f"swe-{task.id}")
         log_info(f"[bench] swebench {task.id} — provision {opts.harness} sandbox '{name}'")
-        sb.provision(
-            runner, name, workspace, harness=resolve_image(opts.harness), allow_hosts=allow_hosts
-        )
+        sb.provision(runner, name, workspace, harness=opts.harness, allow_hosts=allow_hosts)
         install_harness(runner, name, opts.harness, config)
         try:
             try:

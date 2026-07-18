@@ -320,11 +320,13 @@ def run_validate(
         # `make_run_turn`; other dialers inject their registry `TurnFn` factory.
         harness = harnesses.get(opts.harness)
         reporter.phase(f"provision {opts.harness} sandbox  {plan.sweep_sandbox}")
+        # `provision` takes the harness NAME (resolves the docker image internally); passing
+        # `.sandbox_image` breaks the registry lookup for claurst/codex (image `shell` != name).
         sb.provision(
             runner,
             plan.sweep_sandbox,
             plan.workspace,
-            harness=harness.sandbox_image,
+            harness=opts.harness,
             allow_hosts=allow_hosts,
             registry_path=None,
         )
