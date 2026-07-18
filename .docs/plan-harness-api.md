@@ -279,6 +279,26 @@ Answers the unknowns before design lock (mirrors the occ/claurst M0 spikes).
 Output: findings appended to this DoR + `.docs/codex-integration.md`. **No spike
 code is promoted without full standards (constitution "Scratch" escape hatch).**
 
+**OUTCOME (2026-07-18, DONE) — full findings in `.docs/codex-integration.md`:**
+1. **RELAY-FREE.** codex (Rust) honors `HTTPS_PROXY` + `host.docker.internal`, so
+   it dials host Ollama `/v1/responses` through the egress proxy with **no relay
+   bracket** — identical wiring to claurst. Working argv: `codex exec --json -s
+   danger-full-access --skip-git-repo-check -C <ws> -m <tag> "<prompt>" </dev/null`
+   (`-a never` is stale; redirect stdin). `config.toml` uses a custom
+   `[model_providers.<id>] base_url=http://host.docker.internal:11434/v1
+   wire_api="responses"`. **GOTCHA: provider id `ollama` is reserved/built-in and
+   cannot be overridden — name it `ollama-danno`; `base_url` must be
+   host.docker.internal, never localhost (no_proxy bypass).**
+2. Events: `thread.started` / `turn.started` / `item.started|completed`
+   (`item.type` ∈ reasoning, command_execution, agent_message, error[non-fatal]) /
+   `turn.completed{usage}`. Assistant text = last `agent_message.text`.
+3. Loop tool = **`exec_command`** (args carry `cmd`), on-wire `function_call
+   {name,call_id,arguments}` ↔ `function_call_output{call_id,output}`.
+4. **usage populates** on `turn.completed` (`input_tokens`/`output_tokens`,
+   non-zero) — round/token telemetry works via existing `capture/usage.py`.
+Verified prereq: host Ollama **0.30.6** exposes `/v1/responses` (empty POST → 400,
+not 404). Codex install: `npm i -g @openai/codex` (codex-cli 0.144.5).
+
 ### Phase 1 — API + registry + convert opencode/claurst/claude (behavior-preserving)
 
 Base: **stack on `bench-claude-inert-model-skip`** (unmerged; already edits
