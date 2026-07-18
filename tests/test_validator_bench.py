@@ -19,7 +19,7 @@ from book_em_danno.config.schema import (
 )
 from book_em_danno.core import exec as exec_mod
 from book_em_danno.core.exec import CommandFailedError, Runner
-from danno_validator import baseline
+from danno_validator import baseline, harnesses
 from danno_validator.matrix import model_variants
 from danno_validator.suites import aut, bench
 from danno_validator.suites.config import BenchmarksConfig
@@ -332,6 +332,49 @@ def test_run_bench_codex_dry_run_skips_responses_preflight(
     )
     report = bench.run_bench(_config(), BenchmarksConfig(), opts, Runner())
     assert report.dry_run is True
+
+
+@pytest.mark.parametrize("harness", ["claurst", "codex"])
+def test_run_aider_provisions_by_harness_name_not_sandbox_image(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, harness: str
+) -> None:
+    # Regression (b1fcfea): `sb.provision` takes the harness NAME and resolves the docker
+    # image internally. claurst/codex have no prebuilt image — they ride "shell" — so passing
+    # `Harness.sandbox_image` (as the old code did) made provision look up an unregistered
+    # harness "shell" and crash the whole sweep. Guard: the value handed to provision must be
+    # a registered harness name, never the "shell" image.
+    seen: dict[str, object] = {}
+
+    class _StopEarly(Exception):
+        pass
+
+    def fake_provision(runner, name, workspace, *, harness, **kw):  # type: ignore[no-untyped-def]
+        seen["harness"] = harness
+        raise _StopEarly
+
+    monkeypatch.setattr(bench.sb, "provision", fake_provision)
+    cfg = BenchmarksConfig()
+    cfg.aider_polyglot.enabled = True
+    cfg.aider_polyglot.select = ["python/anagram"]
+    opts = bench.BenchOptions(target=tmp_path, harness=harness, out_dir=tmp_path / "out")
+    with pytest.raises(_StopEarly):
+        bench._run_aider(
+            Runner(),
+            cfg,
+            opts,
+            workspace=tmp_path / "ws",
+            variants=[],
+            config=_config(),
+            env_files={},
+            capture=None,
+            sampler=None,
+            allow_hosts=("localhost:11434",),
+            capture_port=None,
+            warm=False,
+            warmup=[],
+        )
+    assert seen["harness"] == harness
+    assert seen["harness"] in harnesses.all_names()  # never the "shell" image
 
 
 def test_run_turn_for_opencode_pins_build_agent(monkeypatch: pytest.MonkeyPatch) -> None:
