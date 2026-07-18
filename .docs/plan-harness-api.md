@@ -4,9 +4,14 @@ Drop **occ**, convert **opencode**/**claurst** onto the API, add **codex**, keep
 **claude** as the (registered-but-unique) reference harness, and close issue
 [#97](https://github.com/MikeStitt/book-em-danno/issues/97).
 
-Status: **DESIGNED, not started.** Delivery is a **staged PR stack** (Phase 1 →
-2 → 3), each gate-green (`ninja check`) before the next. Slow suite
-(`uv run pytest -m slow`) re-run at the end of Phase 3.
+Status: **DELIVERED.** Phases 0–3 done. Phase 1 (contract + registry + move
+opencode/claurst/claude), Phase 2 (drop occ), and Phase 3 (add codex + full
+Responses parity + #97 fix) are all committed. `all_names() == ("opencode",
+"claurst", "claude", "codex")`; the fast gate (`ninja check`) is green.
+Delivery was a **staged PR stack** (Phase 1 → 2 → 3), each gate-green before the
+next; the slow suite (`uv run pytest -m slow`) is re-run at the end of Phase 3
+(results recorded with the Phase-3 commit). "How to add a harness" lives in
+`docs/harness-api.md`.
 
 ---
 

@@ -654,6 +654,18 @@ def run_bench(
     # row sweeps its inert-backend models (each tag → `--model`), or a single install-default
     # `claude-code` row when none are declared.
     variants = harnesses.get(opts.harness).model_matrix(config, opts.only)
+    # Codex speaks only the OpenAI Responses API against local Ollama (≥ 0.13.3). Fail loud
+    # up front (Working Rule 8) if the host Ollama doesn't expose `/v1/responses` — else every
+    # codex cell would error mid-run on an unreachable endpoint. None (Ollama unreachable) is
+    # left to provisioning's own reachability handling; only a definitively-too-old Ollama trips.
+    if opts.harness == "codex" and not opts.dry_run:
+        ready = ollama.responses_api_ready()
+        if ready is False:
+            raise CommandFailedError(
+                "--harness codex needs Ollama's Responses API (/v1/responses), which requires "
+                f"Ollama >= {'.'.join(map(str, ollama.MIN_OLLAMA_FOR_RESPONSES))}. Upgrade Ollama "
+                "(brew upgrade ollama) and re-run, or run `danno doctor`."
+            )
     out_dir = opts.out_dir or Path(".danno-bench") / now.strftime("%Y-%m-%dT%H-%M-%S")
     report = BenchReport(out_dir=out_dir, dry_run=opts.dry_run)
 

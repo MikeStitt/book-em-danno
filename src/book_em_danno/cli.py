@@ -149,7 +149,7 @@ def validate(
     harness: str = typer.Option(
         sandbox_cmd.DEFAULT_HARNESS,
         "--harness",
-        help="Harness-under-test for the sweep: opencode (default) or claurst.",
+        help="Harness-under-test for the sweep: opencode (default), claurst, or codex.",
     ),
     env: list[str] = typer.Option(
         None, "--env", help="KEY=VAL credential to inject into cloud-config sweeps (repeatable)."
@@ -267,11 +267,12 @@ def bench(
     harness: list[str] = typer.Option(
         None,
         "--harness",
-        help="Harness-under-test (repeatable): opencode (default), claurst, or claude "
-        "(the cloud reference harness — sweeps the models declared on an inert backend, "
-        "threading each tag to `claude --model`; collapses to one `(default model)` row if "
-        "none are declared). Overrides benchmarks.toml [harnesses]; several harnesses produce "
-        "a comparison report.",
+        help="Harness-under-test (repeatable): opencode (default), claurst, codex, or claude. "
+        "codex is the OpenAI Codex CLI over the Responses API on local Ollama (needs Ollama "
+        ">= 0.13.3). claude is the cloud reference harness — sweeps the models declared on an "
+        "inert backend, threading each tag to `claude --model`; collapses to one "
+        "`(default model)` row if none are declared. Overrides benchmarks.toml [harnesses]; "
+        "several harnesses produce a comparison report.",
     ),
     only: list[str] = typer.Option(
         None,
@@ -350,8 +351,9 @@ def bench(
     These run real benchmark task *content* via danno's own execution model — NOT the
     official Docker-per-task harness, so the pass counts are not official benchmark
     scores. `--harness claurst` benchmarks the Rust Claude-Code clone on local models;
-    `--harness claude` adds the cloud reference harness (needs a host token), sweeping every
-    model declared on an inert backend and honoring `--only`.
+    `--harness codex` benchmarks the OpenAI Codex CLI over the Responses API on local Ollama
+    (needs Ollama >= 0.13.3); `--harness claude` adds the cloud reference harness (needs a
+    host token), sweeping every model declared on an inert backend and honoring `--only`.
     """
     from danno_validator.suites.bench import (
         BenchOptions,
@@ -518,15 +520,16 @@ def benchmark(
 _HARNESS_OPT = typer.Option(
     sandbox_cmd.DEFAULT_HARNESS,
     "--harness",
-    help="Harness: opencode, claude, or claurst; non-default harnesses get their own sandbox.",
+    help="Harness: opencode, claude, claurst, or codex; non-default harnesses get their own "
+    "sandbox.",
 )
 _MODEL_OPT = typer.Option(
     None,
     "--model",
     "-m",
-    help="Model for --harness claurst (a danno.toml models entry, e.g. gemma4 or an "
+    help="Model for --harness claurst/codex (a danno.toml models entry, e.g. gemma4 or an "
     "OpenAI-compatible cloud model). clone-harnesses only; a backend danno can't wire, or a "
-    "raw non-Ollama ref, is rejected loud.",
+    "raw non-Ollama ref, is rejected loud (codex is local-Ollama only so far).",
 )
 
 
@@ -622,7 +625,9 @@ def sandbox_start(
     `--harness claurst` runs a pure-Rust Claude-Code clone on local Ollama or a cloud
     provider danno can fully wire (today NVIDIA NIM); pick the model with `-m <name>`
     (a danno.toml models entry — its cloud key is injected from the backend's
-    `api_key_env`). Anything after `--` is forwarded verbatim to the harness, e.g.
+    `api_key_env`). `--harness codex` runs the OpenAI Codex CLI over the Responses API on
+    local Ollama (needs Ollama >= 0.13.3; `-m <name>` selects a danno.toml Ollama entry).
+    Anything after `--` is forwarded verbatim to the harness, e.g.
     `danno sandbox start --harness claude -- --resume <id>`.
     """
     abs_target, sandbox_name = _sandbox_target(target, name, harness)

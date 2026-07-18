@@ -179,6 +179,36 @@ def test_render_transcript_responses_api_input_and_sse_output() -> None:
     assert "usage: prompt=50 completion=9" in md  # usage read from response.completed
 
 
+def test_render_transcript_codex_history_typed_items() -> None:
+    # codex's Responses-API request `input[]` replays prior turns as role-less typed items:
+    # `function_call` / `function_call_output` / `reasoning`. Each must render by its type,
+    # not collapse into a `?:` block (the #97 wire-shape parity fix).
+    records = [
+        {
+            "seq": 1,
+            "direction": "request",
+            "ts": 0.0,
+            "method": "POST",
+            "path": "/v1/responses",
+            "body": {
+                "model": "gpt-oss:20b",
+                "input": [
+                    {"role": "user", "content": [{"type": "input_text", "text": "run true"}]},
+                    {"type": "reasoning", "summary": [{"type": "summary_text", "text": "plan it"}]},
+                    {"type": "function_call", "name": "exec_command", "arguments": '{"c":"1"}'},
+                    {"type": "function_call_output", "call_id": "call_9", "output": "ok"},
+                ],
+            },
+        },
+        {"seq": 1, "direction": "response", "ts": 1.0, "status": 200, "body": {"output": []}},
+    ]
+    md = wm.render_transcript(records)
+    assert "plan it" in md  # reasoning item flattened
+    assert "tool_call: `exec_command({" in md  # function_call rendered by type
+    assert "tool_result (call_9):" in md  # function_call_output keyed by call_id
+    assert "run true" in md  # the role-bearing message still renders
+
+
 def test_headroom_pct() -> None:
     assert wm.headroom_pct(4000, 40000) == 90.0
     assert wm.headroom_pct(None, 40000) is None

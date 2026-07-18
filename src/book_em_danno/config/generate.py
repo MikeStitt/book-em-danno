@@ -855,6 +855,103 @@ def _emit_json(
     return GenerateResult(Action.WROTE, dest, content, warnings=warns)
 
 
+# codex's config file inside its CODEX_HOME. Codex speaks ONLY the OpenAI Responses API
+# (Phase-0), so danno points a CUSTOM provider at host Ollama's `/v1` Responses endpoint.
+_CODEX_CONFIG_FILE = "config.toml"
+# The custom codex provider id danno writes. NOT `ollama`: that id is a RESERVED built-in in
+# codex-cli (refuses override) and defaults to `localhost:11434`, which the sandbox's
+# `no_proxy` bypass makes unreachable from the container (Phase-0, `.docs/codex-integration.md`).
+CODEX_PROVIDER_ID = "ollama-danno"
+_CODEX_PROVIDER_NAME = "Ollama (host via danno proxy)"
+
+
+def codex_provider_id(config: DannoConfig, model_name: str) -> str:
+    """The codex provider id serving a danno [models] entry. Local Ollama → the custom
+    `ollama-danno` provider danno writes into config.toml (never the reserved `ollama`).
+
+    Codex was Phase-0-spiked against LOCAL Ollama only; a cloud codex row is not yet wired
+    (its provider would need a Responses-API `env_key`), so a non-Ollama backend fails loud
+    (Working Rule 8) rather than launching to a silent mid-session failure."""
+    backend = config.backends[config.models[model_name].backend]
+    if isinstance(backend, OllamaBackend):
+        return CODEX_PROVIDER_ID
+    raise NotImplementedError(
+        f"model '{model_name}': codex is wired for local Ollama only so far "
+        "(cloud codex over the Responses API is not yet spiked). Pick an Ollama model."
+    )
+
+
+def codex_model_ref(config: DannoConfig, model_name: str) -> str:
+    """The bare model tag danno passes codex as `-m <tag>` (codex selects the model WITHIN
+    its configured `model_provider`, so no `<provider>/` prefix — Phase-0). Validates the
+    backend is codex-reachable via `codex_provider_id`."""
+    model = config.models[model_name]
+    if not model.tag:
+        raise ValueError(f"model '{model_name}' needs a 'tag' for codex")
+    codex_provider_id(config, model_name)  # fail loud on an unreachable (non-Ollama) backend
+    return model.tag
+
+
+def codex_config_toml(
+    base_url: str, *, model: str | None = None, env_key: str | None = None
+) -> str:
+    """The codex `config.toml` text: a custom `ollama-danno` provider pointing at `base_url`
+    (host Ollama's `/v1` Responses endpoint, or the --capture recording proxy) with
+    `wire_api = "responses"`.
+
+    The single source of the config for BOTH the headless driver (`driver.codex_run`, which
+    writes it inline per turn because bench can't seed a VM file pre-provision) and the
+    interactive `generate_codex_config`. `model`, when set, pins the default model (the
+    headless path passes `-m` instead and omits it); `env_key`, when set, names the env var
+    holding a cloud provider key (unused for local Ollama). Hand-written TOML — the values
+    here (a base_url, an optional bare tag, an optional env-var NAME) are all simple strings
+    with no TOML-special characters, so no toml library is pulled in."""
+    lines = [f'model_provider = "{CODEX_PROVIDER_ID}"']
+    if model is not None:
+        lines.insert(0, f'model = "{model}"')
+    lines += [
+        "",
+        f"[model_providers.{CODEX_PROVIDER_ID}]",
+        f'name = "{_CODEX_PROVIDER_NAME}"',
+        f'base_url = "{base_url}"',
+        'wire_api = "responses"',
+    ]
+    if env_key is not None:
+        lines.append(f'env_key = "{env_key}"')
+    return "\n".join(lines) + "\n"
+
+
+def generate_codex_config(
+    config: DannoConfig,
+    codex_home: Path,
+    *,
+    base_url: str,
+    model: str | None = None,
+    apply: bool = False,
+) -> list[GenerateResult]:
+    """Generate codex's `config.toml` into `codex_home` (its CODEX_HOME) — the codex peer of
+    `generate_claurst`, for the INTERACTIVE `danno sandbox start --agent codex` path.
+
+    danno owns this file wholesale (it is purely derived from danno.toml + the dial base_url),
+    so it is written, not merged. Same Tier-1 advise/apply semantics (WROTE / UNCHANGED /
+    DIFF). The headless bench/sweep path does NOT use this — it writes the same TOML inline
+    per turn (`driver.codex_run`)."""
+    content = codex_config_toml(base_url, model=model)
+    dest = Path(codex_home) / _CODEX_CONFIG_FILE
+    if dest.is_file():
+        existing = dest.read_text(encoding="utf-8")
+        if content == existing:
+            return [GenerateResult(Action.UNCHANGED, dest, content)]
+        diff = _diff(existing, content, dest)
+        if not apply:
+            return [GenerateResult(Action.DIFF, dest, content, diff)]
+        dest.write_text(content, encoding="utf-8")
+        return [GenerateResult(Action.WROTE, dest, content, diff)]
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(content, encoding="utf-8")
+    return [GenerateResult(Action.WROTE, dest, content)]
+
+
 def generate_claurst(
     config: DannoConfig, claurst_dir: Path, *, apply: bool = False
 ) -> list[GenerateResult]:

@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 from gates_fixtures import (
-    LOOP_TOOL,
-    LOOP_TOOL_ARGS,
+    assert_history_well_formed,
+    loop_tool,
     provisioned_sandbox,
     requires_docker,
     run_scripted_turn,
@@ -32,12 +32,14 @@ from danno_validator.suites.config import ResolvedGates
 
 pytestmark = [pytest.mark.slow, requires_docker]
 
-# GV2 = opencode; claurst is the GV3 row (its local routing needs the relay confirmed).
-HARNESSES = ["opencode", "claurst"]
+# GV2 = opencode; claurst is the GV3 row (its local routing needs the relay confirmed); codex
+# is the Phase-3 row (a RESPONSES dialer — its loop tool is `exec_command`, `loop_tool`).
+HARNESSES = ["opencode", "claurst", "codex"]
 # Harnesses whose NATIVE turn cap (`--max-turns`) reliably stops a runaway TOOL-loop before
 # the external kill fires (option B graceful self-stop). Only claurst qualifies (live-probed
 # 2026-07-15: `--max-turns=5` -> rounds=5, clean stop). NOT opencode (`agent.steps` is
-# advisory at the template version), so it is caught by danno's external Gate 1.
+# advisory at the template version) NOR codex (`exec` has no polite-stop cap — `max_turns` is
+# ignored), so both are caught by danno's external Gate 1.
 GRACEFUL_HARNESSES = {"claurst"}
 
 
@@ -53,7 +55,8 @@ def cell(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactor
 @pytest.mark.timeout(900)
 def test_clean_finish_no_breach(cell, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     harness, name, workspace = cell
-    script = [ToolCall(LOOP_TOOL, LOOP_TOOL_ARGS)] * 3 + [Finish("all done")]
+    tool, args = loop_tool(harness)
+    script = [ToolCall(tool, args)] * 3 + [Finish("all done")]
     gates = ResolvedGates(max_turns=50, max_tokens=2_000_000, timeout_s=1800.0)
     with scripted_backend(script, tmp_path) as backend:
         turn, watch = run_scripted_turn(
@@ -66,6 +69,10 @@ def test_clean_finish_no_breach(cell, tmp_path: Path) -> None:  # type: ignore[n
             workspace=workspace,
         )
         rounds = backend.tally.inference_calls()
+        # #97: the follow-up round(s) replay the tool call(s)+result(s); assert that recorded
+        # history is well-formed for this harness's wire protocol (CHAT pairing / RESPONSES
+        # function_call ↔ function_call_output) before the backend/proxy tears down.
+        assert_history_well_formed(harness, backend.capture_file)
     assert watch.breach is None  # a well-behaved cell is never killed
     assert rounds == 4  # 3 tool calls + the final answer
     assert not surviving_harness_pids(name)  # nothing left running
@@ -74,7 +81,8 @@ def test_clean_finish_no_breach(cell, tmp_path: Path) -> None:  # type: ignore[n
 @pytest.mark.timeout(900)
 def test_runaway_loop_is_bounded(cell, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     harness, name, workspace = cell
-    script = [ToolLoop(LOOP_TOOL, LOOP_TOOL_ARGS, n=None)]  # never stops on its own
+    tool, args = loop_tool(harness)
+    script = [ToolLoop(tool, args, n=None)]  # never stops on its own
     gates = ResolvedGates(max_turns=5, max_tokens=2_000_000, timeout_s=1800.0)
     with scripted_backend(script, tmp_path) as backend:
         _turn, watch = run_scripted_turn(
@@ -103,7 +111,8 @@ def test_runaway_loop_is_bounded(cell, tmp_path: Path) -> None:  # type: ignore[
 @pytest.mark.timeout(900)
 def test_token_budget_gate(cell, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     harness, name, workspace = cell
-    script = [ToolLoop(LOOP_TOOL, LOOP_TOOL_ARGS, n=None)]
+    tool, args = loop_tool(harness)
+    script = [ToolLoop(tool, args, n=None)]
     # Tiny token cap, generous round/time caps → Gate 2 is the one that must fire. (5 tokens
     # per stub round means a few rounds exceed it.) Gate 2 has no live verification today.
     gates = ResolvedGates(max_turns=1000, max_tokens=20, timeout_s=1800.0)
@@ -153,7 +162,8 @@ def test_next_cell_runs_clean_after_kill(cell, tmp_path: Path) -> None:  # type:
     # normal cell cleanly afterwards.
     harness, name, workspace = cell
     runner = Runner(apply=True)
-    with scripted_backend([ToolLoop(LOOP_TOOL, LOOP_TOOL_ARGS, n=None)], tmp_path) as backend:
+    tool, args = loop_tool(harness)
+    with scripted_backend([ToolLoop(tool, args, n=None)], tmp_path) as backend:
         run_scripted_turn(
             runner,
             name,

@@ -406,6 +406,11 @@ def _render_responses(reply: Reply, *, model: str) -> WireResponse:
         output: list[dict[str, Any]] = [
             {
                 "type": "function_call",
+                # A `call_id` so the recorded RESPONSES history has the `function_call` ↔
+                # `function_call_output` pairing the #97 well-formedness assertion checks
+                # (the Responses analog of the chat `tool_calls[].id`). Codex threads this
+                # back on the follow-up turn's `function_call_output`.
+                "call_id": "call_stub_1",
                 "name": reply.tool_name,
                 "arguments": _tool_call_arguments(reply),
             }

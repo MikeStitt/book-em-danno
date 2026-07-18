@@ -245,6 +245,19 @@ def render_transcript(records: list[dict]) -> str:
 
 
 def _render_message(msg: dict) -> list[str]:
+    # The Responses API's request `input[]` interleaves role-bearing `message` items with
+    # typed items that carry NO `role` (`function_call`, `function_call_output`, `reasoning`
+    # — codex's history shape). Render those by their type so a codex transcript's history
+    # isn't a wall of `?:` blocks (the #97 wire-shape parity).
+    kind = msg.get("type")
+    if kind == "function_call":
+        return [f"- tool_call: `{msg.get('name', '?')}({msg.get('arguments', '')})`", ""]
+    if kind == "function_call_output":
+        cid = msg.get("call_id", "?")
+        return [f"- tool_result ({cid}):", "", "```", _content_text(msg.get("output")), "```", ""]
+    if kind == "reasoning":
+        text = _content_text(msg.get("content") or msg.get("summary"))
+        return ["**reasoning:**", "", "```", text, "```", ""] if text else []
     role = msg.get("role", "?")
     text = _content_text(msg.get("content"))
     return [f"**{role}:**", "", "```", text, "```", ""]

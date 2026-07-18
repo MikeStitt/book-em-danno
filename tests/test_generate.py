@@ -6,16 +6,21 @@ from pathlib import Path
 import pytest
 
 from book_em_danno.config.generate import (
+    CODEX_PROVIDER_ID,
     Action,
     agent_markdown_collisions,
     claurst_agent_ref,
     claurst_agent_unmapped_warnings,
     claurst_model_ref,
     claurst_provider_id,
+    codex_config_toml,
+    codex_model_ref,
+    codex_provider_id,
     generate,
     generate_claurst,
     generate_claurst_agents,
     generate_claurst_models,
+    generate_codex_config,
     generate_md,
     model_ref,
     render_config,
@@ -771,3 +776,107 @@ def test_render_config_agent_steps_sets_run_agent_steps() -> None:
 def test_render_config_omits_agent_steps_by_default() -> None:
     doc = json.loads(_strip_comments(render_config(_example())))
     assert "steps" not in doc.get("agent", {}).get("build", {})
+
+
+# --- codex config.toml (Phase 3) -----------------------------------------------------
+
+
+def _codex_local_cfg() -> DannoConfig:
+    """A minimal config with one local Ollama model, for codex config tests."""
+    return DannoConfig(
+        defaults=Defaults(default_agent="build"),
+        backends={
+            "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1")
+        },
+        models={
+            "coder": Model(
+                backend="ollama",
+                tag="gpt-oss:20b",
+                context_budget=32000,
+                output_limit=8192,
+            )
+        },
+        agents={"build": "coder"},
+    )
+
+
+def _codex_cloud_cfg() -> DannoConfig:
+    """A config whose model sits on an OpenAI-compatible cloud backend (codex not wired)."""
+    return DannoConfig(
+        defaults=Defaults(default_agent="build"),
+        backends={
+            "nvidia": OpenAIBackend(
+                kind="openai",
+                base_url="https://integrate.api.nvidia.com/v1",
+                api_key_env="NVIDIA_API_KEY",
+            )
+        },
+        models={
+            "big": Model(
+                backend="nvidia",
+                tag="nvidia/some-model",
+                context_budget=128000,
+                output_limit=8192,
+            )
+        },
+        agents={"build": "big"},
+    )
+
+
+def test_codex_provider_id_local_is_custom_not_reserved() -> None:
+    # `ollama` is a RESERVED codex built-in provider id — danno must name its own.
+    assert codex_provider_id(_codex_local_cfg(), "coder") == CODEX_PROVIDER_ID
+    assert CODEX_PROVIDER_ID != "ollama"
+
+
+def test_codex_provider_id_cloud_fails_loud() -> None:
+    # Phase-0 is local-Ollama only; a cloud backend must fail loud, not launch to a silent
+    # mid-session failure (Working Rule 8).
+    with pytest.raises(NotImplementedError):
+        codex_provider_id(_codex_cloud_cfg(), "big")
+
+
+def test_codex_model_ref_is_bare_tag() -> None:
+    # codex selects the model WITHIN its provider, so the ref is the bare tag (no prefix).
+    assert codex_model_ref(_codex_local_cfg(), "coder") == "gpt-oss:20b"
+
+
+def test_codex_model_ref_requires_tag() -> None:
+    cfg = _codex_local_cfg()
+    cfg.models["coder"].tag = ""
+    with pytest.raises(ValueError):
+        codex_model_ref(cfg, "coder")
+
+
+def test_codex_config_toml_minimal() -> None:
+    toml = codex_config_toml("http://host.docker.internal:11434/v1")
+    assert f'model_provider = "{CODEX_PROVIDER_ID}"' in toml
+    assert f"[model_providers.{CODEX_PROVIDER_ID}]" in toml
+    assert 'base_url = "http://host.docker.internal:11434/v1"' in toml
+    assert 'wire_api = "responses"' in toml
+    # `ollama` is reserved — the custom provider id must not be the bare reserved name.
+    assert "[model_providers.ollama]" not in toml
+    # No model/env_key pinned in the minimal (headless) form.
+    assert "model = " not in toml
+    assert "env_key" not in toml
+
+
+def test_codex_config_toml_with_model_and_env_key() -> None:
+    toml = codex_config_toml(
+        "http://host.docker.internal:11434/v1", model="gpt-oss:20b", env_key="NVIDIA_API_KEY"
+    )
+    assert 'model = "gpt-oss:20b"' in toml
+    assert 'env_key = "NVIDIA_API_KEY"' in toml
+
+
+def test_generate_codex_config_writes_then_unchanged(tmp_path: Path) -> None:
+    home = tmp_path / "codex-home"
+    base = "http://host.docker.internal:11434/v1"
+    first = generate_codex_config(_codex_local_cfg(), home, base_url=base, apply=True)
+    assert first[0].action is Action.WROTE
+    dest = home / "config.toml"
+    assert dest.is_file()
+    assert 'wire_api = "responses"' in dest.read_text(encoding="utf-8")
+    # A second identical generate is UNCHANGED (danno owns the file wholesale).
+    second = generate_codex_config(_codex_local_cfg(), home, base_url=base, apply=True)
+    assert second[0].action is Action.UNCHANGED

@@ -185,7 +185,8 @@ def all_names() -> tuple[str, ...]:
 # Import each submodule so importing the package self-populates the registry. Adding
 # a harness = a new module here + one name on this line. This import order is the
 # registration order, which sets the matrix/report column layout — keep it stable
-# (opencode, claurst, claude), matching the former `BENCH_HARNESSES` tuple.
+# (opencode, claurst, claude, codex), matching the former `BENCH_HARNESSES` tuple.
 from danno_validator.harnesses import opencode as opencode  # noqa: E402,F401,I001
 from danno_validator.harnesses import claurst as claurst  # noqa: E402,F401
 from danno_validator.harnesses import claude as claude  # noqa: E402,F401
+from danno_validator.harnesses import codex as codex  # noqa: E402,F401

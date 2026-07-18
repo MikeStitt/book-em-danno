@@ -111,6 +111,45 @@ def _claurst_ollama_host(capture_port: int | None) -> str:
 # `sandbox._claurst_relay_capture_port`.
 CLAURST_RELAY_DEFAULT_UPSTREAM_PORT = 11434
 
+# Codex headless flags (Phase-0 spike, codex-cli 0.144.5, 2026-07-18 — `.docs/codex-
+# integration.md`). Codex speaks ONLY the OpenAI Responses API and is RELAY-FREE like
+# claurst (honors HTTPS_PROXY + host.docker.internal). `exec` runs one non-interactive
+# turn; `--json` emits NDJSON on stdout; `-s danger-full-access` auto-approves tools (the
+# outer Docker sandbox is the isolation boundary — the plan's `-a never` is STALE, `exec`
+# has no approval flag); `--skip-git-repo-check` lets it run in a non-git workspace; `-C
+# <dir>` sets the cwd; `-m <tag>` selects the model within the configured `model_provider`.
+# stdin is redirected from /dev/null (else codex prints "Reading additional input from
+# stdin…" and can block — the driver must close it).
+CODEX_EXEC_SUBCMD = "exec"
+CODEX_JSON_FLAG = "--json"
+CODEX_SANDBOX_FLAG = "-s"
+CODEX_SANDBOX_VALUE = "danger-full-access"
+CODEX_SKIP_GIT_FLAG = "--skip-git-repo-check"
+CODEX_CWD_FLAG = "-C"
+CODEX_MODEL_FLAG = "-m"
+
+# Where the driver writes codex's per-turn config.toml inside the VM. Codex warns (non-fatal)
+# if CODEX_HOME is under /tmp (it refuses to create PATH-alias helper binaries there), so it
+# lives under $HOME. Sessions/rollouts persist under `$CODEX_HOME/sessions/YYYY/MM/DD/`.
+CODEX_HOME_DIR = "$HOME/.codex-danno"
+
+# Codex dials host Ollama's experimental Responses endpoint (`/v1`) relay-free through the
+# egress proxy, exactly like claurst — base_url MUST be host.docker.internal (localhost is
+# in `no_proxy` → bypasses the proxy → hits the container). Under --capture the host-side
+# recording proxy at host.docker.internal:<capture_port> stands in (allowed in egress by
+# `capture_allow_hosts`). The `/v1` suffix is codex's OpenAI-compatible base.
+CODEX_RELAY_FREE_OLLAMA_BASE = "http://host.docker.internal:11434/v1"
+
+
+def _codex_base_url(capture_port: int | None) -> str:
+    """The relay-free Responses `base_url` for a codex turn (Phase-0): host Ollama `/v1`,
+    or under --capture the host-side recording proxy `/v1` (reached through the egress
+    proxy). The `host.docker.internal` host is mandatory — a localhost base_url would be
+    bypassed by `no_proxy` and hit the empty container."""
+    if capture_port is None:
+        return CODEX_RELAY_FREE_OLLAMA_BASE
+    return f"http://host.docker.internal:{capture_port}/v1"
+
 
 @runtime_checkable
 class Turn(Protocol):
@@ -776,6 +815,193 @@ def claurst_run(
         cmd += [name, *argv]
     result = runner.capture(cmd)
     return ClaurstTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)
+
+
+@dataclass
+class CodexTurn:
+    """One captured `codex exec --json` turn, with the NDJSON events parsed.
+
+    Codex's `--json` stream is NDJSON like the others but its OWN schema (Phase-0 spike,
+    codex-cli 0.144.5 — `.docs/codex-integration.md`). Each line is an *event* wrapping an
+    *item*; this normalises it onto the shared `Turn` read surface:
+
+    - a **thread.started** event carries `thread_id` (codex's session id, for `--resume`);
+    - an **item.completed** event carries `item` — the terminal state of one item, whose
+      `item.type` is:
+        - `agent_message` → `{id, text}` — the **assistant final text**;
+        - `command_execution` → `{id, command, aggregated_output, exit_code, status}` —
+          codex's abstraction over the executed shell (its tool call);
+        - `reasoning` → `{id, text}` (chain-of-thought; dropped from the read surface);
+        - `error` → `{message}` — **NON-FATAL** (e.g. "Model metadata for `…` not found.
+          Defaulting to fallback metadata…"); a turn is only *failed* by a `turn.failed`
+          event or a non-zero exit, NEVER by an `error` item;
+    - a **turn.completed** event carries `usage`
+      `{input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens}`;
+    - a **turn.failed** event marks a genuinely failed turn.
+
+    Codex reports no per-call cost (local Responses); tool calls are re-shaped to the
+    shared ``{"tool": name, "callID": id, "state": {"status": …}}`` dict so the same oracle
+    branch and reporter work across harnesses. `command_execution.status` maps `completed`
+    (with a zero `exit_code`) → `completed`, otherwise `error`."""
+
+    result: CaptureResult
+    events: list[dict] = field(default_factory=list)
+    raw: str = ""
+
+    @property
+    def ok(self) -> bool:
+        """True iff the turn ran cleanly: zero exit, ≥1 parsed event, no failure (an
+        `error` item is a non-fatal warning, so it does NOT flip `ok`)."""
+        return self.result.ok and bool(self.events) and not self.errors
+
+    def _completed_items(self) -> list[dict]:
+        """The `item` payload of every `item.completed` event, in order."""
+        return [
+            item
+            for event in self.events
+            if event.get("type") == "item.completed" and isinstance(item := event.get("item"), dict)
+        ]
+
+    @property
+    def session_id(self) -> str | None:
+        """Codex's thread id (from `thread.started`), for `--resume`."""
+        for event in self.events:
+            if event.get("type") == "thread.started" and (tid := event.get("thread_id")):
+                return str(tid)
+        return None
+
+    @property
+    def assistant_text(self) -> str:
+        """The last `agent_message` item's text (codex's final assistant reply)."""
+        text = ""
+        for item in self._completed_items():
+            if item.get("type") == "agent_message" and (t := str(item.get("text", "")).strip()):
+                text = t
+        return text
+
+    @property
+    def tool_calls(self) -> list[dict]:
+        """Each `command_execution` item, re-shaped to the shared tool-call dict shape.
+
+        Status is `completed` when codex reported `status == "completed"` with a zero
+        `exit_code`, else `error` — so the shared oracle's tool-error branch works."""
+        calls: list[dict] = []
+        for item in self._completed_items():
+            if item.get("type") != "command_execution":
+                continue
+            ok = item.get("status") == "completed" and int(item.get("exit_code", 0) or 0) == 0
+            calls.append(
+                {
+                    "tool": "exec_command",
+                    "callID": str(item.get("id", "")),
+                    "state": {"status": "completed" if ok else "error"},
+                }
+            )
+        return calls
+
+    @property
+    def tool_call_count(self) -> int:
+        return len(self.tool_calls)
+
+    @property
+    def _usage(self) -> dict:
+        for event in reversed(self.events):
+            if event.get("type") == "turn.completed":
+                usage = event.get("usage")
+                return usage if isinstance(usage, dict) else {}
+        return {}
+
+    @property
+    def tokens(self) -> int:
+        """Total tokens (input + output) from the `turn.completed` usage."""
+        usage = self._usage
+        return int(usage.get("input_tokens", 0) or 0) + int(usage.get("output_tokens", 0) or 0)
+
+    @property
+    def cost(self) -> float:
+        """Codex reports no cost for the local Responses endpoint (0.0)."""
+        return 0.0
+
+    @property
+    def errors(self) -> list[dict]:
+        """Genuinely-failed-turn signals: `turn.failed` events (an `error` *item* is a
+        non-fatal warning and is intentionally excluded)."""
+        return [event for event in self.events if event.get("type") == "turn.failed"]
+
+    @property
+    def error_summary(self) -> str | None:
+        """A human-readable summary of the first failed-turn event, or None."""
+        if not self.errors:
+            return None
+        err = self.errors[0]
+        detail = err.get("error") or err.get("message") or err.get("reason")
+        return str(detail) if detail is not None else "turn.failed"
+
+
+def codex_run(
+    runner: Runner,
+    name: str,
+    prompt: str,
+    *,
+    session: str | None = None,
+    agent: str | None = None,
+    model: str | None = None,
+    skip_permissions: bool = False,
+    workspace: str | Path | None = None,
+    env_file: str | Path | None = None,
+    capture_port: int | None = None,
+    max_turns: int | None = None,
+) -> CodexTurn:
+    """Drive one headless `codex exec --json` turn in sandbox `name`.
+
+    The in-sandbox Codex counterpart of `opencode_run`, with a `TurnFn`-compatible
+    signature so the level runners drive it unchanged. `model` is the bare model tag codex
+    dials within its configured provider (`-m <tag>`); `workspace` becomes codex's `-C`
+    exec cwd so writes land in the mounted workspace the oracle probes. `session`/`agent`/
+    `skip_permissions` are accepted for interface parity: codex `exec` is non-interactive
+    (always auto-approves via `-s danger-full-access`) and has no opencode `--agent`;
+    `max_turns` has no codex flag and is ignored (the external watchdog is the real bound).
+
+    Codex is RELAY-FREE like claurst (Phase-0): it honors the sandbox egress proxy and dials
+    host Ollama's Responses endpoint at `host.docker.internal:11434/v1` directly. Under
+    `--capture` it dials the host-side recording proxy the same way
+    (`host.docker.internal:<capture_port>/v1`, opened in egress by `capture_allow_hosts`) —
+    still no in-VM relay. The per-turn `config.toml` (custom `ollama-danno` provider →
+    that base_url, `wire_api = "responses"`) is written INLINE into a VM-local CODEX_HOME
+    here, because bench's flow can't seed a VM file pre-provision. `env_file` is forwarded
+    to the exec (a CLOUD codex row would carry its provider key there) and is harmless when
+    None (local Ollama needs no auth).
+
+    Returns the parsed NDJSON events alongside the raw capture — never raises on a non-zero
+    exit, since a stalled/errored turn is the signal the battery measures.
+    """
+    from book_em_danno.config.generate import codex_config_toml
+
+    base_url = _codex_base_url(capture_port)
+    config_toml = codex_config_toml(base_url)
+    argv = ["codex", CODEX_EXEC_SUBCMD, CODEX_JSON_FLAG, CODEX_SANDBOX_FLAG, CODEX_SANDBOX_VALUE]
+    argv.append(CODEX_SKIP_GIT_FLAG)
+    if workspace is not None:
+        argv += [CODEX_CWD_FLAG, str(workspace)]
+    if model is not None:
+        argv += [CODEX_MODEL_FLAG, model]
+    argv.append(prompt)
+    # Write config.toml into a VM-local CODEX_HOME, then run codex with stdin closed
+    # (</dev/null) so it never blocks reading additional input. A heredoc keeps the TOML
+    # off the argv; `set -e` fails loud if the config write fails.
+    script = (
+        f'set -e; export CODEX_HOME={CODEX_HOME_DIR}; mkdir -p "$CODEX_HOME"; '
+        f"cat > \"$CODEX_HOME/config.toml\" <<'DANNO_CODEX_EOF'\n"
+        f"{config_toml}\n"
+        f"DANNO_CODEX_EOF\n"
+        f"{shlex.join(argv)} </dev/null"
+    )
+    cmd = [*sandbox_cli.base(), "exec"]
+    if env_file is not None:
+        cmd += ["--env-file", str(env_file)]
+    cmd += [name, "bash", "-lc", script]
+    result = runner.capture(cmd)
+    return CodexTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)
 
 
 def parse_events(text: str) -> list[dict]:

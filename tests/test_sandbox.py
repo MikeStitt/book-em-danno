@@ -815,3 +815,46 @@ def test_launch_claude_ignores_toml_env(tmp_path: Path, monkeypatch: pytest.Monk
     r = _EnvCapturingRunner()
     sandbox.launch(r, "probe", tmp_path, harness="claude")
     assert r.env_snapshots[0] == ["CLAUDE_CODE_OAUTH_TOKEN=tok"]
+
+
+# --- codex model/env resolution (Phase 3) --------------------------------------------
+
+
+def test_resolve_codex_model_local_name_is_bare_tag() -> None:
+    # codex selects the model within its provider → the `-m` ref is the bare tag (no prefix).
+    assert sandbox.resolve_codex_model(_claurst_cfg(), "gemma4") == "gemma4:26b"
+
+
+def test_resolve_codex_model_raw_ollama_ref_strips_prefix() -> None:
+    assert sandbox.resolve_codex_model(_claurst_cfg(), "ollama/foo:1b") == "foo:1b"
+
+
+def test_resolve_codex_model_raw_non_ollama_ref_fails_loud() -> None:
+    with pytest.raises(CommandFailedError, match="local Ollama only"):
+        sandbox.resolve_codex_model(_claurst_cfg(), "anthropic/claude-sonnet-4-6")
+
+
+def test_resolve_codex_model_cloud_name_fails_loud() -> None:
+    # A [models] entry on a cloud backend: codex cloud over Responses is not yet spiked.
+    with pytest.raises(CommandFailedError):
+        sandbox.resolve_codex_model(_claurst_cfg(), "nemotron")
+
+
+def test_resolve_codex_model_unknown_name_fails_loud() -> None:
+    with pytest.raises(CommandFailedError, match="not defined"):
+        sandbox.resolve_codex_model(_claurst_cfg(), "nope")
+
+
+def test_codex_cloud_env_lines_local_is_empty() -> None:
+    assert sandbox.codex_cloud_env_lines(_claurst_cfg(), "gemma4") == []
+    assert sandbox.codex_cloud_env_lines(_claurst_cfg(), "ollama/foo:1b") == []
+
+
+def test_codex_cloud_env_lines_cloud_model_fails_loud() -> None:
+    with pytest.raises(CommandFailedError, match="not yet"):
+        sandbox.codex_cloud_env_lines(_claurst_cfg(), "nemotron")
+
+
+def test_codex_env_lines_is_empty() -> None:
+    # codex reads everything from config.toml (written inline); no env-file lines.
+    assert sandbox._codex_env_lines("http://host.docker.internal:11434/v1") == []

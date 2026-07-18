@@ -39,6 +39,7 @@ from ..config.generate import (
     Action,
     GenerateResult,
     claurst_model_ref,
+    codex_model_ref,
     generate,
     generate_claurst,
 )
@@ -532,6 +533,15 @@ def _opencode_env_lines(ollama_url: str, home: Path | None = None) -> list[str]:
     return lines
 
 
+def _codex_env_lines(ollama_url: str, home: Path | None = None) -> list[str]:
+    """codex's env-file lines: none. codex reads everything from its `config.toml`, which
+    danno writes inline into a VM-local CODEX_HOME (set by the run/launch scripts, not the
+    env-file) so the headless and interactive paths are identically self-contained. Local
+    Ollama needs no auth; `ollama_url`/`home` are accepted for the shared `env_lines`
+    signature and unused (codex's base_url is baked into config.toml)."""
+    return []
+
+
 def resolve_claurst_model(config: DannoConfig, value: str) -> str:
     """Resolve a `-m` value to claurst's `-m <provider>/<tag>` (ollama or a cloud provider).
 
@@ -657,6 +667,61 @@ def resolve_claurst_start(target_abs: Path, harness: str, value: str) -> tuple[s
     Ollama and `["<VAR>=<value>"]` for a cloud model (fail loud if the host var is unset)."""
     config = load_config(target_abs / "danno.toml")
     return resolve_claurst_model(config, value), claurst_cloud_env_lines(config, value)
+
+
+def resolve_codex_model(config: DannoConfig, value: str) -> str:
+    """Resolve a `-m` value to codex's bare model tag (Phase-0: codex selects the model
+    WITHIN its configured `ollama-danno` provider, so `-m` takes the bare tag, no prefix).
+
+    `value` is a `[models]` name (the documented form) or a raw `ollama/<tag>` ref (the bare
+    tag is extracted). codex is wired for local Ollama only so far, so a raw non-Ollama ref
+    or a [models] entry on a non-Ollama backend fails loud (Working Rule 8) — a cloud codex
+    row over the Responses API is not yet spiked."""
+    if "/" in value:
+        provider, tag = value.split("/", 1)
+        if provider != "ollama":
+            raise CommandFailedError(
+                f"--harness codex: a raw '{provider}/…' ref can't be wired by danno yet "
+                "(codex is spiked for local Ollama only). Declare an Ollama [models] entry "
+                "and pass that name instead."
+            )
+        return tag
+    if config.models.get(value) is None:
+        raise CommandFailedError(
+            f"model '{value}' is not defined in danno.toml [models]. "
+            f"Pass an Ollama [models] entry for --harness codex."
+        )
+    try:
+        return codex_model_ref(config, value)
+    except NotImplementedError as exc:
+        raise CommandFailedError(f"--harness codex can't reach model '{value}': {exc}") from exc
+
+
+def codex_cloud_env_lines(config: DannoConfig, value: str) -> list[str]:
+    """The env-file lines injecting a cloud codex model's provider key, or [].
+
+    codex is Phase-0-wired for local Ollama only (no auth), so this is [] for an Ollama
+    model. A [models] entry on a cloud backend fails loud (Working Rule 8): cloud codex over
+    the Responses API is not yet spiked, so danno won't launch it to a silent auth/reachability
+    failure. Mirrors `claurst_cloud_env_lines`' shape for the shared `cloud_env_lines` seam."""
+    if "/" in value:
+        return []
+    model = config.models.get(value)
+    if model is None:
+        return []
+    if isinstance(config.backends[model.backend], OpenAIBackend):
+        raise CommandFailedError(
+            f"--harness codex -m {value}: cloud codex over the Responses API is not yet "
+            "wired by danno (Phase-0 spiked local Ollama only). Pick an Ollama model."
+        )
+    return []
+
+
+def resolve_codex_start(target_abs: Path, harness: str, value: str) -> tuple[str, list[str]]:
+    """`sandbox start -m <value>`: the codex bare-tag `-m` ref PLUS any cloud-key env-file
+    lines (empty for local Ollama; codex cloud fails loud until spiked)."""
+    config = load_config(target_abs / "danno.toml")
+    return resolve_codex_model(config, value), codex_cloud_env_lines(config, value)
 
 
 def resolve_start(target_abs: Path, harness: str, value: str) -> tuple[str, list[str]]:

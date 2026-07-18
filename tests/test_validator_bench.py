@@ -310,6 +310,30 @@ def test_run_bench_non_claude_harness_skips_inert_models(
     assert captured["model_names"] == ["qwen"]  # inert opus/sonnet excluded
 
 
+def test_run_bench_codex_fails_loud_when_responses_api_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # codex speaks ONLY the Responses API; a too-old Ollama (probe → False) must fail loud
+    # up front, not error mid-sweep on every cell.
+    monkeypatch.setattr(bench.ollama, "responses_api_ready", lambda *a, **k: False)
+    opts = bench.BenchOptions(target=tmp_path, harness="codex", out_dir=tmp_path / "out")
+    with pytest.raises(CommandFailedError, match="Responses API"):
+        bench.run_bench(_config(), BenchmarksConfig(), opts, Runner())
+
+
+def test_run_bench_codex_dry_run_skips_responses_preflight(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # --dry-run never touches a live Ollama, so the pre-flight probe is bypassed entirely
+    # (a False stub here would raise if it ran).
+    monkeypatch.setattr(bench.ollama, "responses_api_ready", lambda *a, **k: False)
+    opts = bench.BenchOptions(
+        target=tmp_path, harness="codex", out_dir=tmp_path / "out", dry_run=True
+    )
+    report = bench.run_bench(_config(), BenchmarksConfig(), opts, Runner())
+    assert report.dry_run is True
+
+
 def test_run_turn_for_opencode_pins_build_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, object] = {}
 
