@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -19,12 +20,18 @@ from danno_validator.driver import Turn
 
 
 def _patch_capture(
-    monkeypatch: pytest.MonkeyPatch, *, stdout: str = "", returncode: int = 0
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stdout: str = "",
+    returncode: int = 0,
+    envs: list[dict[str, str] | None] | None = None,
 ) -> list[list[str]]:
     calls: list[list[str]] = []
 
     def fake_run(cmd, **kw):  # type: ignore[no-untyped-def]
         calls.append(cmd)
+        if envs is not None:
+            envs.append(kw.get("env"))
         return subprocess.CompletedProcess(cmd, returncode, stdout, "")
 
     monkeypatch.setattr(exec_mod.subprocess, "run", fake_run)
@@ -122,14 +129,22 @@ def test_codex_run_model_and_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "-m gpt-oss:20b" in script  # bare tag within the configured provider
 
 
-def test_codex_run_passes_env_file(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
-    driver.codex_run(Runner(), "box", "go", env_file="/tmp/danno-env-xyz")
+def test_codex_run_forwards_env_file_by_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Forwarded by NAME (`-e OPENAI_API_KEY`) with the value in the subprocess env —
+    # sbx's `--env-file` is a no-op (issue #99) — secret never on the argv.
+    env_file = tmp_path / "danno-env"
+    env_file.write_text("OPENAI_API_KEY=sk-secret\n", encoding="utf-8")
+    envs: list[dict[str, str] | None] = []
+    calls = _patch_capture(monkeypatch, stdout=_FULL_TURN, envs=envs)
+    driver.codex_run(Runner(), "box", "go", env_file=str(env_file))
     argv = calls[0]
-    assert argv[:3] == ["docker", "sandbox", "exec"]
-    assert argv[3] == "--env-file"
-    assert argv[4] == "/tmp/danno-env-xyz"
+    assert argv[:5] == ["docker", "sandbox", "exec", "-e", "OPENAI_API_KEY"]
     assert argv[5] == "box"
+    assert "--env-file" not in argv
+    assert "sk-secret" not in argv
+    assert envs[0] is not None and envs[0]["OPENAI_API_KEY"] == "sk-secret"
 
 
 def test_codex_run_capture_dials_recording_proxy(monkeypatch: pytest.MonkeyPatch) -> None:

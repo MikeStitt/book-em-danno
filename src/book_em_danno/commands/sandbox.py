@@ -569,11 +569,8 @@ def resolve_claurst_model(config: DannoConfig, value: str) -> str:
         )
     try:
         return claurst_model_ref(config, value)
-    except NotImplementedError as exc:
-        raise CommandFailedError(
-            f"--harness claurst can't reach model '{value}': {exc} Pick an Ollama model or an "
-            f"NVIDIA NIM model."
-        ) from exc
+    except (NotImplementedError, ValueError) as exc:
+        raise CommandFailedError(f"--harness claurst can't reach model '{value}': {exc}") from exc
 
 
 def claurst_cloud_key_env(config: DannoConfig, value: str) -> str | None:
@@ -969,21 +966,24 @@ def _exec_session(
         )
         env_path_lines, env_path_pairs, env_path_files = lines, [], []
     injected = ", ".join(line.split("=", 1)[0] for line in lines)
-    log_info(f"injecting {injected} via a chmod-600 --env-file")
+    log_info(f"injecting {injected} by name (-e), value via the exec env")
     env_path = _build_env_file(env_path_lines, env_path_pairs, env_path_files)
+    # sbx's `--env-file` is a silent no-op (see sandbox_cli.env_forward_argv); forward each
+    # var by NAME and carry the values in the exec subprocess env, so a secret never rides
+    # the argv and sbx's baked `<KEY>=proxy-managed` placeholders are overridden.
+    env_flags, exec_env = sandbox_cli.env_forward_argv(env_path)
     cmd = [
         *sandbox_cli.base(),
         "exec",
         "-it",
         "-w",
         str(target_abs),
-        "--env-file",
-        str(env_path),
+        *env_flags,
         name,
         *container_argv,
     ]
     try:
-        return runner.run(cmd, why=why, check=False)
+        return runner.run(cmd, why=why, check=False, env=exec_env)
     finally:
         env_path.unlink(missing_ok=True)
 

@@ -374,12 +374,15 @@ def opencode_run(
     - `workspace` sets the in-VM exec cwd (`-w`). Note opencode resolves file paths
       against its discovered project root (git/`.opencode` dir), **not** this cwd —
       true workspace isolation comes from mounting the sandbox at the workspace.
-    - `env_file` is passed to `docker sandbox exec` as `--env-file` — how cloud
-      configs in a sweep get their credentials: a bare exec inherits no host
+    - `env_file` supplies a sweep's cloud credentials: a bare exec inherits no host
       environment, so a model whose provider needs e.g. `ANTHROPIC_API_KEY` /
-      `NVIDIA_API_KEY` errors at L0 without it. Local Ollama models need none (the
-      base URL is baked into `opencode.jsonc`). The sweep builds this chmod-600
-      file from `--env`/host-exported keys (see `sweep._authed_opencode_run`).
+      `NVIDIA_API_KEY` errors at L0 without it. It is expanded via
+      `sandbox_cli.env_forward_argv` into value-less `-e NAME` flags plus the exec
+      subprocess env (sbx's `--env-file` is a silent no-op and would be shadowed by
+      sbx's baked `proxy-managed` placeholders — see that helper; issue #99). Local
+      Ollama models need none (the base URL is baked into `opencode.jsonc`). The sweep
+      builds this chmod-600 file from `--env`/host-exported keys (see
+      `sweep._authed_opencode_run`).
 
     Returns the parsed events alongside the raw capture — never raises on a
     non-zero HUT exit, since a stalled/errored agent turn is the signal the battery
@@ -388,8 +391,8 @@ def opencode_run(
     cmd = [*sandbox_cli.base(), "exec"]
     if workspace is not None:
         cmd += ["-w", str(workspace)]
-    if env_file is not None:
-        cmd += ["--env-file", str(env_file)]
+    env_flags, exec_env = sandbox_cli.env_forward_argv(env_file)
+    cmd += env_flags
     cmd += [name, "opencode", "run", OPENCODE_FORMAT_FLAG, "json"]
     if agent is not None:
         cmd += ["--agent", agent]
@@ -400,7 +403,7 @@ def opencode_run(
     if session is not None:
         cmd += [OPENCODE_SESSION_FLAG, session]
     cmd.append(prompt)
-    result = runner.capture(cmd)
+    result = runner.capture(cmd, env=exec_env)
     return OpencodeTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)
 
 
@@ -615,13 +618,13 @@ def claude_run(
     actual resolved model is still tracked via `ClaudeTurn.model`. `agent` is
     accepted for interface parity but ignored (claude has no opencode `--agent`).
 
-    `env_file` is passed to `docker sandbox exec` as `--env-file` — REQUIRED for
-    auth: unlike opencode (which reads Ollama from `opencode.jsonc`), claude needs
-    `CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY` in its exec environment, and a
-    bare `docker sandbox exec` inherits none. danno injects this only on
-    interactive `launch`, so the baseline builds the file itself (see
-    `baseline._build_claude_auth_env_file`). The secret stays in the chmod-600
-    file, never on the command line.
+    `env_file` is REQUIRED for auth: unlike opencode (which reads Ollama from
+    `opencode.jsonc`), claude needs `CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY` in
+    its exec environment, and a bare exec inherits none. It is forwarded via
+    `sandbox_cli.env_forward_argv` (value-less `-e NAME` + the exec subprocess env;
+    sbx's `--env-file` is a no-op — issue #99). The baseline builds the file itself
+    (see `baseline._build_claude_auth_env_file`). The secret stays in the chmod-600
+    file / the exec env, never on the command line.
 
     Returns the parsed events alongside the raw capture — never raises on a
     non-zero exit, since a stalled/errored turn is the signal the battery
@@ -630,8 +633,8 @@ def claude_run(
     cmd = [*sandbox_cli.base(), "exec"]
     if workspace is not None:
         cmd += ["-w", str(workspace)]
-    if env_file is not None:
-        cmd += ["--env-file", str(env_file)]
+    env_flags, exec_env = sandbox_cli.env_forward_argv(env_file)
+    cmd += env_flags
     cmd += [name, "claude", CLAUDE_PRINT_FLAG, CLAUDE_FORMAT_FLAG, CLAUDE_FORMAT_VALUE, "--verbose"]
     if model is not None:
         cmd += [CLAUDE_MODEL_FLAG, model]
@@ -640,7 +643,7 @@ def claude_run(
     if session is not None:
         cmd += [CLAUDE_RESUME_FLAG, session]
     cmd.append(prompt)
-    result = runner.capture(cmd)
+    result = runner.capture(cmd, env=exec_env)
     return ClaudeTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)
 
 
@@ -798,8 +801,8 @@ def claurst_run(
         argv += [CLAURST_MAX_TURNS_FLAG, str(max_turns)]
     argv.append(prompt)
     cmd = [*sandbox_cli.base(), "exec"]
-    if env_file is not None:
-        cmd += ["--env-file", str(env_file)]
+    env_flags, exec_env = sandbox_cli.env_forward_argv(env_file)
+    cmd += env_flags
     # A LOCAL Ollama model (`ollama/…`, or claurst's default when `model` is None) is now
     # fully RELAY-FREE (plan W3 + W6): claurst honors the egress proxy, so it dials host
     # Ollama at host.docker.internal directly — and under `--capture` it dials the host-side
@@ -813,8 +816,17 @@ def claurst_run(
         cmd += [name, "bash", "-lc", f"OLLAMA_HOST={ollama_host} {shlex.join(argv)}"]
     else:
         cmd += [name, *argv]
-    result = runner.capture(cmd)
-    return ClaurstTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)
+    result = runner.capture(cmd, env=exec_env)
+    events = parse_events(result.stdout)
+    # Some fatal provider rejections claurst writes to STDERR, not the stream-json stdout
+    # (e.g. an unsupported-model error under `--max-turns`, which exits 1 with an EMPTY
+    # stdout). Parsing stdout alone would leave `events` empty → the oracle reads a silent
+    # `early-stop` and drops the real, actionable message. Fold any error event from stderr
+    # onto the read surface (only when stdout carried none, so the normal stdout-error path
+    # is byte-identical); the lenient parser drops sbx's non-JSON stderr noise.
+    if result.stderr and not any(e.get("type") == "error" for e in events):
+        events += [e for e in parse_events(result.stderr) if e.get("type") == "error"]
+    return ClaurstTurn(result=result, events=events, raw=result.stdout)
 
 
 @dataclass
@@ -997,10 +1009,10 @@ def codex_run(
         f"{shlex.join(argv)} </dev/null"
     )
     cmd = [*sandbox_cli.base(), "exec"]
-    if env_file is not None:
-        cmd += ["--env-file", str(env_file)]
+    env_flags, exec_env = sandbox_cli.env_forward_argv(env_file)
+    cmd += env_flags
     cmd += [name, "bash", "-lc", script]
-    result = runner.capture(cmd)
+    result = runner.capture(cmd, env=exec_env)
     return CodexTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)
 
 

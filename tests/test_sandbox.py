@@ -42,10 +42,16 @@ def test_create_claude_agent(tmp_path: Path) -> None:
 
 
 def _assert_launch_cmd(cmd: list[str], name: str, harness: str, repo: str = "/repo") -> None:
-    """Assert a launch exec command, tolerating the generated env-file temp path."""
-    assert cmd[:7] == ["docker", "sandbox", "exec", "-it", "-w", repo, "--env-file"]
-    assert cmd[7]  # a real env-file path (created then unlinked); value is dynamic
-    assert cmd[8:] == [name, harness]
+    """Assert a launch exec command, tolerating the generated `-e NAME` env forwards.
+
+    Env is forwarded by NAME (`-e NAME`, value carried in the exec subprocess env — sbx's
+    `--env-file` is a no-op, issue #99), so between the `-w <repo>` prefix and the trailing
+    `<name> <harness>` there are zero or more `-e NAME` pairs whose count/order is dynamic."""
+    assert cmd[:6] == ["docker", "sandbox", "exec", "-it", "-w", repo]
+    i = 6
+    while i < len(cmd) and cmd[i] == "-e":
+        i += 2  # skip `-e NAME`
+    assert cmd[i:] == [name, harness]
 
 
 def test_launch_claude_uses_agent_binary(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -138,7 +144,9 @@ def test_launch_forwards_harness_args() -> None:
     sandbox.launch(
         r, "probe", Path("/repo"), harness="opencode", harness_args=["--resume", "abc123"]
     )
-    assert r.commands[0][8:] == ["probe", "opencode", "--resume", "abc123"]
+    cmd = r.commands[0]
+    i = cmd.index("probe")  # dynamic: skips the leading `-e NAME` env forwards
+    assert cmd[i:] == ["probe", "opencode", "--resume", "abc123"]
 
 
 # --- claurst (interactive, local-Ollama clone hosted in the `shell` image) ---
@@ -187,8 +195,9 @@ def test_launch_claurst_relay_free_and_model(monkeypatch: pytest.MonkeyPatch) ->
     r = RecordingRunner()
     sandbox.launch(r, "probe", Path("/repo"), harness="claurst", model="ollama/gemma4:26b")
     cmd = r.commands[0]
-    assert cmd[8:11] == ["probe", "bash", "-lc"]
-    script = cmd[11]
+    i = cmd.index("probe")  # dynamic: skips the leading `-e NAME` env forwards
+    assert cmd[i : i + 3] == ["probe", "bash", "-lc"]
+    script = cmd[i + 3]
     # the interactive claurst command: model passed as -m, NO -p (it must open the TUI)
     # W3: relay-free — claurst dials host Ollama directly through the egress proxy.
     assert "OLLAMA_HOST=http://host.docker.internal:11434 claurst -m ollama/gemma4:26b" in script
@@ -206,7 +215,8 @@ def test_launch_claurst_forwards_passthru(monkeypatch: pytest.MonkeyPatch) -> No
         model="ollama/g:1b",
         harness_args=["--resume", "x"],
     )
-    script = r.commands[0][11]
+    cmd = r.commands[0]
+    script = cmd[cmd.index("probe") + 3]  # dynamic: skip `-e NAME` forwards, then name/bash/-lc
     assert "claurst -m ollama/g:1b --resume x" in script
 
 
@@ -217,7 +227,7 @@ def test_launch_claurst_cloud_runs_direct_no_relay(monkeypatch: pytest.MonkeyPat
     sandbox.launch(r, "probe", Path("/repo"), harness="claurst", model="nvidia/nvidia/nemotron")
     cmd = r.commands[0]
     assert cmd[-3:] == ["claurst", "-m", "nvidia/nvidia/nemotron"]
-    assert "bash" not in cmd[8:]  # no relay wrapper
+    assert "bash" not in cmd[cmd.index("probe") :]  # no relay wrapper
     assert not any("OLLAMA_HOST" in c or "RELAY_PY" in c for c in cmd)
 
 
@@ -766,25 +776,27 @@ def test_ls_prints_registered_targets(tmp_path: Path, monkeypatch: pytest.Monkey
 
 
 class _EnvCapturingRunner(RecordingRunner):
-    """Records commands AND snapshots each exec's --env-file content before the
-    caller's `finally` unlinks it — so tests can assert the assembled env lines."""
+    """Records commands AND snapshots each exec's forwarded env — reconstructing the
+    assembled `KEY=VALUE` lines from the `-e NAME` argv forwards plus the exec subprocess
+    env (values ride `env=`, not the argv; sbx's `--env-file` is a no-op, issue #99)."""
 
     def __init__(self) -> None:
         super().__init__()
         self.env_snapshots: list[list[str]] = []
 
-    def _snapshot(self, cmd: list[str]) -> None:
-        if "--env-file" in cmd:
-            path = Path(cmd[cmd.index("--env-file") + 1])
-            if path.is_file():
-                self.env_snapshots.append(path.read_text(encoding="utf-8").splitlines())
+    def _snapshot(self, cmd: list[str], env: object) -> None:
+        names = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "-e"]
+        if not names:
+            return
+        env_map = env if isinstance(env, dict) else {}
+        self.env_snapshots.append([f"{n}={env_map[n]}" for n in names if n in env_map])
 
     def advise(self, cmd: list[str], why: str, **kw: object) -> list[str]:  # type: ignore[override]
-        self._snapshot(cmd)
+        self._snapshot(cmd, kw.get("env"))
         return super().advise(cmd, why, **kw)  # type: ignore[arg-type]
 
     def run(self, cmd: list[str], why: str, **kw: object) -> list[str]:  # type: ignore[override]
-        self._snapshot(cmd)
+        self._snapshot(cmd, kw.get("env"))
         return super().run(cmd, why, **kw)  # type: ignore[arg-type]
 
 

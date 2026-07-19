@@ -229,19 +229,24 @@ def claurst_provider_id(config: DannoConfig, model_name: str) -> str:
     """The claurst built-in provider id that serves a danno [models] entry.
 
     claurst resolves `-m <provider>/<tag>` against its own provider registry, so the
-    provider here is claurst's (ollama / nvidia / …), NOT the danno backend name that
-    `model_ref` emits for OpenCode. ollama-kind backends map to `ollama`; openai-kind
-    backends are mapped by host (NVIDIA NIM → `nvidia`). Unmapped hosts raise."""
+    provider here is claurst's (ollama / nvidia / openai / …), NOT the danno backend
+    name that `model_ref` emits for OpenCode. Resolution order (data-driven, #106):
+    a `claurst_provider` DECLARED on an openai-kind backend wins; else danno INFERS
+    (ollama-kind → `ollama`, NVIDIA NIM host → `nvidia`); a generic unmapped openai host
+    with no declaration is a config error (declare `claurst_provider` to fix)."""
     backend = config.backends[config.models[model_name].backend]
     if isinstance(backend, OllamaBackend):
         return "ollama"
     if isinstance(backend, OpenAIBackend):
+        if backend.claurst_provider:
+            return backend.claurst_provider
         host = urlsplit(backend.base_url).hostname or ""
         if host == _NVIDIA_NIM_HOST:
             return "nvidia"
-        raise NotImplementedError(
-            f"model '{model_name}': no claurst provider mapping for openai host "
-            f"'{host}' yet (only NVIDIA NIM at {_NVIDIA_NIM_HOST} is mapped)."
+        raise ValueError(
+            f"model '{model_name}': claurst can't infer a provider id for openai host "
+            f"'{host}'. Declare `claurst_provider = \"…\"` on its [backends.*] entry in "
+            f'danno.toml (e.g. claurst_provider = "openai" for api.openai.com).'
         )
     raise NotImplementedError(_LLAMACPP_STUB)
 
@@ -293,6 +298,14 @@ def generate_claurst_models(config: DannoConfig) -> dict[str, Any]:
                 "env": [],
                 "models": {},
             }
+            # A DECLARED (generic) OpenAI-compatible provider is outside claurst's
+            # bundled catalog, so make the overlay self-describing (#106): give it the
+            # endpoint and the key's env-var NAME so the in-VM claurst can authenticate.
+            # Inferred ollama/nvidia keep their catalog-driven entry (env: []) unchanged.
+            # The secret VALUE never lands here — only the var name (see cloud_env_lines).
+            if isinstance(backend, OpenAIBackend) and backend.claurst_provider:
+                prov_entry["api"] = backend.base_url
+                prov_entry["env"] = [backend.api_key_env]
             backend_ov = _override(getattr(backend, "overrides", None), "claurst")
             if backend_ov is not None:
                 prov_entry = deep_merge(prov_entry, backend_ov)

@@ -7,6 +7,7 @@ The event shapes here were captured live from claurst 0.1.5 (M0 spike, 2026-06-2
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -17,13 +18,20 @@ from danno_validator.driver import Turn
 
 
 def _patch_capture(
-    monkeypatch: pytest.MonkeyPatch, *, stdout: str = "", returncode: int = 0
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stdout: str = "",
+    stderr: str = "",
+    returncode: int = 0,
+    envs: list[dict[str, str] | None] | None = None,
 ) -> list[list[str]]:
     calls: list[list[str]] = []
 
     def fake_run(cmd, **kw):  # type: ignore[no-untyped-def]
         calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, returncode, stdout, "")
+        if envs is not None:
+            envs.append(kw.get("env"))
+        return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
 
     monkeypatch.setattr(exec_mod.subprocess, "run", fake_run)
     return calls
@@ -92,14 +100,22 @@ def test_claurst_run_model_skip_permissions_workspace_resume(
     assert "--resume sess-1" in script
 
 
-def test_claurst_run_passes_env_file(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
-    driver.claurst_run(Runner(), "box", "go", env_file="/tmp/danno-env-xyz")
+def test_claurst_run_forwards_env_file_by_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Forwarded by NAME (`-e NVIDIA_API_KEY`) with the value in the subprocess env —
+    # sbx's `--env-file` is a no-op (issue #99) — secret never on the argv.
+    env_file = tmp_path / "danno-env"
+    env_file.write_text("NVIDIA_API_KEY=nv-secret\n", encoding="utf-8")
+    envs: list[dict[str, str] | None] = []
+    calls = _patch_capture(monkeypatch, stdout=_FULL_TURN, envs=envs)
+    driver.claurst_run(Runner(), "box", "go", env_file=str(env_file))
     argv = calls[0]
-    assert argv[:3] == ["docker", "sandbox", "exec"]
-    assert argv[3] == "--env-file"
-    assert argv[4] == "/tmp/danno-env-xyz"
+    assert argv[:5] == ["docker", "sandbox", "exec", "-e", "NVIDIA_API_KEY"]
     assert argv[5] == "box"
+    assert "--env-file" not in argv
+    assert "nv-secret" not in argv
+    assert envs[0] is not None and envs[0]["NVIDIA_API_KEY"] == "nv-secret"
 
 
 def test_claurst_run_ignores_agent(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -109,15 +125,19 @@ def test_claurst_run_ignores_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "--agent" not in _script(calls)
 
 
-def test_claurst_run_cloud_model_skips_relay(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_claurst_run_cloud_model_skips_relay(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     # A cloud (`nvidia/…`) model dials the provider directly through HTTPS_PROXY, so the
     # turn is a plain claurst argv — no relay bracket, no `bash -lc`, no OLLAMA_HOST.
+    env_file = tmp_path / "danno-env"
+    env_file.write_text("NVIDIA_API_KEY=nv-secret\n", encoding="utf-8")
     calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
     driver.claurst_run(
-        Runner(), "box", "go", model="nvidia/qwen/qwen3.5-397b-a17b", env_file="/tmp/danno-env"
+        Runner(), "box", "go", model="nvidia/qwen/qwen3.5-397b-a17b", env_file=str(env_file)
     )
     argv = calls[0]
-    assert argv[:5] == ["docker", "sandbox", "exec", "--env-file", "/tmp/danno-env"]
+    assert argv[:5] == ["docker", "sandbox", "exec", "-e", "NVIDIA_API_KEY"]
     assert argv[5] == "box"
     assert argv[6] == "claurst"  # direct exec, not bash -lc
     assert "bash" not in argv
@@ -171,6 +191,32 @@ def test_claurst_turn_error_event(monkeypatch: pytest.MonkeyPatch) -> None:
     assert turn.ok is False
     assert len(turn.errors) == 1
     assert turn.error_summary == "API error: [ollama] Model not found: unknown"
+
+
+def test_claurst_turn_surfaces_error_event_from_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Some fatal rejections (e.g. an unsupported-model error under --max-turns) claurst
+    # writes to STDERR with an EMPTY stdout, exiting 1. The error must still reach the read
+    # surface (not a silent early-stop): fold the stderr error event onto `errors`, dropping
+    # sbx's non-JSON stderr noise. Captured live: o4-mini on claurst 0.1.6 (Responses API
+    # unimplemented) → this exact shape (issue #99 bench5 investigation).
+    stderr = (
+        "Sandbox danno-bench-aider started successfully\n"
+        '{"error":"API error: [openai] Model \'o4-mini\' requires the OpenAI Responses API '
+        'which is not yet fully implemented.","type":"error"}\n'
+    )
+    _patch_capture(monkeypatch, stdout="", stderr=stderr, returncode=1)
+    turn = driver.claurst_run(Runner(), "box", "go", model="openai/o4-mini")
+    assert turn.ok is False
+    assert len(turn.errors) == 1
+    assert turn.error_summary is not None and "Responses API" in turn.error_summary
+
+
+def test_claurst_turn_stdout_error_wins_over_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    # When claurst DOES emit the error on stdout (the normal stream-json path), stderr is
+    # not double-counted — exactly one error event survives.
+    _patch_capture(monkeypatch, stdout=_ERROR + "\n", stderr=_ERROR + "\n", returncode=1)
+    turn = driver.claurst_run(Runner(), "box", "go")
+    assert len(turn.errors) == 1
 
 
 def test_claurst_turn_unparseable_stdout_yields_no_events(

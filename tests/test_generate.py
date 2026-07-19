@@ -332,7 +332,9 @@ def test_claurst_model_ref_uses_claurst_provider() -> None:
     assert claurst_provider_id(cfg, "glm") == "nvidia"
 
 
-def test_claurst_models_unmapped_openai_host_raises() -> None:
+def test_claurst_models_unmapped_openai_host_is_config_error() -> None:
+    # An undeclared generic openai host is a CONFIG error (declare claurst_provider),
+    # not an unbuilt-feature NotImplementedError (#106).
     cfg = DannoConfig(
         defaults=Defaults(default_agent="build"),
         backends={
@@ -345,8 +347,52 @@ def test_claurst_models_unmapped_openai_host_raises() -> None:
         },
         agents={"build": "m"},
     )
-    with pytest.raises(NotImplementedError, match="no claurst provider mapping"):
+    with pytest.raises(ValueError, match="claurst_provider"):
         generate_claurst_models(cfg)
+
+
+def test_claurst_declared_provider_makes_openai_self_describing() -> None:
+    # A DECLARED claurst_provider (#106): the provider id comes from the field (no host
+    # inference), and the overlay entry is self-describing — carrying the endpoint
+    # (`api`) and the key's env-var NAME (`env`), but never the secret VALUE.
+    cfg = DannoConfig(
+        defaults=Defaults(default_agent="build"),
+        backends={
+            "danno-openai": OpenAIBackend(
+                kind="openai",
+                base_url="https://api.openai.com/v1",
+                api_key_env="OPENAI_API_KEY",
+                claurst_provider="openai",
+            )
+        },
+        models={
+            "o4-mini": Model(
+                backend="danno-openai", tag="o4-mini", context_budget=200000, output_limit=8192
+            )
+        },
+        agents={"build": "o4-mini"},
+    )
+    assert claurst_provider_id(cfg, "o4-mini") == "openai"
+    assert claurst_model_ref(cfg, "o4-mini") == "openai/o4-mini"
+    overlay = generate_claurst_models(cfg)
+    prov = overlay["openai"]
+    assert prov["api"] == "https://api.openai.com/v1"
+    assert prov["env"] == ["OPENAI_API_KEY"]  # the var NAME danno both injects and reads
+    assert "o4-mini" in prov["models"]
+    # Security invariant: the secret value is never serialized into the overlay.
+    assert "sk-" not in json.dumps(overlay)
+
+
+def test_claurst_inferred_providers_overlay_unchanged() -> None:
+    # Inferred ollama/nvidia keep their catalog-driven entry (env: [], no `api`) — the
+    # #106 self-describing block only fires for a DECLARED provider, so existing configs
+    # are byte-identical.
+    cfg = _claurst_cfg()
+    overlay = generate_claurst_models(cfg)
+    assert overlay["ollama"]["env"] == []
+    assert "api" not in overlay["ollama"]
+    assert overlay["nvidia"]["env"] == []
+    assert "api" not in overlay["nvidia"]
 
 
 def test_claurst_models_llamacpp_is_stubbed() -> None:

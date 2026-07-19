@@ -110,6 +110,14 @@ class OpenAIBackend(BaseModel):
     kind: Literal["openai"]
     base_url: str
     api_key_env: str
+    # claurst's built-in provider id this backend maps to (e.g. "openai", "groq").
+    # claurst is launched `-m <provider>/<tag>` and resolves <provider> against its OWN
+    # registry, so danno must name it. When unset danno INFERS it from the host (NVIDIA
+    # NIM → "nvidia"); a generic OpenAI-compatible host (api.openai.com, a local proxy)
+    # has no inference, so declare it here. Data-driven (#106): adding a claurst provider
+    # is a danno.toml edit, not a source change. Emitted into claurst's models.json
+    # overlay as a self-describing entry (its `api` = base_url, `env` = [api_key_env]).
+    claurst_provider: str | None = None
     # opencode.jsonc `provider.<n>` / claurst registry provider-entry escape hatch.
     overrides: Overrides | None = None
 

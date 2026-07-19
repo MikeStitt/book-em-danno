@@ -7,6 +7,7 @@ here is the shape the parser targets; pin it live before relying on it."""
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -17,12 +18,18 @@ from danno_validator.driver import Turn
 
 
 def _patch_capture(
-    monkeypatch: pytest.MonkeyPatch, *, stdout: str = "", returncode: int = 0
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stdout: str = "",
+    returncode: int = 0,
+    envs: list[dict[str, str] | None] | None = None,
 ) -> list[list[str]]:
     calls: list[list[str]] = []
 
     def fake_run(cmd, **kw):  # type: ignore[no-untyped-def]
         calls.append(cmd)
+        if envs is not None:
+            envs.append(kw.get("env"))
         return subprocess.CompletedProcess(cmd, returncode, stdout, "")
 
     monkeypatch.setattr(exec_mod.subprocess, "run", fake_run)
@@ -107,14 +114,31 @@ def test_claude_run_session_skip_permissions_and_workspace(monkeypatch: pytest.M
     ]
 
 
-def test_claude_run_passes_env_file_for_auth(monkeypatch: pytest.MonkeyPatch) -> None:
-    # claude needs its auth token via --env-file; a bare exec inherits no env.
-    calls = _patch_capture(monkeypatch, stdout=_FULL_TURN)
-    driver.claude_run(Runner(), "box", "go", workspace="/repo", env_file="/tmp/danno-env-xyz")
+def test_claude_run_forwards_env_file_by_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # claude needs its auth token in the exec env; a bare exec inherits none. It is
+    # forwarded by NAME (`-e CLAUDE_CODE_OAUTH_TOKEN`) with the value in the subprocess env —
+    # sbx's `--env-file` is a no-op (issue #99) — and the secret never rides the argv.
+    env_file = tmp_path / "danno-env"
+    env_file.write_text("CLAUDE_CODE_OAUTH_TOKEN=tok-secret\n", encoding="utf-8")
+    envs: list[dict[str, str] | None] = []
+    calls = _patch_capture(monkeypatch, stdout=_FULL_TURN, envs=envs)
+    driver.claude_run(Runner(), "box", "go", workspace="/repo", env_file=str(env_file))
     argv = calls[0]
-    assert argv[:6] == ["docker", "sandbox", "exec", "-w", "/repo", "--env-file"]
-    assert argv[6] == "/tmp/danno-env-xyz"
+    assert argv[:7] == [
+        "docker",
+        "sandbox",
+        "exec",
+        "-w",
+        "/repo",
+        "-e",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    ]
     assert argv[7] == "box"
+    assert "--env-file" not in argv
+    assert "tok-secret" not in argv
+    assert envs[0] is not None and envs[0]["CLAUDE_CODE_OAUTH_TOKEN"] == "tok-secret"
 
 
 def test_claude_run_pins_model(monkeypatch: pytest.MonkeyPatch) -> None:
