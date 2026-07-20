@@ -40,6 +40,7 @@ class CaptureTarget:
     upstream: str  # scheme+host[:port] the proxy re-originates to (no path)
     proxy_port: int  # host port the proxy binds (0.0.0.0)
     capture_file: Path
+    is_local: bool = False
 
 
 def _free_port() -> int:
@@ -87,6 +88,7 @@ def plan_capture(config: DannoConfig, capture_dir: Path) -> tuple[DannoConfig, l
                     upstream=_upstream_for(backend.base_url),
                     proxy_port=port,
                     capture_file=capture_dir / f"{name}.jsonl",
+                    is_local=isinstance(backend, OllamaBackend),
                 )
             )
             rewritten = f"http://{_SANDBOX_HOST_ALIAS}:{port}{path}"
@@ -191,8 +193,13 @@ class CaptureBinding:
         self, *, suite: str, task_id: str, model: str | None
     ) -> list[CaptureTarget]:
         """This permutation's targets, each rewritten to its own namespaced JSONL:
-        `<capture_dir>/<suite>/<task>/<model-slug>.<backend>.jsonl`."""
+        `<capture_dir>/<suite>/<task>/<model-slug>.<backend>.jsonl`.
+
+        A bench cell captures its model backend plus local Ollama traffic used for
+        incidental requests. Reference rows without a model retain every target.
+        """
         seg = self._perm_segment(suite=suite, task_id=task_id, model=model)
+        model_backend = model.split("/", 1)[0] if model else None
         return [
             replace(
                 t,
@@ -201,6 +208,7 @@ class CaptureBinding:
                 / f"{seg.name}.{_slug(t.backend_name)}.jsonl",
             )
             for t in self.targets
+            if model_backend is None or t.is_local or t.backend_name == model_backend
         ]
 
     def permutation(

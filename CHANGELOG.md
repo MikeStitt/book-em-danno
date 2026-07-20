@@ -3,6 +3,12 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.16.3] - 2026-07-19
+
+### Bug Fixes
+
+- *(bench)* Filter capture targets by model backend
+
 ## [0.16.1] - 2026-07-16
 
 ### Bug Fixes
