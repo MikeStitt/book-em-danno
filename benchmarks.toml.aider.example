@@ -1,0 +1,291 @@
+# benchmarks.toml — the Aider Polyglot suite, all six languages.
+#
+# Auto-found next to danno.toml (or pass --benchmarks <path>). This file supplies
+# the TASKS; the adjacent danno.toml supplies the MODEL matrix. `danno bench` runs
+# the cross product: harnesses x models x tasks.
+#
+# These run the benchmark task *content* through danno's own execution model (one
+# headless turn in a disposable sandbox, graded by the exercise's own tests under
+# Aider's 2-attempt protocol) — NOT the official Docker-per-task harness, so the
+# pass counts are danno capability signals, not official leaderboard scores.
+# Unknown keys fail loud at load (config is code).
+
+# Harnesses-under-test swept in one run; each gets its own <out>/<harness>/ tree
+# plus a combined comparison report at the root. occ and claurst route to local
+# Ollama; opencode runs the same models via the local relay. (Add "claude" only
+# with a cloud danno.toml — the reference harness serves its own Anthropic model.)
+harnesses = ["occ", "opencode", "claurst"]
+
+# --- Runaway gates: per-cell BACKSTOPS, not fairness normalizers ----------------
+# Set high enough that no legitimate solve trips them; they exist to kill a runaway
+# (infinite tool-call loop, stuck stream). The harness's own step/turn cap is set to
+# max_turns; an external watchdog hard-kills only at max_turns + max(3, 10%).
+[gates]
+max_turns  = 60          # Gate 1 — inference calls per cell (2-attempt aider fits well under)
+max_tokens = 3_000_000   # Gate 2 — total tokens per cell
+timeout_s  = 3600.0      # Gate 3 — wall-clock backstop; generous for slow local qwen on a Mac
+
+# o4-mini is a fast paid cloud model: tighten its backstops so a loop can't run up
+# either wall-clock or token cost. (Per-model key = the danno.toml [models] name.)
+[gates.model."o4-mini"]
+timeout_s  = 1200.0
+max_tokens = 2_000_000
+
+# --- Aider Polyglot -------------------------------------------------------------
+# Self-contained Exercism exercises (stub + test files + instructions), one per
+# "<language>/<slug>". danno seeds the whole exercise dir, prompts the agent, then
+# builds+runs the exercise's own tests in the VM (restoring canonical test/editor
+# files first, so an agent can't force a pass by editing a test). All six languages
+# install their toolchain into the shell sandbox on first use.
+#
+#   TOOLCHAINS (auto-installed once per sandbox, egress union'd onto `balanced`):
+#     python     pip pytest
+#     go         go 1.23.4 tarball
+#     rust       rustup stable (minimal)
+#     cpp        apt cmake + g++ (Catch2 vendored per-exercise)
+#     java       Amazon Corretto JDK 21 + gradle wrapper (JDK 25 breaks pinned Gradle 8.7)
+#     javascript node/npm (base image) + per-exercise jest
+[aider_polyglot]
+enabled   = true
+isolation = "shared"     # shared (default): one sandbox, pristine per-exercise re-seed | per-test
+source    = "git:https://github.com/Aider-AI/polyglot-benchmark"
+select = [
+  # RANDOM order (deterministic shuffle of all 225 ids, seed 20260717), with three
+  # manual swaps to front-load all six languages into the first 10:
+  #   pos 8<->12 (javascript up), 9<->16 (python up), 10<->30 (cpp up).
+  # NOT sorted by language or difficulty (no public per-exercise difficulty data
+  # exists; see .docs/research-aider-polyglot-difficulty-by-test-case.md).
+  # Regenerate: sort ids, random.Random(20260717).shuffle(ids), then apply the swaps.
+  #
+  # ---- first 10 uncommented: one of every language (py/go/rust/cpp/java/js) ----
+  "java/satellite",
+  "rust/gigasecond",
+  "rust/nucleotide-codons",
+  "rust/acronym",
+  "rust/fizzy",
+  "java/word-search",
+  "go/hexadecimal",
+  "javascript/tournament",
+  "python/affine-cipher",
+  "cpp/meetup",
+  # ---- remainder (commented; uncomment any line to add it) ----
+  # "java/all-your-base",
+  # "java/connect",
+  # "java/forth",
+  # "rust/word-count",
+  # "rust/alphametics",
+  # "java/two-bucket",
+  # "javascript/simple-linked-list",
+  # "rust/parallel-letter-frequency",
+  # "java/queen-attack",
+  # "java/bottle-song",
+  # "python/wordy",
+  # "java/book-store",
+  # "go/paasio",
+  # "javascript/complex-numbers",
+  # "java/poker",
+  # "go/transpose",
+  # "javascript/palindrome-products",
+  # "go/dominoes",
+  # "go/error-handling",
+  # "java/kindergarten-garden",
+  # "java/food-chain",
+  # "rust/macros",
+  # "go/wordy",
+  # "cpp/linked-list",
+  # "javascript/go-counting",
+  # "java/pythagorean-triplet",
+  # "java/ocr-numbers",
+  # "java/series",
+  # "java/react",
+  # "go/bowling",
+  # "javascript/bowling",
+  # "cpp/spiral-matrix",
+  # "javascript/grep",
+  # "java/bank-account",
+  # "javascript/bottle-song",
+  # "go/kindergarten-garden",
+  # "javascript/space-age",
+  # "javascript/grade-school",
+  # "java/bowling",
+  # "go/matrix",
+  # "javascript/zipper",
+  # "cpp/circular-buffer",
+  # "python/react",
+  # "go/variable-length-quantity",
+  # "javascript/list-ops",
+  # "cpp/clock",
+  # "rust/book-store",
+  # "python/transpose",
+  # "go/two-bucket",
+  # "cpp/binary-search-tree",
+  # "cpp/parallel-letter-frequency",
+  # "java/affine-cipher",
+  # "go/connect",
+  # "python/pig-latin",
+  # "python/robot-name",
+  # "go/trinary",
+  # "python/connect",
+  # "rust/grade-school",
+  # "cpp/sublist",
+  # "cpp/phone-number",
+  # "cpp/robot-name",
+  # "python/grade-school",
+  # "javascript/wordy",
+  # "go/crypto-square",
+  # "javascript/binary",
+  # "go/alphametics",
+  # "rust/luhn-from",
+  # "python/grep",
+  # "cpp/diamond",
+  # "javascript/parallel-letter-frequency",
+  # "javascript/say",
+  # "cpp/zebra-puzzle",
+  # "rust/wordy",
+  # "javascript/meetup",
+  # "javascript/rectangles",
+  # "python/rest-api",
+  # "java/house",
+  # "cpp/crypto-square",
+  # "python/sgf-parsing",
+  # "javascript/two-bucket",
+  # "cpp/kindergarten-garden",
+  # "python/two-bucket",
+  # "javascript/robot-name",
+  # "java/mazy-mice",
+  # "python/book-store",
+  # "cpp/perfect-numbers",
+  # "javascript/twelve-days",
+  # "java/wordy",
+  # "rust/ocr-numbers",
+  # "rust/decimal",
+  # "javascript/ocr-numbers",
+  # "python/forth",
+  # "go/dnd-character",
+  # "javascript/connect",
+  # "javascript/scale-generator",
+  # "rust/dot-dsl",
+  # "java/hangman",
+  # "javascript/triangle",
+  # "go/poker",
+  # "java/tree-building",
+  # "cpp/gigasecond",
+  # "python/bowling",
+  # "go/say",
+  # "python/list-ops",
+  # "python/beer-song",
+  # "python/paasio",
+  # "java/protein-translation",
+  # "java/resistor-color-trio",
+  # "javascript/house",
+  # "python/poker",
+  # "go/pov",
+  # "javascript/word-search",
+  # "python/zebra-puzzle",
+  # "javascript/resistor-color-trio",
+  # "python/zipper",
+  # "java/alphametics",
+  # "rust/react",
+  # "python/dominoes",
+  # "javascript/queen-attack",
+  # "javascript/transpose",
+  # "java/palindrome-products",
+  # "rust/variable-length-quantity",
+  # "javascript/state-of-tic-tac-toe",
+  # "python/food-chain",
+  # "javascript/promises",
+  # "go/word-search",
+  # "rust/scale-generator",
+  # "rust/doubly-linked-list",
+  # "python/go-counting",
+  # "javascript/beer-song",
+  # "cpp/knapsack",
+  # "javascript/react",
+  # "cpp/bank-account",
+  # "go/react",
+  # "go/protein-translation",
+  # "javascript/zebra-puzzle",
+  # "javascript/alphametics",
+  # "python/bottle-song",
+  # "cpp/space-age",
+  # "javascript/rest-api",
+  # "go/bottle-song",
+  # "java/variable-length-quantity",
+  # "go/zebra-puzzle",
+  # "go/food-chain",
+  # "rust/forth",
+  # "go/forth",
+  # "rust/bowling",
+  # "python/scale-generator",
+  # "rust/two-bucket",
+  # "java/custom-set",
+  # "javascript/rational-numbers",
+  # "python/proverb",
+  # "python/pov",
+  # "cpp/allergies",
+  # "go/ledger",
+  # "cpp/grade-school",
+  # "java/zipper",
+  # "cpp/all-your-base",
+  # "java/sgf-parsing",
+  # "javascript/killer-sudoku-helper",
+  # "go/pig-latin",
+  # "rust/say",
+  # "javascript/food-chain",
+  # "cpp/dnd-character",
+  # "rust/robot-name",
+  # "java/rest-api",
+  # "go/markdown",
+  # "go/scale-generator",
+  # "rust/accumulate",
+  # "rust/xorcism",
+  # "java/simple-linked-list",
+  # "java/go-counting",
+  # "java/pig-latin",
+  # "rust/poker",
+  # "javascript/affine-cipher",
+  # "java/rational-numbers",
+  # "java/state-of-tic-tac-toe",
+  # "java/dominoes",
+  # "go/octal",
+  # "cpp/yacht",
+  # "javascript/pig-latin",
+  # "go/sublist",
+  # "python/variable-length-quantity",
+  # "go/robot-simulator",
+  # "javascript/poker",
+  # "java/phone-number",
+  # "javascript/forth",
+  # "cpp/queen-attack",
+  # "python/tree-building",
+  # "rust/grep",
+  # "rust/simple-cipher",
+  # "javascript/book-store",
+  # "go/counter",
+  # "javascript/phone-number",
+  # "rust/pig-latin",
+  # "java/change",
+  # "java/ledger",
+  # "python/hangman",
+  # "python/dot-dsl",
+  # "java/transpose",
+  # "cpp/complex-numbers",
+  # "go/beer-song",
+  # "javascript/variable-length-quantity",
+  # "java/zebra-puzzle",
+  # "java/twelve-days",
+  # "python/simple-linked-list",
+  # "python/phone-number",
+  # "javascript/sum-of-multiples",
+  # "go/book-store",
+  # "go/tree-building",
+  # "go/simple-linked-list",
+  # "javascript/ledger",
+  # "go/palindrome-products",
+  # "java/circular-buffer",
+  # "java/pov",
+]
+
+# --- SWE-bench Verified subset (disabled here) ----------------------------------
+[swebench]
+enabled = false
