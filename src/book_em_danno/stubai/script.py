@@ -21,6 +21,7 @@ server (`stubai.server`) drives:
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import threading
@@ -75,8 +76,8 @@ class Drip:
     streaming dialect dribbles one token per `1/tokens_per_s`, while a non-streaming
     dialect buffers the whole body and delivers it after the full drip duration
     (`n_tokens / tokens_per_s`). The non-streaming path matters for harnesses that dial a
-    non-streaming dialect (e.g. occ's OpenAI chat path under `CLAUDE_CODE_STREAMING=0`):
-    without the buffered delay the timeout gate would be silently untestable for them."""
+    non-streaming dialect (e.g. an OpenAI chat path with streaming disabled): without the
+    buffered delay the timeout gate would be silently untestable for them."""
 
     text: str = "done"
     tokens_per_s: float = 10.0
@@ -399,35 +400,144 @@ def _ndjson(obj: dict[str, Any]) -> bytes:
 
 
 def _render_responses(reply: Reply, *, model: str) -> WireResponse:
-    """opencode ↔ NVIDIA via `@ai-sdk/openai` streams the Responses API; the terminal
-    `response.completed` event carries `response.usage` (input/output tokens)."""
+    """Codex ↔ Ollama (and opencode ↔ NVIDIA via `@ai-sdk/openai`) stream the OpenAI
+    Responses API. Codex's Rust SSE parser needs the FULL streaming lifecycle — a bare
+    `response.completed` is silently unparseable (codex retries to its ceiling and never
+    executes a tool). This mirrors the real Ollama `/v1/responses` event sequence captured
+    live: `response.created` → `response.in_progress` → per-output-item `output_item.added`
+    → per-item delta events → `output_item.done` → `response.completed`. The terminal
+    `response.completed` carries `response.usage` (input/output tokens). No `[DONE]` sentinel
+    follows `response.completed` — real Ollama does not send one on this dialect."""
+    resp_id = "resp_stub"
+    seq = itertools.count()
     chunks: list[tuple[float, bytes]] = []
+
+    def emit(delay: float, event: dict[str, Any]) -> None:
+        event["sequence_number"] = next(seq)
+        chunks.append((delay, _sse(event)))
+
+    in_progress = {"id": resp_id, "status": "in_progress", "model": model, "output": []}
+    emit(0.0, {"type": "response.created", "response": dict(in_progress)})
+    emit(0.0, {"type": "response.in_progress", "response": dict(in_progress)})
+
     if reply.is_tool_call:
-        output: list[dict[str, Any]] = [
+        item_id = "fc_stub_1"
+        # A `call_id` so the recorded RESPONSES history has the `function_call` ↔
+        # `function_call_output` pairing the #97 well-formedness assertion checks (the
+        # Responses analog of the chat `tool_calls[].id`). Codex threads this back on the
+        # follow-up turn's `function_call_output`.
+        call_id = "call_stub_1"
+        args = _tool_call_arguments(reply)
+        added: dict[str, Any] = {
+            "type": "function_call",
+            "id": item_id,
+            "call_id": call_id,
+            "name": reply.tool_name,
+            "arguments": "",
+            "status": "in_progress",
+        }
+        emit(0.0, {"type": "response.output_item.added", "output_index": 0, "item": added})
+        emit(
+            0.0,
             {
-                "type": "function_call",
-                "name": reply.tool_name,
-                "arguments": _tool_call_arguments(reply),
-            }
-        ]
+                "type": "response.function_call_arguments.delta",
+                "output_index": 0,
+                "item_id": item_id,
+                "delta": args,
+            },
+        )
+        emit(
+            0.0,
+            {
+                "type": "response.function_call_arguments.done",
+                "output_index": 0,
+                "item_id": item_id,
+                "arguments": args,
+            },
+        )
+        done_item: dict[str, Any] = {**added, "arguments": args, "status": "completed"}
+        emit(0.0, {"type": "response.output_item.done", "output_index": 0, "item": done_item})
+        output: list[dict[str, Any]] = [done_item]
     else:
+        item_id = "msg_stub_1"
         delay = _drip_delay(reply)
+        added = {
+            "type": "message",
+            "id": item_id,
+            "role": "assistant",
+            "content": [],
+            "status": "in_progress",
+        }
+        emit(0.0, {"type": "response.output_item.added", "output_index": 0, "item": added})
+        emit(
+            0.0,
+            {
+                "type": "response.content_part.added",
+                "output_index": 0,
+                "content_index": 0,
+                "item_id": item_id,
+                "part": {"type": "output_text", "text": ""},
+            },
+        )
         for token in _text_tokens(reply.text):
-            chunks.append((delay, _sse({"type": "response.output_text.delta", "delta": token})))
-        output = [{"type": "message", "content": [{"type": "output_text", "text": reply.text}]}]
-    completed = {
-        "type": "response.completed",
-        "response": {
-            "output": output,
-            "usage": {
-                "input_tokens": reply.prompt_tokens,
-                "output_tokens": reply.completion_tokens,
-                "total_tokens": reply.total_tokens,
+            emit(
+                delay,
+                {
+                    "type": "response.output_text.delta",
+                    "output_index": 0,
+                    "content_index": 0,
+                    "item_id": item_id,
+                    "delta": token,
+                },
+            )
+        part = {"type": "output_text", "text": reply.text}
+        emit(
+            0.0,
+            {
+                "type": "response.output_text.done",
+                "output_index": 0,
+                "content_index": 0,
+                "item_id": item_id,
+                "text": reply.text,
+            },
+        )
+        emit(
+            0.0,
+            {
+                "type": "response.content_part.done",
+                "output_index": 0,
+                "content_index": 0,
+                "item_id": item_id,
+                "part": part,
+            },
+        )
+        done_item = {
+            "type": "message",
+            "id": item_id,
+            "role": "assistant",
+            "content": [part],
+            "status": "completed",
+        }
+        emit(0.0, {"type": "response.output_item.done", "output_index": 0, "item": done_item})
+        output = [done_item]
+
+    emit(
+        0.0,
+        {
+            "type": "response.completed",
+            "response": {
+                "id": resp_id,
+                "status": "completed",
+                "model": model,
+                "output": output,
+                "usage": {
+                    "input_tokens": reply.prompt_tokens,
+                    "output_tokens": reply.completion_tokens,
+                    "total_tokens": reply.total_tokens,
+                },
             },
         },
-    }
-    chunks.append((0.0, _sse(completed)))
-    chunks.append((0.0, _sse_done()))
+    )
     return WireResponse("text/event-stream", tuple(chunks), stream=True)
 
 

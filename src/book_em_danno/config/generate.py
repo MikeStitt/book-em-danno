@@ -107,10 +107,13 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
 
 
 def _override(overrides: Overrides | None, harness: str) -> dict[str, Any] | None:
-    """The override payload for `harness` ('opencode'/'claurst'), or None if unset."""
+    """The override payload for `harness` ('opencode'/'claurst'), or None if unset.
+
+    `Overrides` stores each harness block as an open extra (`extra="allow"`), so an
+    unset harness key has no attribute — default to None rather than raising."""
     if overrides is None:
         return None
-    payload: dict[str, Any] | None = getattr(overrides, harness)
+    payload: dict[str, Any] | None = getattr(overrides, harness, None)
     return payload or None
 
 
@@ -226,19 +229,24 @@ def claurst_provider_id(config: DannoConfig, model_name: str) -> str:
     """The claurst built-in provider id that serves a danno [models] entry.
 
     claurst resolves `-m <provider>/<tag>` against its own provider registry, so the
-    provider here is claurst's (ollama / nvidia / …), NOT the danno backend name that
-    `model_ref` emits for OpenCode. ollama-kind backends map to `ollama`; openai-kind
-    backends are mapped by host (NVIDIA NIM → `nvidia`). Unmapped hosts raise."""
+    provider here is claurst's (ollama / nvidia / openai / …), NOT the danno backend
+    name that `model_ref` emits for OpenCode. Resolution order (data-driven, #106):
+    a `claurst_provider` DECLARED on an openai-kind backend wins; else danno INFERS
+    (ollama-kind → `ollama`, NVIDIA NIM host → `nvidia`); a generic unmapped openai host
+    with no declaration is a config error (declare `claurst_provider` to fix)."""
     backend = config.backends[config.models[model_name].backend]
     if isinstance(backend, OllamaBackend):
         return "ollama"
     if isinstance(backend, OpenAIBackend):
+        if backend.claurst_provider:
+            return backend.claurst_provider
         host = urlsplit(backend.base_url).hostname or ""
         if host == _NVIDIA_NIM_HOST:
             return "nvidia"
-        raise NotImplementedError(
-            f"model '{model_name}': no claurst provider mapping for openai host "
-            f"'{host}' yet (only NVIDIA NIM at {_NVIDIA_NIM_HOST} is mapped)."
+        raise ValueError(
+            f"model '{model_name}': claurst can't infer a provider id for openai host "
+            f"'{host}'. Declare `claurst_provider = \"…\"` on its [backends.*] entry in "
+            f'danno.toml (e.g. claurst_provider = "openai" for api.openai.com).'
         )
     raise NotImplementedError(_LLAMACPP_STUB)
 
@@ -290,6 +298,14 @@ def generate_claurst_models(config: DannoConfig) -> dict[str, Any]:
                 "env": [],
                 "models": {},
             }
+            # A DECLARED (generic) OpenAI-compatible provider is outside claurst's
+            # bundled catalog, so make the overlay self-describing (#106): give it the
+            # endpoint and the key's env-var NAME so the in-VM claurst can authenticate.
+            # Inferred ollama/nvidia keep their catalog-driven entry (env: []) unchanged.
+            # The secret VALUE never lands here — only the var name (see cloud_env_lines).
+            if isinstance(backend, OpenAIBackend) and backend.claurst_provider:
+                prov_entry["api"] = backend.base_url
+                prov_entry["env"] = [backend.api_key_env]
             backend_ov = _override(getattr(backend, "overrides", None), "claurst")
             if backend_ov is not None:
                 prov_entry = deep_merge(prov_entry, backend_ov)
@@ -850,6 +866,125 @@ def _emit_json(
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(content, encoding="utf-8")
     return GenerateResult(Action.WROTE, dest, content, warnings=warns)
+
+
+# codex's config file inside its CODEX_HOME. Codex speaks ONLY the OpenAI Responses API
+# (Phase-0), so danno points a CUSTOM provider at host Ollama's `/v1` Responses endpoint.
+_CODEX_CONFIG_FILE = "config.toml"
+# The custom codex provider id danno writes. NOT `ollama`: that id is a RESERVED built-in in
+# codex-cli (refuses override) and defaults to `localhost:11434`, which the sandbox's
+# `no_proxy` bypass makes unreachable from the container (Phase-0, `.docs/codex-integration.md`).
+CODEX_PROVIDER_ID = "ollama-danno"
+_CODEX_PROVIDER_NAME = "Ollama (host via danno proxy)"
+# The custom provider id danno writes for a CLOUD codex row (Layer 3): a distinct, self-
+# describing block `[model_providers.openai-danno]` carrying the cloud `base_url` + `env_key`
+# + `wire_api = "responses"`. The id is internal (never surfaced in results); codex still
+# selects the model with `-m <bare tag>` WITHIN this provider.
+CODEX_CLOUD_PROVIDER_ID = "openai-danno"
+CODEX_CLOUD_PROVIDER_NAME = "OpenAI-compatible cloud (via danno proxy)"
+
+
+def codex_provider_id(config: DannoConfig, model_name: str) -> str:
+    """The codex provider id serving a danno [models] entry. Local Ollama → the custom
+    `ollama-danno` provider; an OpenAI-compatible cloud backend → `openai-danno`. Both are
+    custom `[model_providers.*]` blocks danno writes into config.toml (never the reserved
+    built-in `ollama`/`openai` ids codex refuses to override).
+
+    An `inert`/`llamacpp` backend has no codex-dialable endpoint, so it fails loud (Working
+    Rule 8) rather than launching to a silent mid-session failure. Whether a cloud endpoint
+    actually serves the Responses API codex needs is a separate, earlier check (the speakable
+    matrix — `backend_wire_offers` + `Harness.speaks`); this only picks the provider id."""
+    backend = config.backends[config.models[model_name].backend]
+    if isinstance(backend, OllamaBackend):
+        return CODEX_PROVIDER_ID
+    if isinstance(backend, OpenAIBackend):
+        return CODEX_CLOUD_PROVIDER_ID
+    raise NotImplementedError(
+        f"model '{model_name}': codex dials an Ollama or OpenAI-compatible backend; "
+        f"'{backend.kind}' is not one danno can wire for codex. Pick an Ollama/OpenAI model."
+    )
+
+
+def codex_model_ref(config: DannoConfig, model_name: str) -> str:
+    """The bare model tag danno passes codex as `-m <tag>` (codex selects the model WITHIN
+    its configured `model_provider`, so no `<provider>/` prefix — Phase-0). Validates the
+    backend is codex-reachable via `codex_provider_id`."""
+    model = config.models[model_name]
+    if not model.tag:
+        raise ValueError(f"model '{model_name}' needs a 'tag' for codex")
+    codex_provider_id(config, model_name)  # fail loud on an unreachable (non-Ollama) backend
+    return model.tag
+
+
+def codex_config_toml(
+    base_url: str,
+    *,
+    model: str | None = None,
+    env_key: str | None = None,
+    provider_id: str = CODEX_PROVIDER_ID,
+    provider_name: str = _CODEX_PROVIDER_NAME,
+    reasoning_effort: str | None = None,
+) -> str:
+    """The codex `config.toml` text: a custom provider (`provider_id`) pointing at `base_url`
+    with `wire_api = "responses"`. Local Ollama uses `ollama-danno` → host Ollama's `/v1`
+    (or the --capture recording proxy); a cloud row uses `openai-danno` → the cloud `base_url`
+    plus `env_key` (the NAME of the env var holding the key — the key itself is injected at
+    launch, never written here).
+
+    The single source of the config for BOTH the headless driver (`driver.codex_run`, which
+    writes it inline per turn because bench can't seed a VM file pre-provision) and the
+    interactive `generate_codex_config`. `model`, when set, pins the default model (the
+    headless path passes `-m` instead and omits it). `reasoning_effort`, when set, maps a
+    danno model's o-series knob to codex's top-level `model_reasoning_effort` (else the knob
+    would be silently dropped — Working Rule 8). Hand-written TOML — every value here (a
+    base_url, an optional bare tag, an env-var NAME, an effort enum) is a simple string with
+    no TOML-special characters, so no toml library is pulled in."""
+    lines = [f'model_provider = "{provider_id}"']
+    if model is not None:
+        lines.insert(0, f'model = "{model}"')
+    if reasoning_effort is not None:
+        lines.append(f'model_reasoning_effort = "{reasoning_effort}"')
+    lines += [
+        "",
+        f"[model_providers.{provider_id}]",
+        f'name = "{provider_name}"',
+        f'base_url = "{base_url}"',
+        'wire_api = "responses"',
+    ]
+    if env_key is not None:
+        lines.append(f'env_key = "{env_key}"')
+    return "\n".join(lines) + "\n"
+
+
+def generate_codex_config(
+    config: DannoConfig,
+    codex_home: Path,
+    *,
+    base_url: str,
+    model: str | None = None,
+    apply: bool = False,
+) -> list[GenerateResult]:
+    """Generate codex's `config.toml` into `codex_home` (its CODEX_HOME) — the codex peer of
+    `generate_claurst`, for the INTERACTIVE `danno sandbox start --agent codex` path.
+
+    danno owns this file wholesale (it is purely derived from danno.toml + the dial base_url),
+    so it is written, not merged. Same Tier-1 advise/apply semantics (WROTE / UNCHANGED /
+    DIFF). The headless bench/sweep path does NOT use this — it writes the same TOML inline
+    per turn (`driver.codex_run`)."""
+    content = codex_config_toml(base_url, model=model)
+    dest = Path(codex_home) / _CODEX_CONFIG_FILE
+    if dest.is_file():
+        existing = dest.read_text(encoding="utf-8")
+        if content == existing:
+            return [GenerateResult(Action.UNCHANGED, dest, content)]
+        diff = _diff(existing, content, dest)
+        if not apply:
+            return [GenerateResult(Action.DIFF, dest, content, diff)]
+        dest.write_text(content, encoding="utf-8")
+        return [GenerateResult(Action.WROTE, dest, content, diff)]
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(content, encoding="utf-8")
+    return [GenerateResult(Action.WROTE, dest, content)]
 
 
 def generate_claurst(

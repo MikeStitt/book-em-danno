@@ -21,14 +21,35 @@ class Overrides(BaseModel):
     diff (see `generate.deep_merge` / `generate.override_warnings`).
 
     The payload below each harness key is intentionally OPEN (that is the hatch); the
-    harness KEYS are CLOSED — a typo or an out-of-scope harness (e.g. `occ`, which has
-    no generated config file) fails loud via `extra="forbid"`. Attached to the elements
+    harness KEYS are CLOSED to the harnesses that HAVE a danno-generated config surface
+    (opencode's opencode.jsonc, claurst's registry overlay) — a typo or an out-of-scope
+    harness (e.g. `claude`, which has no generated config file) fails loud. The valid key
+    set is the harness registry's override-capable set (`Harness.overrides_key`), so
+    adding a config-generating harness needs no edit here. Attached to the elements
     whose danno.toml section maps 1:1 to a generated region: `[backends.<n>]`,
     `[models.<n>]`, `[agents.<n>]`, `[defaults]`."""
 
-    model_config = ConfigDict(extra="forbid")
-    opencode: dict[str, Any] | None = None
-    claurst: dict[str, Any] | None = None
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_out_of_scope_harness(cls, data: Any) -> Any:
+        """Fail loud on an override key that isn't a config-generating harness (Working
+        Rule 8). The valid set comes from the harness registry, imported lazily: the
+        registry lives in danno_validator, which imports book_em_danno, so a module-load
+        import here would cycle (same reason `commands/sandbox.py` imports it locally)."""
+        if isinstance(data, dict):
+            from danno_validator.harnesses import all_names, get
+
+            valid = {key for n in all_names() if (key := get(n).overrides_key)}
+            unknown = sorted(k for k in data if k not in valid)
+            if unknown:
+                allowed = ", ".join(sorted(valid))
+                raise ValueError(
+                    f"override harness key(s) {unknown} out of scope; a config-generating "
+                    f"harness is required. Valid: {allowed}."
+                )
+        return data
 
 
 class Project(BaseModel):
@@ -89,6 +110,21 @@ class OpenAIBackend(BaseModel):
     kind: Literal["openai"]
     base_url: str
     api_key_env: str
+    # The OpenAI wire protocol(s) this endpoint actually serves (its `offers` in the
+    # speakable-matrix predicate). api.openai.com serves both Chat completions AND the
+    # Responses API; NVIDIA NIM / vLLM / most compatible hosts serve Chat only. Default is the
+    # universal Chat baseline — declare `wire = ["chat", "responses"]` for an endpoint that
+    # also serves Responses (required for a codex cloud row). A harness can dial a model here
+    # only over a protocol in BOTH this set and what the harness speaks. See `backend_wire_offers`.
+    wire: frozenset[Literal["chat", "responses"]] = frozenset({"chat"})
+    # claurst's built-in provider id this backend maps to (e.g. "openai", "groq").
+    # claurst is launched `-m <provider>/<tag>` and resolves <provider> against its OWN
+    # registry, so danno must name it. When unset danno INFERS it from the host (NVIDIA
+    # NIM → "nvidia"); a generic OpenAI-compatible host (api.openai.com, a local proxy)
+    # has no inference, so declare it here. Data-driven (#106): adding a claurst provider
+    # is a danno.toml edit, not a source change. Emitted into claurst's models.json
+    # overlay as a self-describing entry (its `api` = base_url, `env` = [api_key_env]).
+    claurst_provider: str | None = None
     # opencode.jsonc `provider.<n>` / claurst registry provider-entry escape hatch.
     overrides: Overrides | None = None
 
@@ -105,7 +141,7 @@ class InertBackend(BaseModel):
     A model on an inert backend uses its `tag` as the raw harness model id/alias
     (e.g. "claude-opus-4-8", "sonnet"): `model_ref` returns the bare tag (no
     `<backend>/` prefix), and `danno bench --harness claude` passes it to `--model`.
-    Dialing an inert model with a config-driven harness (opencode/occ/claurst) fails
+    Dialing an inert model with a config-driven harness (opencode/claurst) fails
     loud, since there is no endpoint to reach.
     """
 
@@ -117,6 +153,26 @@ Backend = Annotated[
     OllamaBackend | LlamacppBackend | OpenAIBackend | InertBackend,
     Field(discriminator="kind"),
 ]
+
+
+def backend_wire_offers(backend: Backend) -> frozenset[str]:
+    """The wire protocols a backend serves (its `offers` in the speakable-matrix predicate).
+
+    `kind` decides it for all but OpenAI-compatible hosts, where only the author knows whether
+    the endpoint serves the Responses API (api.openai.com: yes; NVIDIA NIM / vLLM: Chat only) —
+    hence `OpenAIBackend.wire`. Ollama's `/v1` serves both Chat and Responses on a modern build;
+    the codex path fail-loud probes `/v1/responses` at run time (`ollama.responses_api_ready`),
+    so the static offer stays broad. `inert` is the claude reference row → Anthropic-native.
+    """
+    if isinstance(backend, OpenAIBackend):
+        return frozenset(backend.wire)
+    if isinstance(backend, OllamaBackend):
+        return frozenset({"chat", "responses"})
+    if isinstance(backend, LlamacppBackend):
+        return frozenset({"chat"})
+    if isinstance(backend, InertBackend):
+        return frozenset({"anthropic"})
+    raise ValueError(f"unknown backend kind for wire offers: {backend!r}")  # pragma: no cover
 
 
 class Model(BaseModel):
@@ -144,6 +200,11 @@ class Model(BaseModel):
     context_budget: int | None = None
     output_limit: int | None = None
     reasoning_effort: Literal["none", "low", "medium", "high"] | None = None
+    # The wire protocol(s) this model REQUIRES, when narrower than its backend offers (e.g. a
+    # reasoning model reachable only via the Responses API on a dual-protocol endpoint). Feeds
+    # the predicate `requires ⊆ (harness.speaks ∩ backend.offers)`. Default None = inherit (no
+    # extra constraint beyond what the harness and backend already share).
+    requires_wire: frozenset[Literal["chat", "responses"]] | None = None
     # opencode.jsonc `provider.<backend>.models.<tag>` / claurst model-entry escape
     # hatch (e.g. options.max_completion_tokens for an OpenAI o-series model).
     overrides: Overrides | None = None
@@ -252,7 +313,7 @@ class DannoConfig(BaseModel):
     npm: list[NpmPlugin] = Field(default_factory=list)
     sandbox: Sandbox = Field(default_factory=Sandbox)
     # Agent-general environment table: any KEY=value here is injected into the
-    # env-file of every config-driven agent (opencode/claurst/occ — NOT claude,
+    # env-file of every config-driven agent (opencode/claurst — NOT claude,
     # whose auth is injected separately). Values MAY embed {env:VAR} host
     # indirection, resolved at assembly time (see sandbox.assemble_harness_env).
     # Keys are OS env var names, so they are exempt from the no-'/' danno-name
@@ -264,7 +325,10 @@ class DannoConfig(BaseModel):
         # claurst has no danno-owned TOP-LEVEL config surface (danno owns only the
         # `agents` key of settings.json + the models.json overlay), so a top-level
         # claurst override would be silently ignored — reject it (Working Rule 8).
-        if self.defaults.overrides is not None and self.defaults.overrides.claurst is not None:
+        if (
+            self.defaults.overrides is not None
+            and getattr(self.defaults.overrides, "claurst", None) is not None
+        ):
             raise ValueError(
                 "[defaults.overrides.claurst] has no target: claurst has no danno-owned "
                 "top-level config. Use per-backend/model/agent overrides instead."

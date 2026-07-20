@@ -73,9 +73,9 @@ def test_non_inference_calls_are_skipped() -> None:
     assert [m.seq for m in metrics] == [2]
 
 
-def test_occ_style_wire_yields_nonzero_totals() -> None:
-    # §1.3: occ's stream-json reports tokens==0, but the wire usage is harness-agnostic,
-    # so parsing the capture gives real totals regardless of which agent produced it.
+def test_zero_reported_tokens_wire_yields_nonzero_totals() -> None:
+    # §1.3: a harness whose stream reports tokens==0 still has real wire usage, which is
+    # harness-agnostic, so parsing the capture gives real totals regardless of producer.
     records = _pair(1, 0.0, 1.0, _resp_body(1234, 56))
     roll = wm.rollup(wm.parse_capture_records(records))
     assert roll.input_tokens == 1234 and roll.output_tokens == 56
@@ -177,6 +177,36 @@ def test_render_transcript_responses_api_input_and_sse_output() -> None:
     assert "make a roster" in md  # input_text block flattened to text
     assert "tool_call: `glob({" in md  # final output[] function_call rendered
     assert "usage: prompt=50 completion=9" in md  # usage read from response.completed
+
+
+def test_render_transcript_codex_history_typed_items() -> None:
+    # codex's Responses-API request `input[]` replays prior turns as role-less typed items:
+    # `function_call` / `function_call_output` / `reasoning`. Each must render by its type,
+    # not collapse into a `?:` block (the #97 wire-shape parity fix).
+    records = [
+        {
+            "seq": 1,
+            "direction": "request",
+            "ts": 0.0,
+            "method": "POST",
+            "path": "/v1/responses",
+            "body": {
+                "model": "gpt-oss:20b",
+                "input": [
+                    {"role": "user", "content": [{"type": "input_text", "text": "run true"}]},
+                    {"type": "reasoning", "summary": [{"type": "summary_text", "text": "plan it"}]},
+                    {"type": "function_call", "name": "exec_command", "arguments": '{"c":"1"}'},
+                    {"type": "function_call_output", "call_id": "call_9", "output": "ok"},
+                ],
+            },
+        },
+        {"seq": 1, "direction": "response", "ts": 1.0, "status": 200, "body": {"output": []}},
+    ]
+    md = wm.render_transcript(records)
+    assert "plan it" in md  # reasoning item flattened
+    assert "tool_call: `exec_command({" in md  # function_call rendered by type
+    assert "tool_result (call_9):" in md  # function_call_output keyed by call_id
+    assert "run true" in md  # the role-bearing message still renders
 
 
 def test_headroom_pct() -> None:

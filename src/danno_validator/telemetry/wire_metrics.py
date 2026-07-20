@@ -2,8 +2,8 @@
 §6). Pure post-processing: the recording proxy already stamped each request/response
 with `ts` and the model's `/v1` response body carries `usage`, so token split, cached
 tokens, per-request round-trip time, tokens/sec, and the context-occupancy curve fall
-straight out of the recording — no new infrastructure and harness-agnostic (so occ, whose
-`stream-json` reports `tokens==0`, still yields real totals from the wire, §1.3).
+straight out of the recording — no new infrastructure and harness-agnostic (a harness whose
+own event stream underreports tokens still yields real totals from the wire, §1.3).
 
 `render_transcript` turns the same (already-redacted) JSONL into a readable markdown
 dump (§3.4); it inherits the proxy's secret redaction for free.
@@ -245,6 +245,19 @@ def render_transcript(records: list[dict]) -> str:
 
 
 def _render_message(msg: dict) -> list[str]:
+    # The Responses API's request `input[]` interleaves role-bearing `message` items with
+    # typed items that carry NO `role` (`function_call`, `function_call_output`, `reasoning`
+    # — codex's history shape). Render those by their type so a codex transcript's history
+    # isn't a wall of `?:` blocks (the #97 wire-shape parity).
+    kind = msg.get("type")
+    if kind == "function_call":
+        return [f"- tool_call: `{msg.get('name', '?')}({msg.get('arguments', '')})`", ""]
+    if kind == "function_call_output":
+        cid = msg.get("call_id", "?")
+        return [f"- tool_result ({cid}):", "", "```", _content_text(msg.get("output")), "```", ""]
+    if kind == "reasoning":
+        text = _content_text(msg.get("content") or msg.get("summary"))
+        return ["**reasoning:**", "", "```", text, "```", ""] if text else []
     role = msg.get("role", "?")
     text = _content_text(msg.get("content"))
     return [f"**{role}:**", "", "```", text, "```", ""]

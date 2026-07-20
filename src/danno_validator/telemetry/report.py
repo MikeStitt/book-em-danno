@@ -23,6 +23,8 @@ import json
 import sys
 from pathlib import Path
 
+from danno_validator import harnesses
+
 # --- small formatting helpers -------------------------------------------------
 
 
@@ -526,8 +528,12 @@ def write_report(
 def _col_label(payload: dict) -> str:
     harness = payload.get("harness", "?")
     models = payload.get("models") or []
-    if harness == "claude":
-        return "claude (ref)"
+    # A reference harness (claude) selects by --model, not the local matrix; tag its
+    # column so a merged report reads it as the baseline. Guard membership: merged
+    # payloads may carry an unknown/legacy harness name the registry wouldn't know.
+    is_known = harness in harnesses.all_names()
+    if is_known and harnesses.get(harness).kind is harnesses.HarnessKind.REFERENCE:
+        return f"{harness} (ref)"
     model = models[0] if len(models) == 1 else ",".join(models) or "?"
     model = model.removeprefix("ollama/").removesuffix(":latest")
     return f"{harness}\n{model}" if model else harness

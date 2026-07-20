@@ -15,12 +15,18 @@ from danno_validator import driver
 
 
 def _patch_capture(
-    monkeypatch: pytest.MonkeyPatch, *, stdout: str = "", returncode: int = 0
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stdout: str = "",
+    returncode: int = 0,
+    envs: list[dict[str, str] | None] | None = None,
 ) -> list[list[str]]:
     calls: list[list[str]] = []
 
     def fake_run(cmd, **kw):  # type: ignore[no-untyped-def]
         calls.append(cmd)
+        if envs is not None:
+            envs.append(kw.get("env"))
         return subprocess.CompletedProcess(cmd, returncode, stdout, "")
 
     monkeypatch.setattr(exec_mod.subprocess, "run", fake_run)
@@ -60,21 +66,31 @@ def test_opencode_run_minimal_command(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
 
 
-def test_opencode_run_passes_env_file_for_cloud_auth(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A swept cloud config's API key reaches opencode via --env-file (a bare exec
-    # inherits no host env); local Ollama models simply leave it unset.
-    calls = _patch_capture(monkeypatch, stdout=_TEXT_TURN)
-    driver.opencode_run(Runner(), "box", "go", workspace="/repo", env_file="/tmp/danno-env-xyz")
-    assert calls[0][:8] == [
+def test_opencode_run_forwards_env_file_by_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A swept cloud config's API key reaches opencode by NAME (`-e OPENAI_API_KEY`) with the
+    # value carried in the exec subprocess env — sbx's `--env-file` is a silent no-op and its
+    # baked `proxy-managed` placeholder would otherwise 401 (issue #99). The secret VALUE never
+    # rides the argv; local Ollama models pass no env-file and leave it all unset.
+    env_file = tmp_path / "danno-env"
+    env_file.write_text("OPENAI_API_KEY=sk-secret-value\n", encoding="utf-8")
+    envs: list[dict[str, str] | None] = []
+    calls = _patch_capture(monkeypatch, stdout=_TEXT_TURN, envs=envs)
+    driver.opencode_run(Runner(), "box", "go", workspace="/repo", env_file=str(env_file))
+    assert calls[0][:7] == [
         "docker",
         "sandbox",
         "exec",
         "-w",
         "/repo",
-        "--env-file",
-        "/tmp/danno-env-xyz",
-        "box",
+        "-e",
+        "OPENAI_API_KEY",
     ]
+    assert calls[0][7] == "box"
+    assert "--env-file" not in calls[0]
+    assert "sk-secret-value" not in calls[0]  # secret stays off the command line
+    assert envs[0] is not None and envs[0]["OPENAI_API_KEY"] == "sk-secret-value"
 
 
 def test_opencode_run_with_session_agent_and_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
