@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 
     from book_em_danno.config.schema import DannoConfig
     from book_em_danno.core.exec import Runner
-    from danno_validator.driver import TurnFn
+    from danno_validator.driver import CodexProvider, TurnFn
     from danno_validator.matrix import ConfigVariant
 
 
@@ -72,6 +72,17 @@ class Harness:
     name: str
     kind: HarnessKind
     wire_protocol: WireProtocol
+    # The wire protocol(s) this harness can actually speak. `wire_protocol` is its PRIMARY/
+    # native one (routes `--capture` + the #97 parity assert); `speaks` is the full set it can
+    # dial — a harness may speak more than one via its provider choice (opencode speaks both
+    # Chat and Responses via the npm provider it emits). Consumed by the speakable-matrix
+    # predicate: a model's required protocol must lie in `speaks ∩ backend.offers`.
+    speaks: frozenset[WireProtocol]
+    # The backend `kind`s this harness's model matrix can dial (codex Phase-0 = {"ollama"};
+    # a dialer = {"ollama", "openai"}; the claude reference row = {"inert"}). A model on any
+    # other kind is a harness-capability boundary — dropped from an implicit sweep (loud N/A)
+    # or a loud failure when named via `--only`. See `_dialer.dialable_variants`.
+    dials: frozenset[str]
     # The prebuilt `docker sandbox create <image>` image to provision. "shell" for
     # harnesses installed post-provision (claurst); otherwise the harness's own name.
     sandbox_image: str
@@ -154,6 +165,13 @@ class Harness:
     # a pinned release/source — the update path is `danno sandbox rebuild`, so the caller
     # fails loud pointing there). `(runner, name) -> advised command`.
     update_advice: Callable[[Runner, str], list[str]] | None = None
+    # The CLOUD dial target (base_url + key-env NAME + reasoning knob) for one variant, or
+    # None for a local/non-cloud row. Only codex sets it: codex writes its config.toml INLINE
+    # in the VM per turn, so — unlike opencode, whose rewritten config is host-generated — the
+    # cloud base_url must be threaded to the driver at turn time. Resolved from the (capture-
+    # rewritten) backend and passed through `run_turn_for` to the codex `TurnFn`. None for
+    # every other harness (their turn seam never receives it).
+    dial_provider: Callable[[DannoConfig, ConfigVariant], CodexProvider | None] | None = None
 
 
 _REGISTRY: dict[str, Harness] = {}

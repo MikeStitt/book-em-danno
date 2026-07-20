@@ -18,9 +18,17 @@ from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import Runner
 from danno_validator.driver import Turn, TurnFn, opencode_run
 from danno_validator.harnesses import Harness, HarnessKind, WireProtocol, register
-from danno_validator.harnesses._dialer import openai_compat_variants
+from danno_validator.harnesses._dialer import dialable_variants
 from danno_validator.matrix import ConfigVariant
 from danno_validator.sweep import DEFAULT_RUN_AGENT
+
+# opencode dials both local Ollama and an OpenAI-compatible cloud (each becomes a provider in
+# the generated opencode.jsonc) and speaks both Chat and Responses via that provider; it never
+# dials an inert model (that's the claude reference row's native `--model` lever). A model it
+# can't speak is dropped from an implicit sweep (loud N/A) and fails loud when named via
+# `--only`. See `_dialer.dialable_variants`. Kept next to the registry declaration below.
+_OPENCODE_SPEAKS = frozenset({WireProtocol.CHAT, WireProtocol.RESPONSES})
+_OPENCODE_DIALS = frozenset({"ollama", "openai"})
 
 
 def _install(runner: Runner, sandbox: str, config: DannoConfig | None = None) -> list[list[str]]:
@@ -84,7 +92,9 @@ def _dial_ref(config: DannoConfig, variant: ConfigVariant) -> str | None:
 
 
 def _model_matrix(config: DannoConfig, only: Sequence[str] | None) -> list[ConfigVariant]:
-    return openai_compat_variants(config, only)
+    return dialable_variants(
+        config, only, speaks=_OPENCODE_SPEAKS, dials=_OPENCODE_DIALS, harness="opencode"
+    )
 
 
 def _provenance(config: DannoConfig) -> dict:
@@ -96,6 +106,10 @@ register(
         name="opencode",
         kind=HarnessKind.DIALER,
         wire_protocol=WireProtocol.CHAT,
+        # opencode dials both Chat and Responses cloud endpoints via the provider it emits
+        # into opencode.jsonc (its native protocol is Chat; #97 parity keys off `wire_protocol`).
+        speaks=_OPENCODE_SPEAKS,
+        dials=_OPENCODE_DIALS,
         sandbox_image="opencode",
         supports_capture=True,
         reads_generated_config=True,

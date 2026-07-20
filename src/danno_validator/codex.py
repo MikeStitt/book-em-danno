@@ -25,6 +25,7 @@ from book_em_danno.commands.sandbox import exec_in_container
 from book_em_danno.core.exec import Runner
 from danno_validator.driver import (
     CODEX_HOME_DIR,
+    CodexProvider,
     Turn,
     TurnFn,
     _codex_base_url,
@@ -107,13 +108,17 @@ def authed_codex_run(
     capture_port: int | None = None,
     model_override: str | None = None,
     max_turns: int | None = None,
+    codex_provider: CodexProvider | None = None,
 ) -> TurnFn:
     """A `TurnFn` that drives `codex_run` with `env_file` bound, for `run_sweep`/bench.
 
     Mirrors `claurst.authed_claurst_run` so the level runners just call a plain `TurnFn`.
     Local Ollama codex needs no auth; `env_file` is forwarded to the exec for matrix parity
     and is harmless when None. codex's per-turn config.toml is written inside `codex_run`;
-    `capture_port` (from `--capture`) points its Responses base_url at the recording proxy.
+    `capture_port` (from `--capture`) points a LOCAL Ollama row's Responses base_url at the
+    recording proxy. A CLOUD row instead passes `codex_provider` (the model's OpenAI-
+    compatible dial target — base_url + key-env NAME + reasoning knob), threaded from bench
+    via `run_turn_for`; None → local Ollama (the driver's relay-free path).
 
     `model_override`, when set, is the bare tag codex actually dials (`-m`) instead of the
     caller's generic matrix ref — bench/sweep report the generic `ollama/<tag>` ref (to keep
@@ -144,6 +149,7 @@ def authed_codex_run(
             env_file=env_file,
             capture_port=capture_port,
             max_turns=max_turns,
+            codex_provider=codex_provider,
         )
 
     return run

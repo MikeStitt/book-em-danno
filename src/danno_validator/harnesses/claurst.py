@@ -21,8 +21,15 @@ from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import Runner
 from danno_validator import claurst as _impl
 from danno_validator.harnesses import Harness, HarnessKind, WireProtocol, register
-from danno_validator.harnesses._dialer import openai_compat_variants
+from danno_validator.harnesses._dialer import dialable_variants
 from danno_validator.matrix import ConfigVariant
+
+# claurst dials local Ollama and its wired OpenAI-compatible cloud providers but speaks Chat
+# ONLY (claurst 0.1.6 cannot speak the Responses API); it never dials an inert model. A model
+# it can't speak (inert, or a Responses-only cloud endpoint) is dropped from an implicit sweep
+# (loud N/A) and fails loud when named via `--only`. Kept next to the registry declaration.
+_CLAURST_SPEAKS = frozenset({WireProtocol.CHAT})
+_CLAURST_DIALS = frozenset({"ollama", "openai"})
 
 
 def _install(runner: Runner, sandbox: str, config: DannoConfig | None = None) -> list[list[str]]:
@@ -51,7 +58,9 @@ def _launch_argv(model: str | None, harness_args: list[str], capture_port: int |
 
 
 def _model_matrix(config: DannoConfig, only: Sequence[str] | None) -> list[ConfigVariant]:
-    return openai_compat_variants(config, only)
+    return dialable_variants(
+        config, only, speaks=_CLAURST_SPEAKS, dials=_CLAURST_DIALS, harness="claurst"
+    )
 
 
 def _provenance(config: DannoConfig) -> dict:
@@ -63,6 +72,9 @@ register(
         name="claurst",
         kind=HarnessKind.DIALER,
         wire_protocol=WireProtocol.CHAT,
+        # claurst 0.1.6 speaks Chat completions only (no Responses API).
+        speaks=_CLAURST_SPEAKS,
+        dials=_CLAURST_DIALS,
         sandbox_image=_impl.CLAURST_SANDBOX_IMAGE,
         supports_capture=True,
         capture_via_relay=True,

@@ -16,6 +16,7 @@ from book_em_danno.config.schema import (
     Model,
     OllamaBackend,
     OpenAIBackend,
+    backend_wire_offers,
 )
 from book_em_danno.core import exec as exec_mod
 from book_em_danno.core.exec import CommandFailedError, Runner
@@ -277,8 +278,157 @@ def test_openai_compat_variants_explicit_only_inert_fails_loud() -> None:
     cfg = _claude_config()
     # asking a config-driven harness to run an inert (claude-only) model is impossible;
     # fail loud rather than silently collapse to an empty sweep (Working Rule 8).
-    with pytest.raises(ValueError, match="inert backend"):
+    with pytest.raises(ValueError, match="can't speak these models"):
         bench._openai_compat_variants(cfg, ["opus"])
+
+
+def test_codex_matrix_drops_cloud_model_from_implicit_sweep(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # codex speaks the Responses API only. The NIM cloud row is Chat-only (default
+    # `wire = {chat}`), so even though codex now dials `openai` backends, it shares no wire
+    # with NIM → the row is DROPPED (a harness-capability boundary), so codex sweeps only the
+    # local qwen; it does NOT abort the whole codex column the way the old raise did.
+    cfg = _cloud_config()
+    codex = harnesses.get("codex")
+    variants = codex.model_matrix(cfg, None)
+    assert [v.model_name for v in variants] == ["qwen"]
+    # loud, not silent: the skipped cloud row is named with its reason (via log_warn → stdout).
+    out = capsys.readouterr().out
+    assert "nemo" in out and "codex" in out
+
+
+def test_codex_matrix_explicit_only_cloud_model_fails_loud() -> None:
+    # But naming the Chat-only cloud model explicitly (`--only nemo`) is an impossible
+    # pairing → fail loud (Working Rule 8), rather than collapse to a fake-green empty sweep.
+    cfg = _cloud_config()
+    codex = harnesses.get("codex")
+    with pytest.raises(ValueError, match="can't speak these models"):
+        codex.model_matrix(cfg, ["nemo"])
+
+
+def _responses_cloud_config() -> DannoConfig:
+    """A mixed local + Responses-capable cloud matrix: `qwen` (Ollama) and `o4` (an OpenAI
+    backend declaring `wire = ["chat", "responses"]`, so codex CAN speak it — Layer 3)."""
+    return DannoConfig(
+        backends={
+            "ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1"),
+            "oai": OpenAIBackend(
+                kind="openai",
+                base_url="https://api.openai.com/v1",
+                api_key_env="OPENAI_API_KEY",
+                wire=frozenset({"chat", "responses"}),
+            ),
+        },
+        models={
+            "qwen": Model(
+                backend="ollama", tag="qwen3:latest", context_budget=32000, output_limit=8192
+            ),
+            "o4": Model(
+                backend="oai",
+                tag="o4-mini",
+                context_budget=200000,
+                output_limit=32768,
+                reasoning_effort="high",
+            ),
+        },
+        agents={"build": "qwen"},
+    )
+
+
+def test_codex_matrix_includes_responses_capable_cloud_model() -> None:
+    # Layer 3: an OpenAI backend that offers the Responses API IS speakable by codex, so the
+    # cloud row is swept (not dropped) alongside the local one.
+    cfg = _responses_cloud_config()
+    variants = harnesses.get("codex").model_matrix(cfg, None)
+    assert [v.model_name for v in variants] == ["o4", "qwen"]  # sorted by danno.toml key
+
+
+def test_codex_dial_provider_cloud_and_local() -> None:
+    # The cloud dial target threaded to the codex turn (base_url + key-env NAME + reasoning
+    # knob) is resolved from the backend; a local Ollama row gets None (relay-free path).
+    cfg = _responses_cloud_config()
+    codex = harnesses.get("codex")
+    assert codex.dial_provider is not None
+    o4 = next(v for v in codex.model_matrix(cfg, None) if v.model_name == "o4")
+    prov = codex.dial_provider(cfg, o4)
+    assert prov is not None
+    assert prov.base_url == "https://api.openai.com/v1"
+    assert prov.env_key == "OPENAI_API_KEY"
+    assert prov.reasoning_effort == "high"
+    qwen = next(v for v in codex.model_matrix(cfg, None) if v.model_name == "qwen")
+    assert codex.dial_provider(cfg, qwen) is None
+
+
+def test_harness_dial_provider_none_for_non_codex() -> None:
+    # Only codex sets `dial_provider`; opencode/claurst/claude return None so `run_turn_for`
+    # never hands their factories the codex-only kwarg.
+    cfg = _responses_cloud_config()
+    o4 = next(v for v in harnesses.get("codex").model_matrix(cfg, None) if v.model_name == "o4")
+    for harness in ("opencode", "claurst", "claude"):
+        assert bench._harness_dial_provider(harness, cfg, o4) is None
+
+
+def test_opencode_matrix_still_sweeps_cloud_model() -> None:
+    # Regression: the codex filter must NOT change opencode/claurst — they still dial the
+    # NIM cloud row (they speak its chat wire); only codex's narrower dial-set excludes it.
+    cfg = _cloud_config()
+    # (model_variants sorts by danno.toml key, so nemo precedes qwen)
+    assert [v.model_name for v in harnesses.get("opencode").model_matrix(cfg, None)] == [
+        "nemo",
+        "qwen",
+    ]
+
+
+def test_backend_wire_offers_by_kind() -> None:
+    # Ollama serves both wires; a default OpenAI-compatible host is Chat-only (NIM/vLLM); an
+    # endpoint that also serves Responses declares `wire = ["chat", "responses"]`.
+    assert backend_wire_offers(OllamaBackend(kind="ollama", base_url="x")) == frozenset(
+        {"chat", "responses"}
+    )
+    nim = OpenAIBackend(kind="openai", base_url="x", api_key_env="K")
+    assert backend_wire_offers(nim) == frozenset({"chat"})
+    openai = OpenAIBackend(
+        kind="openai", base_url="x", api_key_env="K", wire=frozenset({"chat", "responses"})
+    )
+    assert backend_wire_offers(openai) == frozenset({"chat", "responses"})
+
+
+def _responses_only_ollama_config() -> DannoConfig:
+    """A single Ollama model flagged `requires_wire = ["responses"]` — the protocol arm of the
+    predicate, isolated from backend kind (every harness here dials the same Ollama endpoint)."""
+    return DannoConfig(
+        backends={"ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1")},
+        models={
+            "qwen": Model(
+                backend="ollama",
+                tag="qwen3:latest",
+                context_budget=32000,
+                output_limit=8192,
+                requires_wire=frozenset({"responses"}),
+            )
+        },
+        agents={"build": "qwen"},
+    )
+
+
+def test_requires_wire_gates_chat_only_harness(capsys: pytest.CaptureFixture[str]) -> None:
+    # A Responses-only model is speakable by opencode (speaks chat+responses) but N/A for
+    # claurst (speaks chat only) — proven WITHOUT a cloud backend, so it isolates the wire
+    # arm from the `dials` (backend-kind) arm.
+    cfg = _responses_only_ollama_config()
+    assert [v.model_name for v in harnesses.get("opencode").model_matrix(cfg, None)] == ["qwen"]
+    assert harnesses.get("claurst").model_matrix(cfg, None) == []
+    out = capsys.readouterr().out
+    assert "responses" in out and "claurst" in out
+
+
+def test_requires_wire_explicit_only_chat_only_harness_fails_loud() -> None:
+    # Naming the Responses-only model explicitly for a Chat-only harness is an impossible
+    # pairing → fail loud (Working Rule 8), not a silent empty sweep.
+    cfg = _responses_only_ollama_config()
+    with pytest.raises(ValueError, match="can't speak these models"):
+        harnesses.get("claurst").model_matrix(cfg, ["qwen"])
 
 
 def test_run_bench_non_claude_harness_skips_inert_models(

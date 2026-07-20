@@ -876,21 +876,32 @@ _CODEX_CONFIG_FILE = "config.toml"
 # `no_proxy` bypass makes unreachable from the container (Phase-0, `.docs/codex-integration.md`).
 CODEX_PROVIDER_ID = "ollama-danno"
 _CODEX_PROVIDER_NAME = "Ollama (host via danno proxy)"
+# The custom provider id danno writes for a CLOUD codex row (Layer 3): a distinct, self-
+# describing block `[model_providers.openai-danno]` carrying the cloud `base_url` + `env_key`
+# + `wire_api = "responses"`. The id is internal (never surfaced in results); codex still
+# selects the model with `-m <bare tag>` WITHIN this provider.
+CODEX_CLOUD_PROVIDER_ID = "openai-danno"
+CODEX_CLOUD_PROVIDER_NAME = "OpenAI-compatible cloud (via danno proxy)"
 
 
 def codex_provider_id(config: DannoConfig, model_name: str) -> str:
     """The codex provider id serving a danno [models] entry. Local Ollama → the custom
-    `ollama-danno` provider danno writes into config.toml (never the reserved `ollama`).
+    `ollama-danno` provider; an OpenAI-compatible cloud backend → `openai-danno`. Both are
+    custom `[model_providers.*]` blocks danno writes into config.toml (never the reserved
+    built-in `ollama`/`openai` ids codex refuses to override).
 
-    Codex was Phase-0-spiked against LOCAL Ollama only; a cloud codex row is not yet wired
-    (its provider would need a Responses-API `env_key`), so a non-Ollama backend fails loud
-    (Working Rule 8) rather than launching to a silent mid-session failure."""
+    An `inert`/`llamacpp` backend has no codex-dialable endpoint, so it fails loud (Working
+    Rule 8) rather than launching to a silent mid-session failure. Whether a cloud endpoint
+    actually serves the Responses API codex needs is a separate, earlier check (the speakable
+    matrix — `backend_wire_offers` + `Harness.speaks`); this only picks the provider id."""
     backend = config.backends[config.models[model_name].backend]
     if isinstance(backend, OllamaBackend):
         return CODEX_PROVIDER_ID
+    if isinstance(backend, OpenAIBackend):
+        return CODEX_CLOUD_PROVIDER_ID
     raise NotImplementedError(
-        f"model '{model_name}': codex is wired for local Ollama only so far "
-        "(cloud codex over the Responses API is not yet spiked). Pick an Ollama model."
+        f"model '{model_name}': codex dials an Ollama or OpenAI-compatible backend; "
+        f"'{backend.kind}' is not one danno can wire for codex. Pick an Ollama/OpenAI model."
     )
 
 
@@ -906,26 +917,37 @@ def codex_model_ref(config: DannoConfig, model_name: str) -> str:
 
 
 def codex_config_toml(
-    base_url: str, *, model: str | None = None, env_key: str | None = None
+    base_url: str,
+    *,
+    model: str | None = None,
+    env_key: str | None = None,
+    provider_id: str = CODEX_PROVIDER_ID,
+    provider_name: str = _CODEX_PROVIDER_NAME,
+    reasoning_effort: str | None = None,
 ) -> str:
-    """The codex `config.toml` text: a custom `ollama-danno` provider pointing at `base_url`
-    (host Ollama's `/v1` Responses endpoint, or the --capture recording proxy) with
-    `wire_api = "responses"`.
+    """The codex `config.toml` text: a custom provider (`provider_id`) pointing at `base_url`
+    with `wire_api = "responses"`. Local Ollama uses `ollama-danno` → host Ollama's `/v1`
+    (or the --capture recording proxy); a cloud row uses `openai-danno` → the cloud `base_url`
+    plus `env_key` (the NAME of the env var holding the key — the key itself is injected at
+    launch, never written here).
 
     The single source of the config for BOTH the headless driver (`driver.codex_run`, which
     writes it inline per turn because bench can't seed a VM file pre-provision) and the
     interactive `generate_codex_config`. `model`, when set, pins the default model (the
-    headless path passes `-m` instead and omits it); `env_key`, when set, names the env var
-    holding a cloud provider key (unused for local Ollama). Hand-written TOML — the values
-    here (a base_url, an optional bare tag, an optional env-var NAME) are all simple strings
-    with no TOML-special characters, so no toml library is pulled in."""
-    lines = [f'model_provider = "{CODEX_PROVIDER_ID}"']
+    headless path passes `-m` instead and omits it). `reasoning_effort`, when set, maps a
+    danno model's o-series knob to codex's top-level `model_reasoning_effort` (else the knob
+    would be silently dropped — Working Rule 8). Hand-written TOML — every value here (a
+    base_url, an optional bare tag, an env-var NAME, an effort enum) is a simple string with
+    no TOML-special characters, so no toml library is pulled in."""
+    lines = [f'model_provider = "{provider_id}"']
     if model is not None:
         lines.insert(0, f'model = "{model}"')
+    if reasoning_effort is not None:
+        lines.append(f'model_reasoning_effort = "{reasoning_effort}"')
     lines += [
         "",
-        f"[model_providers.{CODEX_PROVIDER_ID}]",
-        f'name = "{_CODEX_PROVIDER_NAME}"',
+        f"[model_providers.{provider_id}]",
+        f'name = "{provider_name}"',
         f'base_url = "{base_url}"',
         'wire_api = "responses"',
     ]

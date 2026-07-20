@@ -101,6 +101,11 @@ register(
         name="claude",
         kind=HarnessKind.REFERENCE,
         wire_protocol=WireProtocol.ANTHROPIC,
+        # The reference row talks straight to api.anthropic.com and selects an inert model by
+        # native `--model` (its `reference_matrix` keeps ONLY inert models — the mirror of a
+        # dialer dropping them).
+        speaks=frozenset({WireProtocol.ANTHROPIC}),
+        dials=frozenset({"inert"}),
         sandbox_image="claude",
         supports_capture=False,
         overrides_key=None,

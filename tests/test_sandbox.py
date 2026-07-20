@@ -842,14 +842,17 @@ def test_resolve_codex_model_raw_ollama_ref_strips_prefix() -> None:
 
 
 def test_resolve_codex_model_raw_non_ollama_ref_fails_loud() -> None:
-    with pytest.raises(CommandFailedError, match="local Ollama only"):
+    # A raw non-Ollama ref: danno can't derive its key/reachability, so it fails loud
+    # (declare it as a [models] entry on a supported backend instead).
+    with pytest.raises(CommandFailedError, match="can't be wired by danno"):
         sandbox.resolve_codex_model(_claurst_cfg(), "anthropic/claude-sonnet-4-6")
 
 
-def test_resolve_codex_model_cloud_name_fails_loud() -> None:
-    # A [models] entry on a cloud backend: codex cloud over Responses is not yet spiked.
-    with pytest.raises(CommandFailedError):
-        sandbox.resolve_codex_model(_claurst_cfg(), "nemotron")
+def test_resolve_codex_model_cloud_name_resolves_bare_tag() -> None:
+    # Layer 3: a [models] entry on an OpenAI-compatible cloud backend resolves to codex's
+    # bare `-m` tag (whether that endpoint serves the Responses API codex needs is the
+    # matrix's job, not this resolver's).
+    assert sandbox.resolve_codex_model(_claurst_cfg(), "nemotron") == "nvidia/nemotron"
 
 
 def test_resolve_codex_model_unknown_name_fails_loud() -> None:
@@ -862,8 +865,17 @@ def test_codex_cloud_env_lines_local_is_empty() -> None:
     assert sandbox.codex_cloud_env_lines(_claurst_cfg(), "ollama/foo:1b") == []
 
 
-def test_codex_cloud_env_lines_cloud_model_fails_loud() -> None:
-    with pytest.raises(CommandFailedError, match="not yet"):
+def test_codex_cloud_env_lines_cloud_injects_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Layer 3: a cloud codex row injects its provider key under the backend's OWN var name
+    # (codex's config.toml references it as `env_key`), landing only in the chmod-600 env-file.
+    monkeypatch.setenv("NVIDIA_API_KEY", "secret-nim")
+    lines = sandbox.codex_cloud_env_lines(_claurst_cfg(), "nemotron")
+    assert lines == ["NVIDIA_API_KEY=secret-nim"]
+
+
+def test_codex_cloud_env_lines_cloud_key_unset_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    with pytest.raises(CommandFailedError, match="NVIDIA_API_KEY"):
         sandbox.codex_cloud_env_lines(_claurst_cfg(), "nemotron")
 
 

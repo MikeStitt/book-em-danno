@@ -32,7 +32,7 @@ from book_em_danno.config.generate import generate
 from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import CommandFailedError, Runner, log_info, log_warn
 from danno_validator import baseline, harnesses
-from danno_validator.driver import seed_workspace
+from danno_validator.driver import CodexProvider, seed_workspace
 from danno_validator.level0 import DEFAULT_RUN_AGENT
 from danno_validator.matrix import ConfigVariant
 from danno_validator.suites.aider import (
@@ -161,9 +161,16 @@ def _claude_inert_models(config: DannoConfig, only: Sequence[str] | None) -> lis
 
 
 def _openai_compat_variants(config: DannoConfig, only: Sequence[str] | None) -> list[ConfigVariant]:
-    """The dialer model matrix: the declared catalog minus inert-backend models
-    (registry-backed; fails loud on an inert `--only` for a dialer)."""
-    return harnesses._dialer.openai_compat_variants(config, only)
+    """The dialer model matrix: the declared catalog restricted to dialable backend kinds
+    (`{"ollama", "openai"}`) — i.e. minus inert-backend models. Registry-backed; drops inert
+    from an implicit sweep (loud) and fails loud on an inert `--only` for a dialer."""
+    return harnesses._dialer.dialable_variants(
+        config,
+        only,
+        speaks=frozenset({"chat", "responses"}),
+        dials=frozenset({"ollama", "openai"}),
+        harness="opencode",
+    )
 
 
 def _harness_dial_ref(harness: str, config: DannoConfig, variant: ConfigVariant) -> str | None:
@@ -173,6 +180,19 @@ def _harness_dial_ref(harness: str, config: DannoConfig, variant: ConfigVariant)
     backend not literally named `ollama` (the item-3 bug); claude maps an inert model's tag
     to its `--model` value; opencode needs no override."""
     return harnesses.get(harness).dial_ref(config, variant)
+
+
+def _harness_dial_provider(
+    harness: str, config: DannoConfig, variant: ConfigVariant
+) -> CodexProvider | None:
+    """The CLOUD dial target this harness needs for `variant`, or None.
+
+    Delegates to the harness registry (`Harness.dial_provider`); only codex sets it (its
+    config.toml is written inline in the VM, so a cloud row's base_url/key-env must be
+    threaded to the turn — see `CodexProvider`). `config` here is the capture-rewritten one,
+    so a cloud base_url is already the recording-proxy URL. None for every other harness."""
+    fn = harnesses.get(harness).dial_provider
+    return fn(config, variant) if fn is not None else None
 
 
 def _merge_env_lines(base: list[str], extra: list[str]) -> list[str]:
@@ -354,6 +374,7 @@ def _run_aider(
                     capture_port,
                     model_override=_harness_dial_ref(opts.harness, config, variant),
                     max_turns=resolved.max_turns,  # claurst native polite-stop
+                    codex_provider=_harness_dial_provider(opts.harness, config, variant),
                 ),
                 model=variant.model_ref,
                 capture=capture,
@@ -425,6 +446,9 @@ def _run_swebench(
                                 capture_port,
                                 model_override=_harness_dial_ref(opts.harness, config, variant),
                                 max_turns=resolved.max_turns,  # claurst native polite-stop
+                                codex_provider=_harness_dial_provider(
+                                    opts.harness, config, variant
+                                ),
                             ),
                             task.workspace_dir(workspace),
                         ),
@@ -813,6 +837,16 @@ def run_bench_harnesses(
     jsons = [r.results_json for r in reports if r.results_json is not None]
     if jsons:
         payloads = load_reports(jsons)
+        # A harness whose whole model matrix was N/A (every model on a backend kind it can't
+        # dial) produces an empty column. The per-model drop was already named loudly by
+        # `dialable_variants`; call out the empty column too so the merged grid's blank is
+        # read as a reasoned N/A, never a silent gap (Working Rule 8).
+        for p in payloads:
+            if not p.get("results"):
+                log_warn(
+                    f"harness '{p.get('harness', '?')}' ran no cells — its entire model matrix "
+                    f"is N/A for it (nothing it can dial); its comparison column is empty."
+                )
         root.mkdir(parents=True, exist_ok=True)
         md = root / "report.md"
         html = root / "report.html"

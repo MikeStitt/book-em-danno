@@ -142,13 +142,36 @@ CODEX_RELAY_FREE_OLLAMA_BASE = "http://host.docker.internal:11434/v1"
 
 
 def _codex_base_url(capture_port: int | None) -> str:
-    """The relay-free Responses `base_url` for a codex turn (Phase-0): host Ollama `/v1`,
+    """The relay-free Responses `base_url` for a LOCAL Ollama codex turn: host Ollama `/v1`,
     or under --capture the host-side recording proxy `/v1` (reached through the egress
     proxy). The `host.docker.internal` host is mandatory — a localhost base_url would be
-    bypassed by `no_proxy` and hit the empty container."""
+    bypassed by `no_proxy` and hit the empty container. A CLOUD codex turn instead carries
+    its own dial target in `CodexProvider` (below)."""
     if capture_port is None:
         return CODEX_RELAY_FREE_OLLAMA_BASE
     return f"http://host.docker.internal:{capture_port}/v1"
+
+
+@dataclass(frozen=True)
+class CodexProvider:
+    """The CLOUD dial target for a codex turn, resolved from a model's OpenAI-compatible
+    backend (Layer 3). None-valued for a LOCAL Ollama row (the driver uses the relay-free
+    `_codex_base_url` path instead).
+
+    codex writes its `config.toml` INLINE in the VM per turn (bench can't seed a file
+    pre-provision), so — unlike opencode, whose rewritten config is generated on the host —
+    the cloud base_url must be threaded to the driver at turn time. `base_url` is the model's
+    backend base_url AS THE DRIVER SHOULD DIAL IT: under bench that is already the
+    `host.docker.internal:<port>/v1` recording-proxy URL `plan_capture` rewrote it to (so
+    cloud codex captures through the same proxy as opencode, TLS re-originated to the cloud);
+    interactively it is the original `https://…/v1`, dialed through the egress proxy. `env_key`
+    is the NAME of the env var holding the provider key (referenced as `env_key` in the
+    provider block; the key value is injected via the chmod-600 env-file, never written here).
+    `reasoning_effort` maps a danno o-series knob to codex's `model_reasoning_effort`."""
+
+    base_url: str
+    env_key: str | None = None
+    reasoning_effort: str | None = None
 
 
 @runtime_checkable
@@ -963,6 +986,7 @@ def codex_run(
     env_file: str | Path | None = None,
     capture_port: int | None = None,
     max_turns: int | None = None,
+    codex_provider: CodexProvider | None = None,
 ) -> CodexTurn:
     """Drive one headless `codex exec --json` turn in sandbox `name`.
 
@@ -974,23 +998,37 @@ def codex_run(
     (always auto-approves via `-s danger-full-access`) and has no opencode `--agent`;
     `max_turns` has no codex flag and is ignored (the external watchdog is the real bound).
 
-    Codex is RELAY-FREE like claurst (Phase-0): it honors the sandbox egress proxy and dials
-    host Ollama's Responses endpoint at `host.docker.internal:11434/v1` directly. Under
-    `--capture` it dials the host-side recording proxy the same way
-    (`host.docker.internal:<capture_port>/v1`, opened in egress by `capture_allow_hosts`) —
-    still no in-VM relay. The per-turn `config.toml` (custom `ollama-danno` provider →
-    that base_url, `wire_api = "responses"`) is written INLINE into a VM-local CODEX_HOME
-    here, because bench's flow can't seed a VM file pre-provision. `env_file` is forwarded
-    to the exec (a CLOUD codex row would carry its provider key there) and is harmless when
-    None (local Ollama needs no auth).
+    Codex is RELAY-FREE like claurst: it honors the sandbox egress proxy and dials its
+    Responses endpoint directly. A LOCAL Ollama row (`codex_provider=None`) dials host
+    Ollama at `host.docker.internal:11434/v1`, or under `--capture` the host-side recording
+    proxy the same way (`host.docker.internal:<capture_port>/v1`). A CLOUD row carries its
+    dial target in `codex_provider` (the model's OpenAI-compatible backend base_url — under
+    bench already the recording-proxy URL `plan_capture` rewrote it to, so cloud codex
+    captures through the same proxy; plus the key-env NAME + reasoning knob). Either way the
+    per-turn `config.toml` (a custom provider → that base_url, `wire_api = "responses"`) is
+    written INLINE into a VM-local CODEX_HOME here, because bench's flow can't seed a VM file
+    pre-provision. `env_file` is forwarded to the exec (a cloud row carries its provider key
+    there under `codex_provider.env_key`) and is harmless when None (local Ollama needs no auth).
 
     Returns the parsed NDJSON events alongside the raw capture — never raises on a non-zero
     exit, since a stalled/errored turn is the signal the battery measures.
     """
-    from book_em_danno.config.generate import codex_config_toml
+    from book_em_danno.config.generate import (
+        CODEX_CLOUD_PROVIDER_ID,
+        CODEX_CLOUD_PROVIDER_NAME,
+        codex_config_toml,
+    )
 
-    base_url = _codex_base_url(capture_port)
-    config_toml = codex_config_toml(base_url)
+    if codex_provider is None:
+        config_toml = codex_config_toml(_codex_base_url(capture_port))
+    else:
+        config_toml = codex_config_toml(
+            codex_provider.base_url,
+            env_key=codex_provider.env_key,
+            provider_id=CODEX_CLOUD_PROVIDER_ID,
+            provider_name=CODEX_CLOUD_PROVIDER_NAME,
+            reasoning_effort=codex_provider.reasoning_effort,
+        )
     argv = ["codex", CODEX_EXEC_SUBCMD, CODEX_JSON_FLAG, CODEX_SANDBOX_FLAG, CODEX_SANDBOX_VALUE]
     argv.append(CODEX_SKIP_GIT_FLAG)
     if workspace is not None:

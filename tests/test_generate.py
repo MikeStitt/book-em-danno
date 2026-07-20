@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from book_em_danno.config.generate import (
+    CODEX_CLOUD_PROVIDER_ID,
     CODEX_PROVIDER_ID,
     Action,
     agent_markdown_collisions,
@@ -875,11 +876,29 @@ def test_codex_provider_id_local_is_custom_not_reserved() -> None:
     assert CODEX_PROVIDER_ID != "ollama"
 
 
-def test_codex_provider_id_cloud_fails_loud() -> None:
-    # Phase-0 is local-Ollama only; a cloud backend must fail loud, not launch to a silent
-    # mid-session failure (Working Rule 8).
-    with pytest.raises(NotImplementedError):
-        codex_provider_id(_codex_cloud_cfg(), "big")
+def test_codex_provider_id_cloud_is_custom_not_reserved() -> None:
+    # Layer 3: an OpenAI-compatible cloud backend → the custom `openai-danno` provider id
+    # (never the reserved built-in `openai`), so danno can attach base_url + env_key.
+    assert codex_provider_id(_codex_cloud_cfg(), "big") == CODEX_CLOUD_PROVIDER_ID
+    assert CODEX_CLOUD_PROVIDER_ID != "openai"
+
+
+def test_codex_config_toml_cloud_provider() -> None:
+    # Layer 3: a cloud row writes the `openai-danno` provider block with base_url, env_key
+    # (the NAME only — key value is injected via env-file), and a mapped reasoning knob.
+    toml = codex_config_toml(
+        "https://api.openai.com/v1",
+        env_key="OPENAI_API_KEY",
+        provider_id=CODEX_CLOUD_PROVIDER_ID,
+        provider_name="OpenAI",
+        reasoning_effort="high",
+    )
+    assert f'model_provider = "{CODEX_CLOUD_PROVIDER_ID}"' in toml
+    assert f"[model_providers.{CODEX_CLOUD_PROVIDER_ID}]" in toml
+    assert 'base_url = "https://api.openai.com/v1"' in toml
+    assert 'wire_api = "responses"' in toml
+    assert 'env_key = "OPENAI_API_KEY"' in toml
+    assert 'model_reasoning_effort = "high"' in toml
 
 
 def test_codex_model_ref_is_bare_tag() -> None:

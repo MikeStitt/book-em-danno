@@ -15,7 +15,7 @@ from pathlib import Path
 from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import Runner
 from danno_validator import harnesses
-from danno_validator.driver import TurnFn
+from danno_validator.driver import CodexProvider, TurnFn
 
 
 def resolve_image(harness: str) -> str:
@@ -41,6 +41,7 @@ def run_turn_for(
     capture_port: int | None = None,
     model_override: str | None = None,
     max_turns: int | None = None,
+    codex_provider: CodexProvider | None = None,
 ) -> TurnFn:
     """The `TurnFn` driving one turn for this HUT, with `env_file` bound.
 
@@ -52,10 +53,17 @@ def run_turn_for(
     `model_override` is the harness's own model selector (`Harness.dial_ref`): for a
     dialer the normalized ref it dials, for claude the `--model` value; None → the
     harness default. Harnesses that don't use a given argument ignore it.
+
+    `codex_provider` is the CLOUD dial target for a cloud codex row (`Harness.dial_provider`);
+    it is passed to the `TurnFn` factory ONLY when non-None, so the other harnesses' factories
+    (which don't accept the kwarg) are never handed it — a local codex row and every non-codex
+    harness resolve to None and take the ordinary path.
     """
-    return harnesses.get(harness).turn_fn(
-        env_file,
-        capture_port=capture_port,
-        model_override=model_override,
-        max_turns=max_turns,
-    )
+    kwargs: dict[str, object] = {
+        "capture_port": capture_port,
+        "model_override": model_override,
+        "max_turns": max_turns,
+    }
+    if codex_provider is not None:
+        kwargs["codex_provider"] = codex_provider
+    return harnesses.get(harness).turn_fn(env_file, **kwargs)
