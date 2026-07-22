@@ -122,7 +122,9 @@ def test_record_top_level_shape() -> None:
     assert rec["danno_version"] == "0.3.0"
     assert rec["generated_at"] == "2026-06-18T14:30:05Z"
     assert rec["config"] == {
-        "path": "/proj/danno.toml",
+        # `run_record` stores the host path via str(); render the expected value the same way
+        # so this holds on Windows too (str(Path("/proj/danno.toml")) is "\\proj\\danno.toml").
+        "path": str(Path("/proj/danno.toml")),
         "declared_models": ["gptoss", "gemma", "sonnet"],
     }
     assert rec["run"]["max_level"] == 2
@@ -172,7 +174,7 @@ def test_summary_excludes_baseline_and_counts_taxonomy() -> None:
 def test_write_results_json_round_trips(tmp_path: Path) -> None:
     path = write_results_json(_record(), tmp_path / "run" / "results.json")
     assert path.is_file()
-    loaded = json.loads(path.read_text())
+    loaded = json.loads(path.read_text(encoding="utf-8"))
     assert loaded["schema_version"] == SCHEMA_VERSION
     assert loaded["summary"]["swept_total"] == 2
     # the unicode badge survives (ensure_ascii=False)
