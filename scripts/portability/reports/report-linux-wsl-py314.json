@@ -1,6 +1,6 @@
 {
   "env": {
-    "timestamp_utc": "2026-07-09T21:02:24.388025+00:00",
+    "timestamp_utc": "2026-07-09T21:07:25.247423+00:00",
     "shell_label": "wsl",
     "shell_hints": {
       "WSL_DISTRO_NAME": "Ubuntu"
@@ -117,8 +117,8 @@
         "qwen3-coder-next:latest",
         "gpt-oss:20b",
         "gemma3:27b",
-        "qwen3.6:27b-q4_K_M",
         "gemma4:26b",
+        "qwen3.6:27b-q4_K_M",
         "gemma4:31b-mlx",
         "gemma4:26b-mlx",
         "gemma3:1b",
