@@ -19,6 +19,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -135,7 +136,25 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
     the pipes dies too and the readers can reach EOF. Spawned with `start_new_session=True`,
     the child leads its own group. Falls back to killing just the child if the group is
     already gone; a missing process is a no-op (the child may have exited between poll and
-    kill)."""
+    kill).
+
+    Windows has no POSIX process groups / `killpg` / `SIGKILL` (and `start_new_session` is a
+    no-op there). `taskkill /F /T` is the peer: `/T` kills the whole child tree, so a grandchild
+    that inherited the pipes dies too (else the reader stays blocked and the watchdog hangs the
+    5 s join, and — worse — a runaway grandchild keeps burning CPU, exactly what the gate exists
+    to stop). Fall back to killing just the child if taskkill is unavailable or the tree is gone."""
+    if sys.platform == "win32":
+        try:
+            subprocess.run(  # noqa: S603, S607 - fixed argv, pid is our own child
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except OSError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+        return
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
