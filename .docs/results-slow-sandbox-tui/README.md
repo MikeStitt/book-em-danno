@@ -17,7 +17,7 @@ Each per-platform run appends its summary line here (one row per platform×shell
 | platform · shell | driver | fidelity | opencode A/H/C | codex A/H/C | claurst A/H/C | results file |
 |---|---|---|---|---|---|---|
 | macOS · zsh | PexpectDriver | host-pty | ✅/✅/✅ | ✅/✅/✅ | ✅/✅/`0` | [macos.md](macos.md) |
-| WSL2 · bash | PexpectDriver | host-pty | _pending_ | _pending_ | _pending_ | wsl2.md |
+| WSL2 · bash | PexpectDriver | host-pty | ✅/✅/✅ | ✅/✅/✅ | ❌ (no x86_64 build) | [wsl2.md](wsl2.md) |
 | Windows · cmd | WinPtyDriver | host-pty | ✅/✅/✅ | ✅/✅/✅ | ⏭️ (install artifact) | [windows-cmd.md](windows-cmd.md) |
 | Windows · PowerShell | WinPtyDriver | host-pty | ✅/✅/✅ | ✅/✅/✅ | ❌ (no x86_64 build) | [windows-powershell.md](windows-powershell.md) |
 

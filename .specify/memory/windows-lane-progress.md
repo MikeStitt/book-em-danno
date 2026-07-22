@@ -4,7 +4,7 @@
 **Work order:** `.docs/2026-07-22-windows-handoff-slow-tui.md`
 **Branch:** `slow-sandbox-tui-tests-windows` (off `slow-sandbox-tui-tests` tip `ba53927`)
 
-## Status: Windows-native lane DONE (opencode+codex green); claurst blocked on external artifact; WSL2 (P3) not started
+## Status: Windows-native + WSL2 lanes DONE (opencode+codex green on all three); claurst blocked on external x86_64 artifact
 
 ### Completed
 - **§2 Preconditions** — all confirmed: `sbx` resolves (after `sbx login`); Python 3.13+/uv;
@@ -25,9 +25,11 @@
   `claurst-linux-x86_64.tar.gz` build published. No `gh`/token locally to publish; user decision
   pending. Build is feasible inside the x86_64 sandbox VM (rustup + cargo).
 
-### Not started
-- **P3 — WSL2 validation** (reuse `PexpectDriver`; needs Docker Desktop WSL integration +
-  ext4 checkout + P1.5 smoke inside WSL2).
+### P3 — WSL2 (DONE)
+- Reused `PexpectDriver` unchanged; ext4 checkout (`~/book-em-danno`); `sbx` standalone in WSL2
+  (no Docker Desktop integration needed). One env blocker fixed: added user to `kvm` group
+  (`/dev/kvm` perms) + `wsl --terminate`. P1.5 smoke PASS; fast gate 683 passed; opencode+codex
+  A/H/C green; claurst blocked on the same x86_64 artifact (WSL2 is x86_64). See `wsl2.md`.
 
 ## Key rules
 - Do NOT modify the frozen [mac]-owned shared test files except the `WinPtyDriver` body (done).
