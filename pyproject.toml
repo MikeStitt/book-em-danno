@@ -42,6 +42,13 @@ dev = [
     "pytest-timeout>=2.3",
     "ruff>=0.6",
     "mypy>=1.11",
+    # Interactive `@slow @sandbox` TUI drivers (host-pty + VT emulation). pyte is host-pty
+    # agnostic (needed on every OS); the pty library is platform-split — pexpect on POSIX
+    # (Linux/macOS/WSL2), pywinpty on Windows-native (cmd/PowerShell). See
+    # `.docs/plan-slow-sandbox-tui-tests.md` §3.4/§7. PIN pywinpty exactly once P2 confirms it.
+    "pyte>=0.8",
+    "pexpect>=4.9 ; sys_platform != 'win32'",
+    "pywinpty>=2.0 ; sys_platform == 'win32'",
 ]
 
 [tool.ruff]
@@ -59,6 +66,7 @@ extend-immutable-calls = ["typer.Option", "typer.Argument"]
 testpaths = ["tests"]
 markers = [
     "slow: live tests that talk to real Ollama/Docker; skip when those are down",
+    "sandbox: interactive TUI tests that launch a real sandbox harness and drive its pty",
 ]
 
 [tool.mypy]
