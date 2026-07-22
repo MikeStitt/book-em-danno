@@ -190,31 +190,109 @@ class WinPtyDriver:
     """
 
     def __init__(self, exe: str, args: list[str], env: dict[str, str]) -> None:
+        # Already-resolved launch tuple (make_driver / launch_argv did the resolution).
         self._exe = exe
         self._args = args
         self._env = env
+        self._child: object | None = None
+        self._screen: object | None = None
+        self._stream: object | None = None
 
     def start(self) -> None:
-        raise NotImplementedError("WinPtyDriver is implemented in P2 (pywinpty/ConPTY, plan §3.4)")
+        import pyte
+        import winpty
+
+        self._screen = pyte.Screen(COLS, ROWS)
+        # pyte.Stream (NOT ByteStream): pywinpty's read() hands back decoded UTF-8 `str`, not
+        # bytes — the lib owns the decode (§3.4). Feed str straight into a str Stream.
+        self._stream = pyte.Stream(self._screen)
+        self._child = winpty.PtyProcess.spawn(
+            [self._exe, *self._args],
+            env=self._env,
+            dimensions=(ROWS, COLS),
+        )
+        # Non-blocking reads: pywinpty 3.0.5's high-level read() blocks on the underlying socket
+        # transport (the PYWINPTY_BLOCK/read_blocking lever the plan cited is commented out in
+        # this release — verified against installed source). The working lever is a socket
+        # timeout on `fileobj`, which makes read() raise TimeoutError instead of blocking. pump()
+        # treats that as "no data this round," exactly like pexpect.TIMEOUT → b"".
+        try:
+            self._child.fileobj.settimeout(0.4)  # type: ignore[union-attr]
+        except (AttributeError, OSError):
+            pass
 
     def pump(self, seconds: float, want: Sequence[str] | None = None) -> bool:
-        raise NotImplementedError("WinPtyDriver: P2")
+        wants = _wants(want)
+
+        def hit() -> bool:
+            s = self.screen().lower()
+            return bool(wants and any(w in s for w in wants))
+
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            try:
+                data = self._child.read(8192)  # type: ignore[union-attr]
+            except TimeoutError:
+                # Socket-timeout lever fired: nothing to read this round (== pexpect.TIMEOUT).
+                data = ""
+            except (EOFError, OSError):
+                # EOF is EXPECTED on quit and on the opencode update-restart — pywinpty's read()
+                # raises EOFError when the pty closes. Never an exception the test sees: stop
+                # early, reporting the current hit-state (mirrors PexpectDriver's pexpect.EOF).
+                return hit()
+            if data:
+                self._stream.feed(data)  # type: ignore[union-attr]
+            if hit():
+                return True
+        return hit()
 
     def screen(self) -> str:
-        raise NotImplementedError("WinPtyDriver: P2")
+        if self._screen is None:
+            return ""
+        return "\n".join(self._screen.display).rstrip()  # type: ignore[union-attr]
 
     def send(self, keys: str) -> bool:
-        raise NotImplementedError("WinPtyDriver: P2")
+        child = self._child
+        try:
+            if child is None or not child.isalive():  # type: ignore[union-attr]
+                return False
+            child.write(keys)  # type: ignore[union-attr]
+            return True
+        except (OSError, EOFError):
+            return False
 
     def enter(self) -> bool:
-        raise NotImplementedError("WinPtyDriver: P2")
+        return self.send("\r")
 
     def alive(self) -> bool:
-        raise NotImplementedError("WinPtyDriver: P2")
+        child = self._child
+        try:
+            return bool(child is not None and child.isalive())  # type: ignore[union-attr]
+        except OSError:
+            return False
 
     def close(self) -> None:
-        # A stub close must never raise (it runs in test teardown).
-        return None
+        child = self._child
+        if child is None:
+            return
+        # Best-effort graceful quit (Ctrl-C ×2 then 'q'), then force-terminate + close. All
+        # swallowed: the child may already be gone (EOF), which must never surface as a teardown
+        # error. sendintr() is pywinpty's Ctrl-C, the peer of pexpect's sendcontrol("c").
+        try:
+            child.sendintr()  # type: ignore[union-attr]
+            time.sleep(0.4)
+            child.sendintr()  # type: ignore[union-attr]
+            child.write("q")  # type: ignore[union-attr]
+        except Exception:
+            pass
+        try:
+            child.terminate(force=True)  # type: ignore[union-attr]
+        except Exception:
+            pass
+        try:
+            child.close(force=True)  # type: ignore[union-attr]
+        except Exception:
+            pass
 
 
 def make_driver(argv: list[str], env: dict[str, str], *, prefer: str = "auto") -> TuiDriver:

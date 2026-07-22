@@ -45,10 +45,12 @@ dev = [
     # Interactive `@slow @sandbox` TUI drivers (host-pty + VT emulation). pyte is host-pty
     # agnostic (needed on every OS); the pty library is platform-split — pexpect on POSIX
     # (Linux/macOS/WSL2), pywinpty on Windows-native (cmd/PowerShell). See
-    # `.docs/plan-slow-sandbox-tui-tests.md` §3.4/§7. PIN pywinpty exactly once P2 confirms it.
+    # `.docs/plan-slow-sandbox-tui-tests.md` §3.4/§7. pywinpty is pinned EXACTLY: WinPtyDriver's
+    # non-blocking read relies on the socket-transport `fileobj.settimeout` lever, whose internals
+    # shift release-to-release (§3.4) — validated green (opencode+codex A/H/C) on 3.0.5, Windows 11.
     "pyte>=0.8",
     "pexpect>=4.9 ; sys_platform != 'win32'",
-    "pywinpty>=2.0 ; sys_platform == 'win32'",
+    "pywinpty==3.0.5 ; sys_platform == 'win32'",
 ]
 
 [tool.ruff]
