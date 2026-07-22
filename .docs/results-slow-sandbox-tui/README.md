@@ -18,8 +18,8 @@ Each per-platform run appends its summary line here (one row per platform×shell
 |---|---|---|---|---|---|---|
 | macOS · zsh | PexpectDriver | host-pty | ✅/✅/✅ | ✅/✅/✅ | ✅/✅/`0` | [macos.md](macos.md) |
 | WSL2 · bash | PexpectDriver | host-pty | _pending_ | _pending_ | _pending_ | wsl2.md |
-| Windows · cmd | WinPtyDriver | host-pty | _pending_ | _pending_ | _pending_ | windows-cmd.md |
-| Windows · PowerShell | WinPtyDriver | host-pty | _pending_ | _pending_ | _pending_ | windows-powershell.md |
+| Windows · cmd | WinPtyDriver | host-pty | ✅/✅/✅ | ✅/✅/✅ | ⏭️ (install artifact) | [windows-cmd.md](windows-cmd.md) |
+| Windows · PowerShell | WinPtyDriver | host-pty | ✅/✅/✅ | ✅/✅/✅ | ❌ (no x86_64 build) | [windows-powershell.md](windows-powershell.md) |
 
 Legend: ✅ works · ⚠️ degrades · ❌ breaks · ⏭️ skip (reason) · `0` = claurst compacts=False
 change-detector asserting `summarization_requests == 0`.
