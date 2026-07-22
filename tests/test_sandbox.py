@@ -459,7 +459,7 @@ def test_shell_mirrors_start_with_bash(tmp_path: Path, monkeypatch: pytest.Monke
     r = RecordingRunner()
     sandbox.shell(r, "probe", tmp_path)
     assert len(r.commands) == 1  # only the exec, no create/proxy/stop
-    _assert_launch_cmd(r.commands[0], "probe", "bash", repo=str(tmp_path))
+    _assert_launch_cmd(r.commands[0], "probe", "bash", repo=sandbox.container_path(tmp_path))
 
 
 def test_shell_fails_loud_when_not_provisioned(
@@ -485,7 +485,7 @@ def test_shell_provisions_under_apply(tmp_path: Path, monkeypatch: pytest.Monkey
         "docker sandbox network proxy probe --policy allow --allow-host localhost:11434",
         "docker sandbox stop probe",
     ]
-    _assert_launch_cmd(r.commands[3], "probe", "bash", repo=str(tmp_path))
+    _assert_launch_cmd(r.commands[3], "probe", "bash", repo=sandbox.container_path(tmp_path))
 
 
 def test_start_fails_loud_when_not_provisioned(
@@ -506,7 +506,7 @@ def test_start_launches_existing_without_apply(
     r = RecordingRunner()
     sandbox.start(r, "probe", tmp_path)
     assert len(r.commands) == 1  # only the launch, no create/proxy/stop
-    _assert_launch_cmd(r.commands[0], "probe", "opencode", repo=str(tmp_path))
+    _assert_launch_cmd(r.commands[0], "probe", "opencode", repo=sandbox.container_path(tmp_path))
 
 
 def test_rebuild_stops_and_removes_without_force_flag(
@@ -617,8 +617,10 @@ def test_resolve_agent_home_forms(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert sandbox.resolve_agent_home("per-project", target, "danno-x") == root / "danno-x"
     assert sandbox.resolve_agent_home("shared", target, "danno-x") == root / "shared"
     assert sandbox.resolve_agent_home("group:acme", target, "danno-x") == root / "groups" / "acme"
-    # Explicit absolute path is taken as-is.
-    assert sandbox.resolve_agent_home("/opt/home", target, "danno-x") == Path("/opt/home")
+    # Explicit absolute path is taken as-is (built off the OS anchor so it is genuinely
+    # absolute on Windows too, where a bare "/opt/home" has no drive and isn't absolute).
+    explicit = Path(target.anchor) / "opt" / "home"
+    assert sandbox.resolve_agent_home(str(explicit), target, "danno-x") == explicit
 
 
 def test_resolve_agent_home_per_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

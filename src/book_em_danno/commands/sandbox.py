@@ -61,6 +61,32 @@ CLAUDE_AUTH_VARS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 _CLAURST_DIR = ".claurst"
 
 
+def container_path(host_path: Path) -> str:
+    """Render `host_path` as the path it is reachable at INSIDE the Linux sandbox VM.
+
+    The sandbox direct-mounts the host workspace, so any host path danno hands to the
+    *container* side (`sbx exec -w`, a relocated `HOME`/`XDG_CONFIG_HOME`, Claude's trust
+    key) must be the in-VM mount path, not the host rendering:
+
+    - **POSIX host** (macOS/Linux/WSL2): the mount is same-path, so the container path IS
+      the host path — `as_posix()` (a no-op on an already-POSIX path).
+    - **Windows host**: sbx/Docker Desktop mount a drive path MSYS-style — `C:\\Users\\me\\p`
+      is reachable in the VM as `/c/Users/me/p` (drive letter → `/<letter>`, backslashes →
+      slashes). Verified empirically (sbx, Windows 11, 2026-07-22): `-w C:/…` fails the OCI
+      runtime `chdir` (`No such file or directory`), `-w /c/…` works. A driveless path (e.g.
+      a POSIX-style `/repo`) has no drive to translate and passes straight through.
+    """
+    if os.name != "nt":
+        return host_path.as_posix()
+    drive, rest = os.path.splitdrive(str(host_path))
+    posix_rest = rest.replace("\\", "/")
+    if not posix_rest.startswith("/"):
+        posix_rest = "/" + posix_rest
+    if not drive:  # driveless (e.g. a POSIX-style test path like /repo) — pass through
+        return posix_rest
+    return f"/{drive.rstrip(':').lower()}{posix_rest}"
+
+
 def _docker_image(harness: str) -> str:
     """The prebuilt `docker sandbox` image backing a logical harness label.
 
@@ -277,8 +303,8 @@ def seed_onboarding(home: Path, workspace: Path) -> None:
     trap) nor the "trust this folder" dialog blocks a launch. Merges into
     `<home>/.claude.json` without clobbering existing keys; idempotent.
 
-    `workspace` is the in-container repo path; `docker sandbox` mounts it at the same
-    absolute path as on the host, so it matches the key Claude stores trust under
+    `workspace` is the host repo path; `container_path()` maps it to the in-VM mount path
+    (same path on POSIX, `/c/…` on a Windows host), which is what Claude stores trust under
     (`projects.<path>.hasTrustDialogAccepted`)."""
     home.mkdir(parents=True, exist_ok=True)
     f = home / ".claude.json"
@@ -294,7 +320,9 @@ def seed_onboarding(home: Path, workspace: Path) -> None:
     data.setdefault("theme", "dark")
     projects = data.setdefault("projects", {})
     if isinstance(projects, dict):
-        proj = projects.setdefault(str(workspace), {})
+        # `workspace` is the in-container (Linux) repo path — key trust under the in-VM mount
+        # path so a Windows host matches what Claude stores inside the VM (container_path).
+        proj = projects.setdefault(container_path(workspace), {})
         if isinstance(proj, dict):
             proj.setdefault("hasTrustDialogAccepted", True)
             proj.setdefault("hasCompletedProjectOnboarding", True)
@@ -498,7 +526,9 @@ def _claurst_env_lines(ollama_url: str, home: Path | None = None) -> list[str]:
     danno.toml, Bug 4/7). Its Ollama URL is set inline by the relay bracket."""
     if home is None:
         return []
-    return [f"HOME={home}", f"CLAURST_MODELS_PATH={home / _CLAURST_DIR / _CLAURST_MODELS_FILE}"]
+    # These land in the Linux VM's env — render the in-container mount path (container_path).
+    models_path = container_path(home / _CLAURST_DIR / _CLAURST_MODELS_FILE)
+    return [f"HOME={container_path(home)}", f"CLAURST_MODELS_PATH={models_path}"]
 
 
 def _claude_env_lines(ollama_url: str, home: Path | None = None) -> list[str]:
@@ -520,7 +550,8 @@ def _claude_env_lines(ollama_url: str, home: Path | None = None) -> list[str]:
             "ANTHROPIC_API_KEY for API billing."
         )
     if home is not None:
-        lines.append(f"CLAUDE_CONFIG_DIR={home}")
+        # Container-side env var → the in-VM mount path (container_path).
+        lines.append(f"CLAUDE_CONFIG_DIR={container_path(home)}")
     return lines
 
 
@@ -529,7 +560,8 @@ def _opencode_env_lines(ollama_url: str, home: Path | None = None) -> list[str]:
     XDG_CONFIG_HOME when persisted."""
     lines = [f"OLLAMA_BASE_URL={ollama_url}"]
     if home is not None:
-        lines.append(f"XDG_CONFIG_HOME={home}/config")
+        # Container-side env var → the in-VM mount path (container_path).
+        lines.append(f"XDG_CONFIG_HOME={container_path(home)}/config")
     return lines
 
 
@@ -972,7 +1004,9 @@ def _exec_session(
         "exec",
         "-it",
         "-w",
-        str(target_abs),
+        # `-w` is the working dir INSIDE the Linux VM — the mount path, not the host rendering
+        # (on Windows `C:\repo` is reached as `/c/repo`; see container_path()).
+        container_path(target_abs),
         *env_flags,
         name,
         *container_argv,
