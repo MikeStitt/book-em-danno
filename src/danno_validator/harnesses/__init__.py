@@ -143,6 +143,14 @@ class Harness:
     # consulted when `supports_capture` is True.
     capture_via_relay: bool = False
 
+    # Whether this harness performs usage-driven auto-compaction. When True, the interactive
+    # C-leg test (`tests/slow/tui`) asserts a summarization request appears on the wire under
+    # inflated usage; when False it asserts NONE appears — a CHANGE-DETECTOR. If a `False`
+    # harness ever starts compacting, that test goes RED loud, forcing a conscious flip to True
+    # + changelog + version bump (fail-loud, never silent). Spike-proven: codex/opencode arm
+    # usage-driven compaction; claurst (`v0.1.6-danno1`) does not, even at 2M tokens.
+    compacts: bool = True
+
     # `sandbox start -m <value>`: resolve the value to this harness's `-m` ref PLUS any
     # cloud-key env-file lines, or None when the harness has no danno-dialed `-m`
     # (claude uses its own `--model`; opencode's model comes from the generated config).

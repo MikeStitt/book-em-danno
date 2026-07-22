@@ -78,6 +78,11 @@ register(
         sandbox_image=_impl.CLAURST_SANDBOX_IMAGE,
         supports_capture=True,
         capture_via_relay=True,
+        # claurst 0.1.6-danno1 does NOT arm usage-driven auto-compaction (spike 2026-07-21:
+        # usage flows via stream_options.include_usage but no summarization even at 2M tokens).
+        # The C-leg test asserts summarization_requests == 0 as a change-detector — if a future
+        # build starts compacting, it goes RED and forces a conscious flip to True.
+        compacts=False,
         overrides_key="claurst",
         reap_patterns=("claurst",),
         survivor_patterns=(r"[c]laurst",),
