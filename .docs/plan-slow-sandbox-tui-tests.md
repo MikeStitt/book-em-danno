@@ -378,7 +378,154 @@ tests/slow/tui/
   `book_em_danno.stubai`.
 - **Ownership:** `driver.py` `PexpectDriver` + everything else in `tests/slow/tui/` is the macOS
   Claude's; `driver.py` `WinPtyDriver` is the Windows Claude's (built against the frozen protocol).
-- Source change: `Harness.compacts` field + claurst override (§5) — the **only** `src/` edit.
+- Source change: `Harness.compacts` field + claurst override (§5) — the **only** `src/` edit for P1.
+
+### 8.1 `driver.py` — the frozen contract (implementation spec)
+
+The **exact** `TuiDriver` surface the Windows Claude builds against — freezing it is the P1 exit
+gate. All coordinates are (rows, cols); the screen is a `pyte.Screen(COLS, ROWS)` with `COLS=160,
+ROWS=48` (the spike geometry). `screen()` returns `"\n".join(screen.display).rstrip()`.
+
+```python
+COLS, ROWS = 160, 48
+
+@runtime_checkable
+class TuiDriver(Protocol):
+    def start(self) -> None: ...            # spawn `sbx exec -it … <argv>` under a host pty
+    def pump(self, seconds: float, want: Sequence[str] | None = None) -> bool: ...
+                                            # feed pty→pyte for `seconds`; True early if any
+                                            # `want` marker (lower-cased substring) is on screen
+    def screen(self) -> str: ...            # current rendered screen text
+    def send(self, keys: str) -> bool: ...  # write text/control bytes; False if the child is dead
+    def enter(self) -> bool: ...            # convenience: send("\r")
+    def alive(self) -> bool: ...
+    def close(self) -> None: ...            # force-terminate; never raise
+
+def make_driver(argv: list[str], env: dict[str, str], *, prefer: str = "auto") -> TuiDriver:
+    # "auto": PexpectDriver on POSIX (os.name == "posix"), WinPtyDriver on Windows.
+    # "tmux": force the in-VM fallback (records reduced fidelity).
+    # Raises DriverUnavailable(reason) — the caller turns that into pytest.skip — when the
+    # platform's host-pty lib can't import or ConPTY is absent. NEVER silently downgrades.
+```
+
+- **`PexpectDriver`** (POSIX, macOS/Linux/WSL2 — the P1 deliverable). Constructor takes the
+  already-resolved `(exe, args, env)`. `start()` = `pexpect.spawn(exe, args=args, env=env,
+  encoding=None, dimensions=(ROWS, COLS), timeout=120)` + a fresh `pyte.Screen`/`pyte.ByteStream`.
+  `pump()` loops `read_nonblocking(8192, timeout=0.4)`, swallowing `pexpect.TIMEOUT` (→ `b""`) and
+  treating `pexpect.EOF` as "stop, return current hit-state" (EOF is *expected* on quit and on the
+  opencode update-restart — never an exception the test sees). `send()` wraps `child.send` in the
+  spike's `safe_send` (guards `isalive()`, catches `OSError`). `close()` = `sendcontrol('c')`×2 +
+  `send('q')` best-effort then `child.close(force=True)`, all exception-swallowed. `encoding=None`
+  → **bytes** into `pyte.ByteStream` (partial-multibyte-safe; §3.4).
+- **`WinPtyDriver`** (Windows — **P1 lands a stub** `raise NotImplementedError("P2: pywinpty",)`;
+  filled in at P2 per §3.4). Same protocol; `winpty.PtyProcess.spawn(argv, env=env,
+  dimensions=(ROWS, COLS))`, decoded `str` fed to `pyte.Screen` (a `pyte.Stream`, not `ByteStream`),
+  non-blocking read via the §3.4 levers.
+- **`TmuxDriver`** (fallback only, `prefer="tmux"`). `sbx exec <name> tmux new-session -d -x COLS
+  -y ROWS -s danno '<argv>'`; `screen()` = `capture-pane -p`; `send()`/`enter()` = `send-keys`.
+  No host pty, no pyte. Records reduced fidelity (§3.2). Not written in P1 unless a platform needs it.
+
+### 8.2 `primitives.py` — harness table + wire-confirmed input
+
+Direct lift of the spike helpers, rewritten against `TuiDriver` (they call `driver.pump/screen/
+send`, never a pty lib). Contents:
+
+- **`HARNESS: dict[str, HarnessTui]`** — one row per harness (a small frozen dataclass), lifted
+  verbatim from `spike_harness.py`'s `HARNESS` dict:
+  - `codex`: `model="stub"`, `inflate=50_000`, `wire_path="/responses"`, `banner=("welcome to
+    codex","codex")`, `composer=("/model to change",)`, `dialogs=[("do you trust","1\r")]`,
+    `summ_markers=("context checkpoint compaction","create a handoff summary","produced a summary
+    of its thinking")`. Needs the top-level `model_auto_compact_token_limit` config graft (§8.3).
+  - `opencode`: `model="stub"`, `inflate=50_000`, `wire_path="/chat/completions"`,
+    `banner=("ask anything","fix broken tests")`, `composer=("ask anything","build ·")`,
+    `dialogs=[("update","\x1b")]` (**ESC = Skip; never Enter**), `summ_markers=("create a new
+    anchored summary from the conversation history","anchored summary")`.
+  - `claurst`: `model="ollama/stub"`, `inflate=2_000_000`, `wire_path="/chat/completions"`,
+    `banner=("claurst",)`, `composer=("❯",)` (U+276F, **not** ascii `>`), `dialogs=[("esc
+    close","\x1b"),("keyboard shortcuts","\x1b")]`, `summ_markers=("concise yet thorough
+    conversation summaries","conversation summar")`.
+- **`settle_and_dismiss(driver, cfg, rounds=6)`** — the spike's fixed settle window: `rounds` ×
+  (`pump(2.5)` → if any `cfg.dialogs` marker on screen, send its keys with 0.3s between chars →
+  `pump(5, want=cfg.composer)`). Absorbs codex's immediate trust dialog **and** opencode's *late*
+  update modal. **Never sends Enter while a dialog could be up.**
+- **`submit(driver, cfg, wire, text, want=None, tries=3)`** — the wire-confirmed input primitive
+  (spike `submit`): per try → `settle_and_dismiss` → record `before = wire.requests()` → `send(text)`,
+  0.6s, `enter()` → `pump(30, want=want)` → **confirm `wire.requests() > before`**; retry if a
+  racing overlay ate the Enter (mandatory for claurst onboarding). Returns bool landed. Text is
+  always `?`-free (claurst opens help on `?` and eats later prompts).
+- **`one_shot_inflate(engine, magnitude)`** — monkeypatch `ScriptEngine.next_reply` to
+  `dataclasses.replace(r, prompt_tokens=magnitude)` **only on the first reply** (`_state["n"]==1`),
+  else pass through. Returns a restore callable; the fixture installs/uninstalls it. One over-budget
+  turn → exactly one compaction decision, never the unbounded runaway (opencode 1184 reqs/592 summ).
+
+### 8.3 `fixtures.py` — reuse the gate fixtures, capture the real launch argv
+
+- **Reused unchanged** from `tests/slow/gates_fixtures.py`: `PROXY_PORT` (11455), `MODEL_TAG`
+  (`"stub"`), `scripted_backend(script, tmp)` (stub+proxy+tally+`capture_file`),
+  `provisioned_sandbox(name, harness, tmp)` (generate proxy-dialing config, provision with
+  `allow_hosts=("localhost:11455",)`, teardown). No forking.
+- **`_CaptureLaunchRunner(Runner)`** — the spike's launch interceptor: overrides `run()` so a
+  `why.startswith("launch")` call **captures** `(cmd, env)` and returns without exec'ing (every
+  other `run` is real). This is what makes the driver launch danno's *real* `sbx exec -it …` argv.
+- **`launch_argv(harness, cfg, backend) -> (exe, args, env)`** — calls the real
+  `sandbox.launch(runner, name, target, harness=harness, capture_relay_port=PROXY_PORT,
+  model=cfg.model)`, then `exe = shutil.which(cmd[0]) or cmd[0]`, `env = {**os.environ,
+  **(runner.launch_env or {})}` with `TERM` forced off `"dumb"` → `"xterm-256color"`.
+- **codex config graft** — codex needs a *small* top-level `model_auto_compact_token_limit` to
+  compact under the inflated usage (spike monkeypatch 2): wrap `book_em_danno.config.generate.
+  codex_config_toml` to prepend `model_auto_compact_token_limit = 200\n` **before** any
+  `[model_providers.*]` header (top-level or codex ignores it). Applied only for the codex row.
+- **`WireMetrics`** — a tiny reader over `backend.capture_file` unifying the two spike
+  `wire_summary` variants behind one shape: `.requests()` (POST count to `cfg.wire_path`),
+  `.summarization_requests()` (count of bodies whose `messages`/`input` JSON contains any
+  `cfg.summ_markers`), `.item_counts()`. CHAT reads `body["messages"]`, RESPONSES reads
+  `body["input"]` — keyed off `cfg.wire_path`, matching `gates_fixtures._inference_request_bodies`.
+
+### 8.4 `test_tui_launch.py` — the parametrized A/H/C test
+
+```python
+pytestmark = [pytest.mark.slow, pytest.mark.sandbox]
+
+@pytest.mark.skipif(sandbox_runtime_down(), reason="sandbox runtime down (sbx ls)")
+@pytest.mark.parametrize("harness", ["opencode", "codex", "claurst"])
+def test_interactive_launch(harness, tmp_path):
+    cfg = HARNESS[harness]
+    restore = one_shot_inflate(stub_script.ScriptEngine, cfg.inflate)
+    try:
+        with scripted_backend([Finish("Hello from the stub.")], tmp_path) as backend:
+            with provisioned_sandbox(f"danno-tui-{harness}", harness, tmp_path) as target:
+                exe, args, env = launch_argv(harness, cfg, backend, name=…, target=target)
+                try:
+                    driver = make_driver([exe, *args], env, prefer="auto")
+                except DriverUnavailable as e:
+                    pytest.skip(str(e))          # loud, named skip — never a silent pass
+                driver.start()
+                wire = WireMetrics(backend.capture_file, cfg)
+                # A — reach TUI
+                assert driver.pump(90, want=cfg.banner)
+                settle_and_dismiss(driver, cfg)
+                assert any(c in driver.screen().lower() for c in cfg.composer)
+                assert "not a terminal" not in driver.screen().lower()
+                # H — one turn on the wire
+                assert submit(driver, cfg, wire, "list the files here", want="hello from the stub")
+                assert wire.requests() >= 1
+                # C — compaction, branched on capability (§5)
+                for p in ("and again please", "one more time"):
+                    submit(driver, cfg, wire, p)
+                driver.pump(5)
+                if get(harness).compacts:
+                    assert wire.summarization_requests() >= 1     # opencode/codex
+                else:
+                    assert wire.summarization_requests() == 0     # claurst change-detector
+                driver.close()
+    finally:
+        restore()
+```
+
+Notes: one sandbox provisioned per parametrization (module/function scope TBD by run time — the
+spike provisions per harness); the `sandbox` marker lets `-m sandbox` select just these; the
+`slow` marker keeps them out of the fast gate; `tests/conftest.py`'s autouse `delenv` already
+keeps provision+exec on one sbx CLI for slow tests (§7).
 
 ---
 
@@ -389,34 +536,34 @@ Claude. The macOS lane runs first and freezes the shared contract; the Windows l
 
 1. **P0 [mac] — capability flag.** Add `Harness.compacts` (default True) + claurst `False`.
    Unit-assert registry values in the *fast* suite (no sandbox needed). Gate green.
-2. **P0.5 [win] — manual danno-on-Windows smoke (blocking gate, no test code).** *Before* any
-   driver work, prove danno's runtime frame by hand on the Windows box: `docker sandbox`/`sbx`
-   resolves; `danno sandbox start` (or a bare `sbx exec -it <name> echo ok`) actually launches an
-   interactive `-it` exec; the `-e NAME` env-forward and `-w <target>` survive from **both** a cmd
-   and a PowerShell window. This decouples **R1b** (does danno work here at all) from **R1a** (can
-   pywinpty drive it). *Outcomes:* **pass →** proceed to P2. **fail (danno-product) →** fix danno's
-   root cause on this platform **now** (in `sandbox_cli.py` etc.), land it on the branch stack, and
-   re-run the smoke until it passes — *then* proceed to P2. We fix the platform here so the driver
-   is later built against a **working** runtime; we do not defer the fix and stall the whole lane.
-   Record the break **and its fix** in `windows-cmd.md`/`windows-powershell.md` and update
-   `plan-test-danno-cross-platform.md` as the record. **fail (runtime absence) →** if Docker
-   Desktop/sbx is genuinely unsupported on this build (not danno's code), that's the one honest
-   loud-skip. Same smoke inside WSL2 gates P3 (§10.3).
-3. **P1 [mac] — shared scaffolding + `PexpectDriver`.** Write the `TuiDriver` protocol,
+2. **P1 [mac] — shared scaffolding + `PexpectDriver`.** Write the `TuiDriver` protocol,
    `primitives.py`, `fixtures.py`, the parametrized `test_tui_launch.py`, and `PexpectDriver`.
    Bring **all three** harnesses A/H/C green on macOS (this is the hardened spike code). Land a
    `WinPtyDriver` **stub** (`raise NotImplementedError`) so the Windows lane has a compile target,
    and the `.docs/results-slow-sandbox-tui/` template. **Exit gate = the `TuiDriver` protocol is
    frozen** (the handoff artifact, §10).
-4. **P1-handoff [mac→win].** Push `slow-sandbox-tui-tests` green on macOS; record `macos.md`
+3. **P1-handoff [mac→win].** Push `slow-sandbox-tui-tests` green on macOS; record `macos.md`
    results. The Windows Claude branches from this tip.
+4. **P1.5 [win] — manual danno-on-Windows smoke (blocking gate, no test code).** *After* the
+   handoff, *before* any driver work, prove danno's runtime frame by hand on the Windows box:
+   `docker sandbox`/`sbx` resolves; `danno sandbox start` (or a bare `sbx exec -it <name> echo ok`)
+   actually launches an interactive `-it` exec; the `-e NAME` env-forward and `-w <target>` survive
+   from **both** a cmd and a PowerShell window. This decouples **R1b** (does danno work here at all)
+   from **R1a** (can pywinpty drive it). *Outcomes:* **pass →** proceed to P2. **fail
+   (danno-product) →** fix danno's root cause on this platform **now** (in `sandbox_cli.py` etc.),
+   land it on the branch stack, and re-run the smoke until it passes — *then* proceed to P2. We fix
+   the platform here so the driver is later built against a **working** runtime; we do not defer the
+   fix and stall the whole lane. Record the break **and its fix** in
+   `windows-cmd.md`/`windows-powershell.md` and update `plan-test-danno-cross-platform.md` as the
+   record. **fail (runtime absence) →** if Docker Desktop/sbx is genuinely unsupported on this build
+   (not danno's code), that's the one honest loud-skip. Same smoke inside WSL2 gates P3 (§10.3).
 5. **P2 [win] — `WinPtyDriver` + Windows validation.** Implement `WinPtyDriver` (pywinpty, §3.4)
    against the frozen protocol — **no changes to shared code**; if the protocol is wrong, file it
    back to [mac], don't fork. Validate all three harnesses A/H/C **from a cmd session and from a
    PowerShell session** (same driver, two shells). Pin the exact `pywinpty` version. Record
    `windows-cmd.md` + `windows-powershell.md`.
 6. **P3 [win] — WSL2 validation.** Inside WSL2 on the same PC, run the suite **unchanged** (WSL2 is
-   Linux → `PexpectDriver`), *gated by the WSL2 P0.5 smoke* (§10.3). Record `wsl2.md`. No new driver
+   Linux → `PexpectDriver`), *gated by the WSL2 P1.5 smoke* (§10.3). Record `wsl2.md`. No new driver
    code — this is the POSIX path on Windows hardware.
 7. **P4 [mac+win] — rollup + cross-platform report.** Merge the Windows branch into base;
    consolidate the results matrix; root-cause any degrade/break per
@@ -471,7 +618,7 @@ against a moving interface. So sequencing is strict:
    contract — it never forks the shared **test** files on the Windows branch. This keeps one source
    of truth for the test contract.
 3. **danno-product fixes are welcome on the Windows branch — they're the job, not scope creep.**
-   When P0.5/P2/P3 surface an R1b break, [win] fixes danno's own code (`sandbox_cli.py` etc.) as
+   When P1.5/P2/P3 surface an R1b break, [win] fixes danno's own code (`sandbox_cli.py` etc.) as
    normal `fix(...)` commits on the stack so the platform goes green. That is *not* the same as
    forking the shared test contract (which stays [mac]-owned): fixing danno source is the whole
    point of "fix the platform as we find it." Keep such fixes in their own commits (Conventional
@@ -484,14 +631,14 @@ against a moving interface. So sequencing is strict:
 - **[mac]:** sbx up (`sbx ls`), `pexpect`/`pyte` importable, the three spike drivers still green.
 - **[win]:** Docker Desktop + `sbx` (or `docker sandbox`) present on Windows; Python 3.13 + `uv`;
   `pywinpty` importable and ConPTY available (Windows 10 1809+); a **local** stub+proxy runs (no
-  Mac needed, §7); **the P0.5 danno-on-Windows smoke passed** (§9). If sbx/`docker sandbox` isn't GA
+  Mac needed, §7); **the P1.5 danno-on-Windows smoke passed** (§9). If sbx/`docker sandbox` isn't GA
   on that Windows build, the suite **skips loud** and the results file records "runtime
   unavailable" — that is a valid, honest outcome.
 - **[win] → WSL2 (product surface, not just "Linux"):** before P3, confirm Docker Desktop's **WSL
   integration is enabled** for the distro; decide the checkout location (**native ext4 preferred**,
   `/mnt/c` is slow + has path-translation quirks — avoid for the real run); `docker`/`sbx` inside
   the distro reaches the same engine; and `host.docker.internal:<PROXY_PORT>` resolves **from a
-  WSL2-backed container**. Run the **same P0.5 smoke inside WSL2** — a failure here is a
+  WSL2-backed container**. Run the **same P1.5 smoke inside WSL2** — a failure here is a
   **danno-product** WSL2 gap that we **fix in-lane** (root-cause in danno, land on the branch,
   re-run until green), not a driver bug and not a backlog item. Only the `PexpectDriver` is reused
   unchanged; the *runtime* is a fresh unknown, and getting it green is part of finishing the lane.
@@ -548,7 +695,7 @@ fidelity: host-pty (real sbx exec -it)  |  tmux-fallback (record which and why)
   pty, the **product** may not work: `resolve_backend()` finding `docker sandbox` on that box; the
   `-e NAME` env-forward and `-w <target>` argv surviving cmd/PowerShell quoting + Windows path
   separators; `host.docker.internal` resolving from a WSL2-backed container; Docker Desktop's sandbox
-  plugin even existing on Windows. *Mitigation:* the new **P0.5 smoke** (§9) proves the danno runtime
+  plugin even existing on Windows. *Mitigation:* the new **P1.5 smoke** (§9) proves the danno runtime
   frame by hand *before* any driver code, so an R1b break is caught cheap and attributed to the
   product, not chased through a new test rig. **A confirmed R1b break is fixed in-lane** — we
   root-cause it in danno's own code (`sandbox_cli.py` backend resolution, argv/quoting, path
