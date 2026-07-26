@@ -64,6 +64,7 @@ class Observation:
     samples_path: Path | None
     provenance: dict[str, object]
     variant_id: str
+    configuration_group: str | None
     cohort_id: str
     configuration_id: str
     estimated_cost: float | None = None

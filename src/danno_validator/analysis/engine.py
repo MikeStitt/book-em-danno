@@ -183,6 +183,12 @@ def build_aggregates(observations: list[Observation], config: AnalysisConfig) ->
 
 def comparability_warnings(observations: list[Observation]) -> list[str]:
     warnings: list[str] = []
+    source_runs = {row.source_dir for row in observations}
+    if len(source_runs) > 1 and any(row.configuration_group is None for row in observations):
+        warnings.append(
+            "Cross-run configuration equivalence was not declared and cannot be verified "
+            "from current artifacts; source runs remain separate configurations."
+        )
     cohorts = {row.cohort_id for row in observations}
     if len(cohorts) > 1:
         warnings.append(

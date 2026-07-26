@@ -6,10 +6,15 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from book_em_danno.cli import app
-from danno_validator.analysis.config import AnalysisConfig, RecommendationConfig
+from danno_validator.analysis.config import (
+    AnalysisConfig,
+    RecommendationConfig,
+    load_analysis_config,
+)
 from danno_validator.analysis.engine import (
     aggregate_group,
     build_aggregates,
@@ -121,8 +126,13 @@ def _write_run(
     return run
 
 
-def _write_config(path: Path, *, minimum: int = 2) -> Path:
-    path.write_text(
+def _write_config(
+    path: Path,
+    *,
+    minimum: int = 2,
+    run_groups: list[tuple[str, list[Path]]] | None = None,
+) -> Path:
+    body = (
         'schema_version = 1\nstudy = "repo-choice"\n'
         "confidence_level = 0.95\nstatistics_seed = 42\n\n"
         "[recommendation]\n"
@@ -130,9 +140,15 @@ def _write_config(path: Path, *, minimum: int = 2) -> Path:
         "reliability_threshold = 0.5\n"
         f"minimum_sample_count = {minimum}\n\n"
         "[categories.bug-fix]\n"
-        'tasks = ["python/alpha"]\n',
-        encoding="utf-8",
+        'tasks = ["python/alpha"]\n'
     )
+    for name, runs in run_groups or []:
+        body += (
+            "\n[[run_groups]]\n"
+            f"name = {json.dumps(name)}\n"
+            f"runs = [{', '.join(json.dumps(str(run)) for run in runs)}]\n"
+        )
+    path.write_text(body, encoding="utf-8")
     return path
 
 
@@ -180,7 +196,10 @@ def test_multiple_repetitions_categories_flips_and_variance(tmp_path: Path) -> N
         "second",
         [_row(passed=False, latency=20, verdict="FailureClass.EARLY_STOP")],
     )
-    config_path = _write_config(tmp_path / "analysis.toml")
+    config_path = _write_config(
+        tmp_path / "analysis.toml",
+        run_groups=[("repeated", [Path("first"), Path("second")])],
+    )
     result = analyze_runs(
         [first, second],
         out_dir=tmp_path / "out",
@@ -195,6 +214,85 @@ def test_multiple_repetitions_categories_flips_and_variance(tmp_path: Path) -> N
     assert overall.latency_variance == 50.0
     assert category.observations == 2
     assert result.study.recommendations[0].status == "recommended"
+
+
+def test_cross_run_configurations_are_separate_without_group(tmp_path: Path) -> None:
+    first = _write_run(tmp_path, "first", [_row()])
+    second = _write_run(tmp_path, "second", [_row()])
+    result = analyze_runs([first, second], out_dir=tmp_path / "out")
+    overall = [item for item in result.study.aggregates if item.category is None]
+    assert len(overall) == 2
+    assert {item.observations for item in overall} == {1}
+    assert result.study.observations[0].variant_id == result.study.observations[1].variant_id
+    assert (
+        result.study.observations[0].configuration_id
+        != result.study.observations[1].configuration_id
+    )
+    assert any(
+        "equivalence was not declared" in warning for warning in result.study.comparability_warnings
+    )
+
+
+def test_explicit_relative_and_absolute_run_group_combines_repetitions(
+    tmp_path: Path,
+) -> None:
+    first = _write_run(tmp_path, "first", [_row(passed=True)])
+    second = _write_run(tmp_path, "second", [_row(passed=False)])
+    config_path = _write_config(
+        tmp_path / "analysis.toml",
+        run_groups=[("same-config", [Path("first"), second.resolve()])],
+    )
+    result = analyze_runs(
+        [first, second],
+        out_dir=tmp_path / "out",
+        config_path=config_path,
+    )
+    overall = [item for item in result.study.aggregates if item.category is None]
+    assert len(overall) == 1
+    assert overall[0].observations == 2
+    assert {row.configuration_group for row in result.study.observations} == {"same-config"}
+
+
+def test_duplicate_run_group_membership_fails(tmp_path: Path) -> None:
+    run = _write_run(tmp_path, "run", [_row()])
+    config_path = _write_config(
+        tmp_path / "analysis.toml",
+        run_groups=[
+            ("first", [Path("run")]),
+            ("second", [run.resolve()]),
+        ],
+    )
+    with pytest.raises(ValueError, match="multiple run groups"):
+        load_analysis_config(config_path)
+
+
+def test_unknown_grouped_run_fails_loudly(tmp_path: Path) -> None:
+    run = _write_run(tmp_path, "run", [_row()])
+    config_path = _write_config(
+        tmp_path / "analysis.toml",
+        run_groups=[("missing", [Path("does-not-exist")])],
+    )
+    with pytest.raises(ValueError, match="analysis run not found"):
+        analyze_runs([run], out_dir=tmp_path / "out", config_path=config_path)
+
+
+def test_grouped_multi_harness_root_is_discovered(tmp_path: Path) -> None:
+    root = tmp_path / "multi"
+    root.mkdir()
+    _write_run(root, "opencode", [_row()], harness="opencode")
+    _write_run(root, "claude", [_row()], harness="claude")
+    config_path = _write_config(
+        tmp_path / "analysis.toml",
+        run_groups=[("matrix", [Path("multi")])],
+    )
+    observations, sources = load_observations(
+        [root],
+        load_analysis_config(config_path),
+        None,
+    )
+    assert len(observations) == 2
+    assert {row.configuration_group for row in observations} == {"matrix"}
+    assert sources == sorted((root / "claude", root / "opencode"))
 
 
 def test_incompatible_provenance_is_separate_and_abstains(tmp_path: Path) -> None:

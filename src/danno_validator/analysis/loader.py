@@ -120,6 +120,32 @@ def _task_categories(config: AnalysisConfig) -> dict[str, str]:
     return mapping
 
 
+def _configuration_groups(config: AnalysisConfig, bench_files: list[Path]) -> dict[Path, str]:
+    """Resolve explicit equivalence declarations to selected source run directories."""
+    selected = {path.parent.resolve() for path in bench_files}
+    membership: dict[Path, str] = {}
+    for group in config.run_groups:
+        for configured_path in group.runs:
+            grouped_runs = {
+                path.parent.resolve() for path in discover_bench_files([configured_path])
+            }
+            unknown = grouped_runs - selected
+            if unknown:
+                joined = ", ".join(str(path) for path in sorted(unknown))
+                raise ValueError(
+                    f"run group {group.name!r} contains run(s) outside this analysis: {joined}"
+                )
+            for run_dir in grouped_runs:
+                previous = membership.get(run_dir)
+                if previous is not None:
+                    raise ValueError(
+                        f"run {run_dir} belongs to multiple run groups: "
+                        f"{previous!r} and {group.name!r}"
+                    )
+                membership[run_dir] = group.name
+    return membership
+
+
 def _cost(
     model: str,
     input_tokens: int | None,
@@ -152,6 +178,7 @@ def load_observations(
     categories = _task_categories(config)
     observations: list[Observation] = []
     bench_files = discover_bench_files(inputs)
+    configuration_groups = _configuration_groups(config, bench_files)
     for bench_path in bench_files:
         payload = _read_json(bench_path)
         rows = payload.get("results")
@@ -178,6 +205,7 @@ def load_observations(
             {"path": str(run_dir), "generated_at": payload.get("generated_at")},
             prefix="run",
         )
+        configuration_group = configuration_groups.get(run_dir.resolve())
         for index, raw_row in enumerate(rows):
             if not isinstance(raw_row, dict):
                 raise ValueError(f"{bench_path}: results[{index}] must be an object")
@@ -216,11 +244,15 @@ def load_observations(
                 "model_provenance": model_facts,
                 "harness_provenance": harness_prov,
                 "gates": provenance.get("gates"),
-                "config_path": payload.get("config"),
             }
             variant_id = _digest(variant_basis, prefix="variant")
             configuration_id = _digest(
-                {"variant": variant_id, "cohort": cohort_id}, prefix="config"
+                {
+                    "variant": variant_id,
+                    "cohort": cohort_id,
+                    "equivalence": configuration_group or f"source:{run_id}",
+                },
+                prefix="config",
             )
             captures_value = sidecars.get("captures")
             capture_paths = tuple(
@@ -281,6 +313,7 @@ def load_observations(
                 samples_path=_relative_sidecar(run_dir, sidecars.get("samples")),
                 provenance=provenance,
                 variant_id=variant_id,
+                configuration_group=configuration_group,
                 cohort_id=cohort_id,
                 configuration_id=configuration_id,
             )

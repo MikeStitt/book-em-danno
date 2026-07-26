@@ -7,12 +7,20 @@ import tomllib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 
 class CategoryConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     tasks: list[str] = Field(default_factory=list)
+
+
+class RunGroup(BaseModel):
+    """User assertion that source runs used one meaningful agent configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1)
+    runs: list[Path] = Field(min_length=1)
 
 
 class RecommendationConfig(BaseModel):
@@ -35,6 +43,14 @@ class AnalysisConfig(BaseModel):
     statistics_seed: int = 1729
     recommendation: RecommendationConfig = Field(default_factory=RecommendationConfig)
     categories: dict[str, CategoryConfig] = Field(default_factory=dict)
+    run_groups: list[RunGroup] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def unique_run_group_names(self) -> AnalysisConfig:
+        names = [group.name for group in self.run_groups]
+        if len(names) != len(set(names)):
+            raise ValueError("run group names must be unique")
+        return self
 
 
 class ModelPrice(BaseModel):
@@ -72,9 +88,31 @@ def load_analysis_config(path: Path | None) -> AnalysisConfig:
     if path is None:
         return AnalysisConfig()
     try:
-        return AnalysisConfig.model_validate(_load_toml(path))
+        config = AnalysisConfig.model_validate(_load_toml(path))
     except ValidationError as exc:
         raise ValueError(f"{path}: invalid analysis configuration — {exc}") from exc
+    base = path.resolve().parent
+    groups = [
+        group.model_copy(
+            update={
+                "runs": [
+                    run.resolve() if run.is_absolute() else (base / run).resolve()
+                    for run in group.runs
+                ]
+            }
+        )
+        for group in config.run_groups
+    ]
+    seen: dict[Path, str] = {}
+    for group in groups:
+        for run in group.runs:
+            if run in seen:
+                raise ValueError(
+                    f"{path}: run {run} belongs to multiple run groups: "
+                    f"{seen[run]!r} and {group.name!r}"
+                )
+            seen[run] = group.name
+    return config.model_copy(update={"run_groups": groups})
 
 
 def load_pricing_config(path: Path | None) -> PricingConfig | None:
