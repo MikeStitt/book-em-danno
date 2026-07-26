@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -536,6 +537,42 @@ def test_scope_seed_is_stable_and_scope_specific() -> None:
     assert overall != stable_scope_seed(43, configuration_id="config-a", scope="overall")
 
 
+def test_category_and_overall_statistics_do_not_depend_on_call_order(
+    tmp_path: Path,
+) -> None:
+    run = _write_run(
+        tmp_path,
+        "scope-order",
+        [
+            _row(task="python/a"),
+            _row(task="python/b", passed=False, verdict="FailureClass.ERROR"),
+            _row(task="python/c"),
+        ],
+    )
+    config = AnalysisConfig(
+        categories={"all": CategoryConfig(tasks=["python/a", "python/b", "python/c"])}
+    )
+    observations, _ = load_observations([run], config, None)
+    forward = {
+        (item.configuration_id, item.category): (
+            item.bootstrap_seed,
+            item.deployment_success_interval,
+        )
+        for item in build_aggregates(observations, config)
+    }
+    reverse = {
+        (item.configuration_id, item.category): (
+            item.bootstrap_seed,
+            item.deployment_success_interval,
+        )
+        for item in build_aggregates(list(reversed(observations)), config)
+    }
+    assert forward == reverse
+    overall_seed = next(value[0] for key, value in forward.items() if key[1] is None)
+    category_seed = next(value[0] for key, value in forward.items() if key[1] == "all")
+    assert overall_seed != category_seed
+
+
 def test_overall_and_within_task_variance_are_distinct(tmp_path: Path) -> None:
     run = _write_run(
         tmp_path,
@@ -888,6 +925,74 @@ def test_recommendation_abstention_constraints_and_tie_breaking(tmp_path: Path) 
     assert first.primary.configuration_id == second.primary.configuration_id
 
 
+def test_recommendation_tie_break_uses_within_task_stability(
+    tmp_path: Path,
+) -> None:
+    run = _write_run(
+        tmp_path,
+        "stable-tie",
+        [
+            _row(model="provider/model-a"),
+            _row(model="provider/model-b"),
+        ],
+    )
+    observations, _ = load_observations([run], AnalysisConfig(), None)
+    by_model = {
+        item.model: item
+        for item in build_aggregates(observations, AnalysisConfig())
+        if item.category is None
+    }
+    unstable = replace(
+        by_model["provider/model-a"],
+        p95_latency_s=10.0,
+        median_within_task_latency_variance=50.0,
+    )
+    stable = replace(
+        by_model["provider/model-b"],
+        p95_latency_s=10.0,
+        median_within_task_latency_variance=0.0,
+    )
+    recommendation = recommend_scope(
+        [unstable, stable],
+        scope="overall",
+        policy=RecommendationConfig(
+            minimum_sample_count=1,
+            minimum_distinct_tasks=1,
+        ),
+    )
+    assert recommendation.primary is not None
+    assert recommendation.primary.model == "provider/model-b"
+
+
+def test_recommendation_explanation_is_specific_and_omits_placeholders(
+    tmp_path: Path,
+) -> None:
+    run = _write_run(
+        tmp_path,
+        "explanation",
+        [
+            *[_row(model="provider/model-a", task=f"python/{index}") for index in range(3)],
+            *[_row(model="provider/model-b", task=f"python/{index}") for index in range(3)],
+        ],
+    )
+    result = analyze_runs(
+        [run],
+        out_dir=tmp_path / "out",
+        pricing_path=_write_pricing(tmp_path / "pricing.toml"),
+    )
+    recommendation = recommend_scope(
+        [item for item in result.study.aggregates if item.category is None],
+        scope="overall",
+        policy=RecommendationConfig(objective="lowest_cost"),
+    )
+    assert "task-bootstrap reliability lower bound" in recommendation.reason
+    assert "across 3 tasks and 3 observations" in recommendation.reason
+    assert "lowest cost per successful task" in recommendation.reason
+    assert "fallback" in recommendation.reason
+    assert "Evidence quality is" in recommendation.reason
+    assert "unavailable" not in recommendation.reason
+
+
 def test_outputs_are_versioned_self_contained_and_do_not_mutate_sources(
     tmp_path: Path,
 ) -> None:
@@ -897,11 +1002,74 @@ def test_outputs_are_versioned_self_contained_and_do_not_mutate_sources(
     after = {path.relative_to(run): path.read_bytes() for path in run.rglob("*") if path.is_file()}
     assert before == after
     artifact = json.loads(result.recommendation_json.read_text(encoding="utf-8"))
-    assert artifact["schema_version"] == 1
+    assert artifact["schema_version"] == 2
+    assert artifact["pareto"]["reliability_latency"]["status"] == "available"
+    assert artifact["methodology"]["bootstrap_resamples"] == 10_000
+    assert artifact["methodology"]["sampling_unit"] == "canonical_repository_task"
+    assert (
+        artifact["methodology"]["configuration_equivalence"]["policy"]
+        == "source runs remain separate unless explicitly declared equivalent"
+    )
     assert result.markdown_report.is_file()
     html_report = result.html_report.read_text(encoding="utf-8")
     assert "<style>" in html_report
     assert "http://" not in html_report and "https://" not in html_report
+
+
+def test_same_seed_produces_byte_stable_policy_statistics(tmp_path: Path) -> None:
+    run = _write_run(
+        tmp_path,
+        "byte-stable",
+        [
+            _row(task="python/a"),
+            _row(task="python/b", passed=False, verdict="FailureClass.ERROR"),
+            _row(task="python/c"),
+            _row(task="python/d", passed=False, verdict="FailureClass.ERROR"),
+        ],
+    )
+    now = datetime(2026, 7, 26, tzinfo=UTC)
+    first = analyze_runs([run], out_dir=tmp_path / "first", now=now)
+    second = analyze_runs([run], out_dir=tmp_path / "second", now=now)
+    assert first.recommendation_json.read_bytes() == second.recommendation_json.read_bytes()
+
+
+def test_html_pareto_charts_are_self_contained_and_accessible(
+    tmp_path: Path,
+) -> None:
+    run = _latency_comparison_run(
+        tmp_path,
+        "charts",
+        second_cache_hit=True,
+    )
+    result = analyze_runs(
+        [run],
+        out_dir=tmp_path / "out",
+        pricing_path=_write_pricing(tmp_path / "pricing.toml"),
+    )
+    html_report = result.html_report.read_text(encoding="utf-8")
+    assert html_report.count("<svg") == 2
+    assert 'role="img"' in html_report
+    assert "<title>" in html_report
+    assert "point-recommended" in html_report
+    assert "point-fallback" in html_report
+    assert "http://" not in html_report and "https://" not in html_report
+
+
+def test_html_charts_explain_unavailable_data_and_escape_labels(
+    tmp_path: Path,
+) -> None:
+    run = _write_run(
+        tmp_path,
+        "escaped",
+        [_row(model='provider/<bad&"', task=f"python/{index}") for index in range(3)],
+        include_latency_provenance=False,
+    )
+    result = analyze_runs([run], out_dir=tmp_path / "out")
+    html_report = result.html_report.read_text(encoding="utf-8")
+    assert "<svg" not in html_report
+    assert html_report.count("Chart unavailable:") == 2
+    assert 'provider/<bad&"' not in html_report
+    assert "provider/&lt;bad&amp;&quot;" in html_report
 
 
 def test_cli_analyze_writes_three_artifacts(tmp_path: Path) -> None:

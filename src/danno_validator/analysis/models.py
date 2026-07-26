@@ -92,6 +92,7 @@ class Aggregate:
 
     configuration_id: str
     variant_id: str
+    configuration_group: str | None
     cohort_id: str
     harness: str
     model: str

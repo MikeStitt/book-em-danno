@@ -137,6 +137,7 @@ def aggregate_group(
     return Aggregate(
         configuration_id=first.configuration_id,
         variant_id=first.variant_id,
+        configuration_group=first.configuration_group,
         cohort_id=first.cohort_id,
         harness=first.harness,
         model=first.model,

@@ -664,13 +664,20 @@ study = "my-repository-agent-policy"
 confidence_level = 0.95
 statistics_seed = 1729
 
+[[run_groups]]
+name = "same-agent-config"
+# Relative paths resolve from this analysis.toml; absolute paths are also accepted.
+runs = [".danno-bench/run-1", ".danno-bench/run-2"]
+
 [recommendation]
 objective = "reliability" # reliability | lowest_cost | lowest_latency
 reliability_threshold = 0.80
+reliability_basis = "lower_confidence_bound" # or point_estimate
 maximum_cost_per_attempt = 2.00
 maximum_cost_per_success = 3.00
 maximum_p95_latency_s = 900
 minimum_sample_count = 5
+minimum_distinct_tasks = 3
 allowed_harnesses = ["opencode", "occ"]
 # allowed_models = ["provider/model-id"]
 
@@ -700,19 +707,41 @@ missing. Cached input requires a cached-input rate. Recommendations may similarl
 abstain with `insufficient_evidence`, `no_configuration_satisfies_constraints`, or
 `not_comparable`.
 
-Configuration identity includes the recorded harness, model/backend provenance,
-harness provenance, config path, and gate policy. Danno revision and host environment
-form a separate comparison cohort. Runs from different cohorts remain separate and
-are not ranked against each other. Current `bench.json` has no explicit repetition id,
-sandbox image identity, or content hash of `danno.toml`; the analyzer says so and uses
-source-run plus row order only as a stable attempt identity.
+Current artifacts have no immutable hash of `danno.toml` or the full agent config, so
+a matching recorded path is never treated as proof of equal contents. Rows within one
+`bench.json` share the artifact-established variant identity. Separate source runs
+remain separate configurations unless every repeated run is explicitly named in one
+`[[run_groups]]` declaration; duplicate, missing, or out-of-study members fail loudly.
+The group is a user assertion of configuration equivalence, while the execution cohort
+describes comparable Danno/host methodology and source-run plus row order identifies
+one attempt.
 
-Success uncertainty uses a Wilson interval. P95 is omitted for a single observation.
-Repeated executions are summarized for pass/fail flips and variance, but are not
-claimed to be independent, so this first slice does not report pass@k. A global
-benchmark winner can therefore lose—or produce no recommendation at all—when this
-repository's task mix, evidence quality, allowed harnesses, price schedule, or latency
-ceiling differs.
+Observed success is reported separately from deployment evidence. The primary
+uncertainty interval is a deterministic 10,000-resample task-cluster bootstrap: each
+canonical repository task contributes its empirical pass rate once, then tasks—not
+attempts—are sampled with replacement. The default reliability constraint uses this
+interval's lower bound. `point_estimate` uses the task-weighted point estimate instead.
+Both `minimum_sample_count` and `minimum_distinct_tasks` must pass, so five executions
+of one task do not establish repository-wide evidence across five tasks. One task gets
+a descriptive interval equal to its empirical pass rate but cannot meet the default
+three-task requirement; unequal repetition counts still give each task one bootstrap
+cluster, and no zero-task aggregate is produced.
+
+Overall token/latency/cost variance describes dispersion in the whole task mix.
+Repeated-run instability is separately reported as the median within-task variance
+for tasks with complete repeated measurements. Latency comparison is metric-specific:
+host, warm-up readiness, sampler posture, and observed model-load posture must match.
+An unknown or different posture suppresses latency Pareto frontiers and latency-based
+recommendations without discarding otherwise comparable reliability/cost evidence.
+Each Pareto frontier reports `available`, `unavailable`, or `not_comparable` rather
+than treating missing metrics as zero.
+
+P95 is omitted for a single observation. Repetitions are not claimed independent, so
+pass@k remains unreported. The version-2 recommendation JSON records these methods,
+seeds, eligibility rules, and frontier statuses. A configuration can therefore have
+the highest observed pass rate while Danno abstains because its task coverage,
+lower-bound reliability, configuration identity, pricing, or latency posture is not
+strong enough to justify a deployment recommendation.
 
 ### Benchmark whole configs (`danno benchmark`)
 

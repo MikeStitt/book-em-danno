@@ -69,6 +69,11 @@ def analyze_runs(
             "statistics_seed": config.statistics_seed,
             "scope_seed": "sha256(configured_seed, configuration_id, scope)",
             "iid_success_interval": "wilson_score_diagnostic_only",
+            "configuration_equivalence": {
+                "policy": ("source runs remain separate unless explicitly declared equivalent"),
+                "declared_groups": [group.name for group in config.run_groups],
+                "path_resolution": "absolute or analysis-config-relative",
+            },
             "variance": {
                 "overall": "sample_variance_across_all_observations",
                 "within_task": "median_of_per_task_sample_variances",
