@@ -66,6 +66,65 @@ def _optional_float(value: object) -> float | None:
     return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
 
 
+def _latency_methodology(
+    provenance: dict[str, Any],
+    *,
+    model: str,
+    resource: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    """Metric-specific timing posture, or why historical timing is unverifiable."""
+    host = _object_dict(provenance.get("host"))
+    if not host:
+        return None, "latency host identity is unavailable"
+    if "sample_interval_s" not in provenance:
+        return None, "resource-sampling posture is unavailable"
+    sample_interval = _optional_float(provenance.get("sample_interval_s"))
+    sampling = (
+        {"enabled": True, "interval_s": sample_interval}
+        if sample_interval is not None
+        else {"enabled": False, "interval_s": None}
+    )
+    posture = "not_applicable_cloud"
+    load_anomaly = "not_applicable"
+    if model.startswith("ollama/"):
+        warmup = provenance.get("warmup")
+        if not isinstance(warmup, list):
+            return None, "local-model warm-up posture is unavailable"
+        tag = model.removeprefix("ollama/")
+        records = [
+            _object_dict(item)
+            for item in warmup
+            if isinstance(item, dict)
+            and str(item.get("tag") or item.get("model") or "") in {tag, model}
+        ]
+        if len(records) != 1:
+            return None, "local-model warm-up result is unavailable or ambiguous"
+        record = records[0]
+        if record.get("cache_hit") is True:
+            posture = "already_resident"
+        elif _optional_float(record.get("warm_load_s")) is not None:
+            posture = "cold_loaded_before_timing"
+        else:
+            return None, "local-model warm-up did not produce a verified ready state"
+        model_load = _optional_float(resource.get("model_load_s"))
+        if sample_interval is not None:
+            if model_load is None:
+                return None, "model-load anomaly was not observable in sampled timing data"
+            load_anomaly = "observed" if model_load > 0 else "not_observed"
+        else:
+            load_anomaly = "not_sampled"
+    identity = _digest(
+        {
+            "host": host,
+            "warmup_posture": posture,
+            "sampling": sampling,
+            "model_load_anomaly": load_anomaly,
+        },
+        prefix="latency",
+    )
+    return identity, None
+
+
 def _relative_sidecar(run_dir: Path, value: object) -> Path | None:
     if not isinstance(value, str) or not value:
         return None
@@ -92,18 +151,29 @@ def _failure_class(row: dict[str, Any]) -> str:
     combined = " ".join((termination, error, verdict))
     if "timeout" in combined:
         return "timeout"
-    if "auth" in combined or "unauthorized" in combined or "provider" in combined:
+    if "unsupported" in combined or "model not found" in combined:
+        return "unsupported_harness_model"
+    if any(
+        marker in combined
+        for marker in (
+            "authentication",
+            "unauthorized",
+            "unauthenticated",
+            "api key",
+            "credential",
+            "401",
+            "403",
+        )
+    ):
         return "authentication_or_provider_error"
     if "sandbox" in combined or "docker" in combined or "provision" in combined:
         return "infrastructure_or_sandbox_failure"
-    if "unsupported" in combined or "model not found" in combined:
-        return "unsupported_harness_model"
     if "early_stop" in combined or "early-stop" in combined:
         return "early_stop"
-    if "error" in combined:
-        return "error"
     if verdict and "pass" not in verdict:
         return verdict.removeprefix("failureclass.").replace("-", "_")
+    if error:
+        return "unknown_failure"
     return "test_failure" if row.get("passed") is False else "unknown_failure"
 
 
@@ -238,6 +308,11 @@ def load_observations(
             if total_tokens is None:
                 total_tokens = _optional_int(raw_row.get("tokens"))
             model_facts = _object_dict(model_prov.get(model))
+            latency_methodology_id, latency_methodology_warning = _latency_methodology(
+                provenance,
+                model=model,
+                resource=resource,
+            )
             variant_basis = {
                 "harness": harness,
                 "model": model,
@@ -301,6 +376,9 @@ def load_observations(
                 rtt_min_s=_optional_float(wire.get("rtt_min_s")),
                 rtt_mean_s=_optional_float(wire.get("rtt_mean_s")),
                 rtt_max_s=_optional_float(wire.get("rtt_max_s")),
+                model_load_s=_optional_float(resource.get("model_load_s")),
+                latency_methodology_id=latency_methodology_id,
+                latency_methodology_warning=latency_methodology_warning,
                 peak_context_tokens=_optional_int(wire.get("peak_ctx_tokens")),
                 context_headroom_pct=_optional_float(wire.get("ctx_headroom_pct")),
                 cpu_peak_pct=_optional_float(resource.get("cpu_peak")),

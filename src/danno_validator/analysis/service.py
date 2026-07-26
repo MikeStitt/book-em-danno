@@ -39,7 +39,11 @@ def analyze_runs(
     observations, sources = load_observations(runs, config, pricing)
     aggregates = build_aggregates(observations, config)
     recommendations = build_recommendations(aggregates, config)
-    pareto = pareto_analysis(aggregates, config.recommendation.reliability_threshold)
+    pareto = pareto_analysis(
+        aggregates,
+        config.recommendation.reliability_threshold,
+        config.recommendation.reliability_basis,
+    )
     generated = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
     study = Study(
         name=config.study,
@@ -69,6 +73,9 @@ def analyze_runs(
                 "overall": "sample_variance_across_all_observations",
                 "within_task": "median_of_per_task_sample_variances",
             },
+            "latency_comparability": (
+                "host, warm-up posture, sampler posture, and observed model-load anomaly"
+            ),
             "pass_at_k": {
                 "status": "not_reported",
                 "reason": "current artifacts do not establish independent repeated sampling",

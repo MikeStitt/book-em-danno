@@ -7,7 +7,12 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from danno_validator.analysis.models import Aggregate, Recommendation, Study
+from danno_validator.analysis.models import (
+    Aggregate,
+    ParetoFrontier,
+    Recommendation,
+    Study,
+)
 
 
 def _aggregate_dict(aggregate: Aggregate) -> dict[str, object]:
@@ -102,11 +107,19 @@ def policy_artifact(study: Study) -> dict[str, object]:
         },
         "configurations": [_aggregate_dict(item) for item in study.aggregates],
         "pareto": {
-            "reliability_cost": list(study.pareto.reliability_cost),
-            "reliability_latency": list(study.pareto.reliability_latency),
-            "cost_latency": list(study.pareto.cost_latency),
-            "dominated": list(study.pareto.dominated),
+            "reliability_cost": _pareto_dict(study.pareto.reliability_cost),
+            "reliability_latency": _pareto_dict(study.pareto.reliability_latency),
+            "cost_latency": _pareto_dict(study.pareto.cost_latency),
         },
+    }
+
+
+def _pareto_dict(frontier: ParetoFrontier) -> dict[str, object]:
+    return {
+        "status": frontier.status,
+        "configurations": list(frontier.configurations),
+        "dominated": list(frontier.dominated),
+        "reason": frontier.reason,
     }
 
 
@@ -203,24 +216,25 @@ def render_markdown(study: Study) -> str:
         )
     lookup = {item.configuration_id: item for item in overall_aggregates}
 
-    def pareto_labels(ids: tuple[str, ...]) -> str:
-        return (
-            ", ".join(
-                f"`{lookup[item].harness}/{lookup[item].model}`" for item in ids if item in lookup
-            )
-            or "unavailable"
+    def pareto_summary(frontier: ParetoFrontier) -> str:
+        labels = ", ".join(
+            f"`{lookup[item].harness}/{lookup[item].model}`"
+            for item in frontier.configurations
+            if item in lookup
         )
+        detail = labels or "none"
+        if frontier.reason:
+            detail += f" — {frontier.reason}"
+        return f"`{frontier.status}`: {detail}"
 
     lines += [
         "",
         "## Pareto-efficient configurations",
         "",
-        f"- reliability versus cost: {pareto_labels(study.pareto.reliability_cost)}",
-        f"- reliability versus p95 latency: {pareto_labels(study.pareto.reliability_latency)}",
+        f"- reliability versus cost: {pareto_summary(study.pareto.reliability_cost)}",
+        f"- reliability versus p95 latency: {pareto_summary(study.pareto.reliability_latency)}",
         f"- cost versus p95 latency above the reliability threshold: "
-        f"{pareto_labels(study.pareto.cost_latency)}",
-        f"- dominated configuration identities: "
-        f"{', '.join(f'`{item}`' for item in study.pareto.dominated) or 'none identified'}",
+        f"{pareto_summary(study.pareto.cost_latency)}",
         "",
         "## Results by task category",
         "",
@@ -367,12 +381,13 @@ def render_html(study: Study) -> str:
     )
     lookup = {item.configuration_id: item for item in overall_aggregates}
 
-    def labels(ids: tuple[str, ...]) -> str:
+    def labels(frontier: ParetoFrontier) -> str:
+        ids = frontier.configurations
         return (
             ", ".join(
                 f"{lookup[item].harness}/{lookup[item].model}" for item in ids if item in lookup
             )
-            or "unavailable"
+            or frontier.status
         )
 
     reliability_rows = "".join(

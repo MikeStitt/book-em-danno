@@ -40,8 +40,10 @@ def _row(
     input_tokens: int | None = 1_000,
     cached_tokens: int | None = 100,
     output_tokens: int | None = 200,
-    verdict: str = "FailureClass.PASS",
+    verdict: str | None = "FailureClass.PASS",
     gate: dict[str, object] | None = None,
+    error: str | None = None,
+    termination: str | None = None,
 ) -> dict[str, object]:
     row: dict[str, object] = {
         "suite": "aider",
@@ -49,12 +51,12 @@ def _row(
         "model": model,
         "passed": passed,
         "verdict": verdict,
-        "termination": "gate_kill" if gate else "completed",
+        "termination": termination or ("gate_kill" if gate else "completed"),
         "tool_calls": 3,
         "tokens": (input_tokens or 0) + (output_tokens or 0),
         "cost": 0.0,
         "latency_s": latency,
-        "error": None,
+        "error": error,
         "rounds": 4,
         "resource": {
             "cpu_peak": 0.0,
@@ -96,6 +98,8 @@ def _write_run(
     harness: str = "opencode",
     commit: str = "abc1234",
     host: str = "test-host",
+    warmup: list[dict[str, object]] | None = None,
+    include_latency_provenance: bool = True,
 ) -> Path:
     run = root / name
     run.mkdir()
@@ -113,21 +117,19 @@ def _write_run(
         ),
         encoding="utf-8",
     )
-    (run / "provenance.json").write_text(
-        json.dumps(
-            {
-                "danno": {"version": "0.16.3", "commit": commit},
-                "host": {"cpu_model": host, "cpu_cores": 8},
-                "harness_versions": {"harness": harness, "version": "1"},
-                "gates": {"max_turns": 50, "max_tokens": 2_000_000, "timeout_s": 1800},
-                "models": {
-                    model: {"digest": f"sha256:{model}", "context_length": 32_000}
-                    for model in models
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    provenance: dict[str, object] = {
+        "danno": {"version": "0.16.3", "commit": commit},
+        "host": {"cpu_model": host, "cpu_cores": 8},
+        "harness_versions": {"harness": harness, "version": "1"},
+        "gates": {"max_turns": 50, "max_tokens": 2_000_000, "timeout_s": 1800},
+        "models": {
+            model: {"digest": f"sha256:{model}", "context_length": 32_000} for model in models
+        },
+    }
+    if include_latency_provenance:
+        provenance["sample_interval_s"] = None
+        provenance["warmup"] = warmup or []
+    (run / "provenance.json").write_text(json.dumps(provenance), encoding="utf-8")
     return run
 
 
@@ -166,6 +168,12 @@ def _write_pricing(path: Path) -> Path:
         "input_per_million = 1.0\ncached_input_per_million = 0.5\n"
         "output_per_million = 2.0\n\n"
         '[models."provider/model-b"]\n'
+        "input_per_million = 4.0\ncached_input_per_million = 2.0\n"
+        "output_per_million = 8.0\n\n"
+        '[models."ollama/model-a"]\n'
+        "input_per_million = 1.0\ncached_input_per_million = 0.5\n"
+        "output_per_million = 2.0\n\n"
+        '[models."ollama/model-b"]\n'
         "input_per_million = 4.0\ncached_input_per_million = 2.0\n"
         "output_per_million = 8.0\n",
         encoding="utf-8",
@@ -327,7 +335,7 @@ def test_different_task_selection_abstains_and_suppresses_pareto(tmp_path: Path)
     )
     result = analyze_runs([run], out_dir=tmp_path / "out")
     assert result.study.recommendations[0].status == "not_comparable"
-    assert result.study.pareto.reliability_cost == ()
+    assert result.study.pareto.reliability_cost.status == "not_comparable"
     assert "different task selections" in result.study.recommendations[0].reason
 
 
@@ -393,6 +401,76 @@ def test_gate_breach_rate_and_failure_distribution(tmp_path: Path) -> None:
     overall = next(item for item in result.study.aggregates if item.category is None)
     assert overall.gate_breach_rate == 0.5
     assert overall.failure_classes == {"token_budget_breach": 1}
+
+
+def test_failure_classification_uses_specific_structured_signals(
+    tmp_path: Path,
+) -> None:
+    rows = [
+        _row(
+            task="auth",
+            passed=False,
+            verdict=None,
+            error="401 unauthorized api key",
+        ),
+        _row(
+            task="unsupported",
+            passed=False,
+            verdict=None,
+            error="unsupported provider capability",
+        ),
+        _row(
+            task="sandbox",
+            passed=False,
+            verdict=None,
+            error="docker provisioning failed",
+        ),
+        _row(
+            task="timeout",
+            passed=False,
+            verdict=None,
+            termination="timeout",
+        ),
+        _row(
+            task="tokens",
+            passed=False,
+            gate={"gate": "max_tokens", "observed": 11, "limit": 10},
+        ),
+        _row(
+            task="turns",
+            passed=False,
+            gate={"gate": "max_turns", "observed": 11, "limit": 10},
+        ),
+        _row(
+            task="early",
+            passed=False,
+            verdict="FailureClass.EARLY_STOP",
+        ),
+        _row(
+            task="test",
+            passed=False,
+            verdict="FailureClass.PASS",
+        ),
+        _row(
+            task="unknown",
+            passed=False,
+            verdict=None,
+            error="strange remote mishap",
+        ),
+    ]
+    run = _write_run(tmp_path, "failures", rows)
+    observations, _ = load_observations([run], AnalysisConfig(), None)
+    assert {row.task: row.failure_class for row in observations} == {
+        "auth": "authentication_or_provider_error",
+        "unsupported": "unsupported_harness_model",
+        "sandbox": "infrastructure_or_sandbox_failure",
+        "timeout": "timeout",
+        "tokens": "token_budget_breach",
+        "turns": "turn_limit_runaway",
+        "early": "early_stop",
+        "test": "test_failure",
+        "unknown": "unknown_failure",
+    }
 
 
 def test_p95_small_samples_and_confidence_are_deterministic(tmp_path: Path) -> None:
@@ -515,8 +593,130 @@ def test_pareto_frontier_marks_dominated_configuration(tmp_path: Path) -> None:
     overall = [item for item in result.study.aggregates if item.category is None]
     frontier = pareto_analysis(overall, 0.0)
     by_model = {item.model: item for item in overall}
-    assert by_model["provider/model-a"].configuration_id in frontier.reliability_cost
-    assert by_model["provider/model-b"].configuration_id in frontier.dominated
+    assert by_model["provider/model-a"].configuration_id in frontier.reliability_cost.configurations
+    assert by_model["provider/model-b"].configuration_id in frontier.reliability_cost.dominated
+
+
+def _latency_comparison_run(
+    tmp_path: Path,
+    name: str,
+    *,
+    second_cache_hit: bool,
+    include_latency_provenance: bool = True,
+) -> Path:
+    rows = [
+        *[
+            _row(
+                model="ollama/model-a",
+                task=f"python/task-{index}",
+                latency=5 + index,
+            )
+            for index in range(3)
+        ],
+        *[
+            _row(
+                model="ollama/model-b",
+                task=f"python/task-{index}",
+                latency=15 + index,
+            )
+            for index in range(3)
+        ],
+    ]
+    return _write_run(
+        tmp_path,
+        name,
+        rows,
+        warmup=[
+            {"tag": "model-a", "cache_hit": True, "warm_load_s": 0.0},
+            {
+                "tag": "model-b",
+                "cache_hit": second_cache_hit,
+                "warm_load_s": 0.0 if second_cache_hit else 4.0,
+            },
+        ],
+        include_latency_provenance=include_latency_provenance,
+    )
+
+
+def test_matching_warmup_permits_latency_ranking(tmp_path: Path) -> None:
+    run = _latency_comparison_run(
+        tmp_path,
+        "matching-latency",
+        second_cache_hit=True,
+    )
+    result = analyze_runs(
+        [run],
+        out_dir=tmp_path / "out",
+        pricing_path=_write_pricing(tmp_path / "pricing.toml"),
+    )
+    assert result.study.pareto.reliability_latency.status == "available"
+    latency = recommend_scope(
+        [item for item in result.study.aggregates if item.category is None],
+        scope="overall",
+        policy=RecommendationConfig(objective="lowest_latency"),
+    )
+    assert latency.status == "recommended"
+    assert latency.primary is not None
+    assert latency.primary.model == "ollama/model-a"
+
+
+def test_warmup_difference_only_suppresses_latency_evidence(
+    tmp_path: Path,
+) -> None:
+    run = _latency_comparison_run(
+        tmp_path,
+        "different-latency",
+        second_cache_hit=False,
+    )
+    result = analyze_runs(
+        [run],
+        out_dir=tmp_path / "out",
+        pricing_path=_write_pricing(tmp_path / "pricing.toml"),
+    )
+    assert result.study.pareto.reliability_cost.status == "available"
+    assert result.study.pareto.reliability_latency.status == "not_comparable"
+    assert result.study.pareto.cost_latency.status == "not_comparable"
+    overall = [item for item in result.study.aggregates if item.category is None]
+    reliability = recommend_scope(
+        overall,
+        scope="overall",
+        policy=RecommendationConfig(),
+    )
+    latency = recommend_scope(
+        overall,
+        scope="overall",
+        policy=RecommendationConfig(objective="lowest_latency"),
+    )
+    constrained = recommend_scope(
+        overall,
+        scope="overall",
+        policy=RecommendationConfig(maximum_p95_latency_s=30),
+    )
+    assert reliability.status == "recommended"
+    assert latency.status == "not_comparable"
+    assert constrained.status == "not_comparable"
+    assert "warm-up or timing methodology differs" in latency.reason
+
+
+def test_historical_unknown_latency_posture_is_conservative(
+    tmp_path: Path,
+) -> None:
+    run = _latency_comparison_run(
+        tmp_path,
+        "historical-latency",
+        second_cache_hit=True,
+        include_latency_provenance=False,
+    )
+    result = analyze_runs([run], out_dir=tmp_path / "out")
+    overall = [item for item in result.study.aggregates if item.category is None]
+    assert all(not item.latency_comparable for item in overall)
+    latency = recommend_scope(
+        overall,
+        scope="overall",
+        policy=RecommendationConfig(objective="lowest_latency"),
+    )
+    assert latency.status == "not_comparable"
+    assert "resource-sampling posture is unavailable" in latency.reason
 
 
 def test_default_recommendation_requires_three_distinct_tasks(tmp_path: Path) -> None:

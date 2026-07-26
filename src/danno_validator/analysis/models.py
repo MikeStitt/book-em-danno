@@ -12,6 +12,7 @@ RecommendationStatus = Literal[
     "no_configuration_satisfies_constraints",
     "not_comparable",
 ]
+ParetoStatus = Literal["available", "unavailable", "not_comparable"]
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,9 @@ class Observation:
     rtt_min_s: float | None
     rtt_mean_s: float | None
     rtt_max_s: float | None
+    model_load_s: float | None
+    latency_methodology_id: str | None
+    latency_methodology_warning: str | None
     peak_context_tokens: int | None
     context_headroom_pct: float | None
     cpu_peak_pct: float | None
@@ -130,6 +134,9 @@ class Aggregate:
     median_within_task_latency_variance: float | None
     median_within_task_cost_variance: float | None
     tasks_with_repeated_measurements: int
+    latency_methodology_id: str | None
+    latency_comparable: bool
+    latency_comparability_reason: str | None
     task_consistency: tuple[TaskConsistency, ...]
     flip_tasks: tuple[str, ...]
     evidence_quality: str
@@ -149,11 +156,18 @@ class Recommendation:
 
 
 @dataclass(frozen=True)
-class ParetoResult:
-    reliability_cost: tuple[str, ...] = ()
-    reliability_latency: tuple[str, ...] = ()
-    cost_latency: tuple[str, ...] = ()
+class ParetoFrontier:
+    status: ParetoStatus
+    configurations: tuple[str, ...] = ()
     dominated: tuple[str, ...] = ()
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ParetoResult:
+    reliability_cost: ParetoFrontier
+    reliability_latency: ParetoFrontier
+    cost_latency: ParetoFrontier
 
 
 @dataclass(frozen=True)

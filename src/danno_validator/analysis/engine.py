@@ -10,6 +10,7 @@ from danno_validator.analysis.config import AnalysisConfig, RecommendationConfig
 from danno_validator.analysis.models import (
     Aggregate,
     Observation,
+    ParetoFrontier,
     ParetoResult,
     Recommendation,
     TaskConsistency,
@@ -112,6 +113,26 @@ def aggregate_group(
     )
     if not terminations_known:
         warnings.append("gate-breach rate unavailable for historical rows without termination data")
+    latency_ids = {
+        row.latency_methodology_id for row in rows if row.latency_methodology_id is not None
+    }
+    latency_warnings = sorted(
+        {
+            row.latency_methodology_warning
+            for row in rows
+            if row.latency_methodology_warning is not None
+        }
+    )
+    latency_comparable = not latency_warnings and len(latency_ids) == 1
+    latency_reason: str | None = None
+    if latency_warnings:
+        latency_reason = "; ".join(latency_warnings)
+    elif len(latency_ids) > 1:
+        latency_reason = "warm-up or timing methodology differs within this configuration"
+    elif not latency_ids:
+        latency_reason = "latency methodology is unavailable"
+    if latency_reason is not None:
+        warnings.append(latency_reason)
     total_cost = sum(cost_values) if cost_values is not None else None
     return Aggregate(
         configuration_id=first.configuration_id,
@@ -167,6 +188,9 @@ def aggregate_group(
             [item.cost_variance for item in consistency if item.cost_variance is not None] or None
         ),
         tasks_with_repeated_measurements=sum(item.observations >= 2 for item in consistency),
+        latency_methodology_id=next(iter(latency_ids)) if latency_comparable else None,
+        latency_comparable=latency_comparable,
+        latency_comparability_reason=latency_reason,
         task_consistency=tuple(consistency),
         flip_tasks=tuple(item.task for item in consistency if item.flips),
         evidence_quality=_quality(count, len(task_rows), deployment_interval),
@@ -282,37 +306,107 @@ def _frontier(
     return frontier, dominated
 
 
-def pareto_analysis(aggregates: list[Aggregate], reliability_threshold: float) -> ParetoResult:
+def _frontier_result(
+    aggregates: list[Aggregate],
+    dimensions: tuple[tuple[Callable[[Aggregate], float | None], bool], ...],
+    *,
+    incomparable_reason: str | None = None,
+) -> ParetoFrontier:
+    if incomparable_reason is not None:
+        return ParetoFrontier(status="not_comparable", reason=incomparable_reason)
+    eligible = [
+        aggregate
+        for aggregate in aggregates
+        if all(accessor(aggregate) is not None for accessor, _ in dimensions)
+    ]
+    if not eligible:
+        return ParetoFrontier(
+            status="unavailable",
+            reason="no configuration has every required metric",
+        )
+    configurations, dominated = _frontier(eligible, dimensions)
+    reason = None
+    if len(eligible) < len(aggregates):
+        reason = (
+            f"{len(aggregates) - len(eligible)} configuration(s) with unavailable "
+            "metrics were excluded"
+        )
+    return ParetoFrontier(
+        status="available",
+        configurations=configurations,
+        dominated=tuple(sorted(dominated)),
+        reason=reason,
+    )
+
+
+def _base_pareto_incomparability(aggregates: list[Aggregate]) -> str | None:
+    if len({item.cohort_id for item in aggregates}) > 1:
+        return "execution cohorts differ"
+    if len({item.tasks for item in aggregates}) > 1:
+        return "task selections differ"
+    return None
+
+
+def _latency_incomparability(aggregates: list[Aggregate]) -> str | None:
+    unresolved = [
+        item.latency_comparability_reason or "latency methodology is unavailable"
+        for item in aggregates
+        if not item.latency_comparable
+    ]
+    if unresolved:
+        return "; ".join(sorted(set(unresolved)))
+    identities = {item.latency_methodology_id for item in aggregates}
+    if len(identities) > 1:
+        return "warm-up or timing methodology differs across configurations"
+    return None
+
+
+def pareto_analysis(
+    aggregates: list[Aggregate],
+    reliability_threshold: float,
+    reliability_basis: str = "lower_confidence_bound",
+) -> ParetoResult:
     overall = [aggregate for aggregate in aggregates if aggregate.category is None]
-    if len({item.cohort_id for item in overall}) > 1 or len({item.tasks for item in overall}) > 1:
-        return ParetoResult()
-    reliability_cost, dominated_cost = _frontier(
+    base_reason = _base_pareto_incomparability(overall)
+    latency_reason = base_reason or _latency_incomparability(overall)
+    reliability_cost = _frontier_result(
         overall,
         (
-            (lambda item: item.success_rate, True),
+            (lambda item: item.deployment_success_interval[0], True),
             (lambda item: item.cost_per_attempt, False),
         ),
+        incomparable_reason=base_reason,
     )
-    reliability_latency, dominated_latency = _frontier(
+    reliability_latency = _frontier_result(
         overall,
         (
-            (lambda item: item.success_rate, True),
+            (lambda item: item.deployment_success_interval[0], True),
             (lambda item: item.p95_latency_s, False),
         ),
+        incomparable_reason=latency_reason,
     )
-    threshold = [item for item in overall if item.success_rate >= reliability_threshold]
-    cost_latency, dominated_cost_latency = _frontier(
+    threshold = [
+        item
+        for item in overall
+        if (
+            item.deployment_success_interval[0]
+            if reliability_basis == "lower_confidence_bound"
+            else item.deployment_success_rate
+        )
+        >= reliability_threshold
+    ]
+    cost_latency = _frontier_result(
         threshold,
         (
             (lambda item: item.cost_per_attempt, False),
             (lambda item: item.p95_latency_s, False),
         ),
+        incomparable_reason=latency_reason,
     )
     return ParetoResult(
         reliability_cost=reliability_cost,
         reliability_latency=reliability_latency,
         cost_latency=cost_latency,
-        dominated=tuple(sorted(dominated_cost | dominated_latency | dominated_cost_latency)),
     )
 
 
@@ -372,7 +466,7 @@ def _ascending(value: float | None) -> float:
     return value if value is not None else math.inf
 
 
-def _rank_key(aggregate: Aggregate, objective: str) -> tuple[object, ...]:
+def _rank_key(aggregate: Aggregate, objective: str, *, use_latency: bool) -> tuple[object, ...]:
     lower_reliability = aggregate.deployment_success_interval[0]
     if objective == "lowest_cost":
         leading: tuple[object, ...] = (
@@ -385,8 +479,8 @@ def _rank_key(aggregate: Aggregate, objective: str) -> tuple[object, ...]:
         leading = (-lower_reliability, _ascending(aggregate.cost_per_success))
     return (
         *leading,
-        _ascending(aggregate.p95_latency_s),
-        _ascending(aggregate.median_within_task_latency_variance),
+        _ascending(aggregate.p95_latency_s) if use_latency else math.inf,
+        (_ascending(aggregate.median_within_task_latency_variance) if use_latency else math.inf),
         aggregate.configuration_id,
     )
 
@@ -486,6 +580,20 @@ def recommend_scope(
                 "ranking them would confound configuration quality with task coverage."
             ),
         )
+    latency_reason = _latency_incomparability(aggregates)
+    latency_required = (
+        policy.objective == "lowest_latency" or policy.maximum_p95_latency_s is not None
+    )
+    if latency_required and latency_reason is not None:
+        return Recommendation(
+            scope=scope,
+            status="not_comparable",
+            objective=policy.objective,
+            constraints=constraints,
+            primary=None,
+            fallback=None,
+            reason=f"Latency cannot be compared: {latency_reason}.",
+        )
     enough = [item for item in aggregates if item.observations >= policy.minimum_sample_count]
     if not enough:
         return Recommendation(
@@ -517,7 +625,11 @@ def recommend_scope(
         )
     eligible = sorted(
         (item for item in aggregates if _eligible(item, policy)),
-        key=lambda item: _rank_key(item, policy.objective),
+        key=lambda item: _rank_key(
+            item,
+            policy.objective,
+            use_latency=latency_reason is None,
+        ),
     )
     if not eligible:
         return Recommendation(
