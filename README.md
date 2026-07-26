@@ -618,6 +618,102 @@ modified. These run real benchmark *content* through danno's own execution model
 the official Docker-per-task harness, so the pass counts are **not** official
 benchmark scores.
 
+### Analyze completed benchmark runs (`danno analyze`)
+
+`danno analyze` is the decision layer above `danno bench`. It does not provision a
+sandbox, call a model, grade a task, or change a run. It reads completed run artifacts
+and answers a narrower deployment question: which measured harness/model/configuration
+should this repository use under explicit reliability, cost, and latency constraints?
+
+Pass one or more run directories (or their `bench.json` files). A multi-harness root
+is also accepted when each immediate child contains a `bench.json`:
+
+```text
+.danno-bench/2026-07-26T12-00-00/
+├── opencode/
+│   ├── bench.json
+│   ├── provenance.json
+│   ├── captures/ · transcripts/ · metrics/ · samples/
+│   └── report.html
+└── occ/
+    └── …
+```
+
+```bash
+danno analyze \
+  .danno-bench/run-1 \
+  .danno-bench/run-2 \
+  --config analysis.toml \
+  --pricing pricing.toml \
+  --out .danno-analysis/my-study
+```
+
+The output directory contains:
+
+- `recommendation.json` — a versioned policy artifact with explicit recommendation
+  status, constraints, evidence, fallback, configuration metrics, and Pareto sets;
+- `report.md` — the complete text report;
+- `report.html` — a self-contained report with no remote assets.
+
+The optional analysis config is deliberately separate from `danno.toml` and
+`benchmarks.toml`; it changes interpretation, never execution:
+
+```toml
+schema_version = 1
+study = "my-repository-agent-policy"
+confidence_level = 0.95
+statistics_seed = 1729
+
+[recommendation]
+objective = "reliability" # reliability | lowest_cost | lowest_latency
+reliability_threshold = 0.80
+maximum_cost_per_attempt = 2.00
+maximum_cost_per_success = 3.00
+maximum_p95_latency_s = 900
+minimum_sample_count = 5
+allowed_harnesses = ["opencode", "occ"]
+# allowed_models = ["provider/model-id"]
+
+[categories.bug-fix]
+tasks = ["django__django-11099", "python/affine-cipher"]
+
+[categories.refactor]
+tasks = ["internal/refactor-auth-client"]
+```
+
+Prices are never built into Danno. Supply account-appropriate, versioned rates only
+when economic analysis is wanted:
+
+```toml
+schema_version = 1
+effective_date = "2026-07-26"
+currency = "USD"
+
+[models."provider/model-id"]
+input_per_million = 1.10
+cached_input_per_million = 0.275
+output_per_million = 4.40
+```
+
+Cost is `unavailable`, not zero, if token telemetry or an unambiguous model price is
+missing. Cached input requires a cached-input rate. Recommendations may similarly
+abstain with `insufficient_evidence`, `no_configuration_satisfies_constraints`, or
+`not_comparable`.
+
+Configuration identity includes the recorded harness, model/backend provenance,
+harness provenance, config path, and gate policy. Danno revision and host environment
+form a separate comparison cohort. Runs from different cohorts remain separate and
+are not ranked against each other. Current `bench.json` has no explicit repetition id,
+sandbox image identity, or content hash of `danno.toml`; the analyzer says so and uses
+source-run plus row order only as a stable attempt identity.
+
+Success uncertainty uses a Wilson interval. P95 is omitted for a single observation.
+Repeated executions are summarized for pass/fail flips and variance, but are not
+claimed to be independent, so this first slice does not report pass@k. A global
+benchmark winner can therefore lose—or produce no recommendation at all—when this
+repository's task mix, evidence quality, allowed harnesses, price schedule, or latency
+ceiling differs.
+
 ### Benchmark whole configs (`danno benchmark`)
 
 `danno benchmark` (distinct from `danno bench` above) sweeps whole **configs** for

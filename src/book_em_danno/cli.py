@@ -8,6 +8,7 @@ option (`danno install --apply`)."""
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from pathlib import Path
@@ -415,6 +416,53 @@ def bench(
     except (CommandFailedError, CommandNotFoundError) as exc:  # Docker / provision failure
         log_err(str(exc))
         raise typer.Exit(code=4) from exc
+
+
+@app.command()
+def analyze(
+    runs: list[Path] = typer.Argument(
+        ...,
+        help="Completed bench run directories or bench.json files (one or more).",
+    ),
+    config: Path = typer.Option(
+        None,
+        "--config",
+        help="Optional analysis TOML (study, categories, constraints, objective).",
+    ),
+    pricing: Path = typer.Option(
+        None,
+        "--pricing",
+        help="Optional versioned, user-supplied model pricing TOML.",
+    ),
+    out: Path = typer.Option(
+        None,
+        "--out",
+        help="Output directory (default .danno-analysis/<timestamp>/).",
+    ),
+) -> None:
+    """Recommend configurations by post-processing completed `danno bench` runs.
+
+    This command never runs a benchmark and never modifies its input directories. It
+    normalizes one or more bench.json/provenance.json artifact sets, keeps incompatible
+    execution cohorts separate, and writes recommendation.json, report.md, and a
+    self-contained report.html.
+    """
+    from danno_validator.analysis import analyze_runs
+
+    out_dir = out or Path(".danno-analysis") / datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%S")
+    try:
+        result = analyze_runs(
+            runs,
+            out_dir=out_dir,
+            config_path=config,
+            pricing_path=pricing,
+        )
+    except (ValueError, OSError) as exc:
+        log_err(str(exc))
+        raise typer.Exit(code=2) from exc
+    console.print(f"recommendation  {result.recommendation_json}")
+    console.print(f"markdown        {result.markdown_report}")
+    console.print(f"html            {result.html_report}")
 
 
 @app.command()
