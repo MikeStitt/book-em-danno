@@ -98,6 +98,7 @@ class Aggregate:
     deployment_success_rate: float
     deployment_success_interval: tuple[float, float]
     success_interval_method: str
+    confidence_level: float
     bootstrap_resamples: int
     bootstrap_seed: int
     iid_success_interval: tuple[float, float]

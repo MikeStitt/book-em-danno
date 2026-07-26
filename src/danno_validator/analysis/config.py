@@ -27,12 +27,16 @@ class RecommendationConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     objective: Literal["reliability", "lowest_cost", "lowest_latency"] = "reliability"
     reliability_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
+    reliability_basis: Literal["lower_confidence_bound", "point_estimate"] = (
+        "lower_confidence_bound"
+    )
     maximum_cost_per_attempt: float | None = Field(default=None, ge=0.0)
     maximum_cost_per_success: float | None = Field(default=None, ge=0.0)
     maximum_p95_latency_s: float | None = Field(default=None, ge=0.0)
     allowed_harnesses: list[str] | None = None
     allowed_models: list[str] | None = None
     minimum_sample_count: int = Field(default=2, ge=1)
+    minimum_distinct_tasks: int = Field(default=3, ge=1)
 
 
 class AnalysisConfig(BaseModel):

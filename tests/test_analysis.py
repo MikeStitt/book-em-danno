@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 from book_em_danno.cli import app
 from danno_validator.analysis.config import (
     AnalysisConfig,
+    CategoryConfig,
     RecommendationConfig,
     load_analysis_config,
 )
@@ -134,6 +135,7 @@ def _write_config(
     path: Path,
     *,
     minimum: int = 2,
+    minimum_tasks: int = 1,
     run_groups: list[tuple[str, list[Path]]] | None = None,
 ) -> Path:
     body = (
@@ -143,6 +145,7 @@ def _write_config(
         'objective = "reliability"\n'
         "reliability_threshold = 0.5\n"
         f"minimum_sample_count = {minimum}\n\n"
+        f"minimum_distinct_tasks = {minimum_tasks}\n\n"
         "[categories.bug-fix]\n"
         'tasks = ["python/alpha"]\n'
     )
@@ -516,6 +519,124 @@ def test_pareto_frontier_marks_dominated_configuration(tmp_path: Path) -> None:
     assert by_model["provider/model-b"].configuration_id in frontier.dominated
 
 
+def test_default_recommendation_requires_three_distinct_tasks(tmp_path: Path) -> None:
+    repeated = _write_run(
+        tmp_path,
+        "repeated",
+        [_row(task="python/only") for _ in range(5)],
+    )
+    repeated_observations, _ = load_observations(
+        [repeated],
+        AnalysisConfig(),
+        None,
+    )
+    repeated_aggregates = build_aggregates(
+        repeated_observations,
+        AnalysisConfig(),
+    )
+    abstention = recommend_scope(
+        repeated_aggregates,
+        scope="overall",
+        policy=RecommendationConfig(),
+    )
+    assert abstention.status == "insufficient_evidence"
+    assert "required 3 distinct tasks" in abstention.reason
+
+    broad = _write_run(
+        tmp_path,
+        "broad",
+        [_row(task=f"python/task-{index}") for index in range(3)],
+    )
+    broad_observations, _ = load_observations([broad], AnalysisConfig(), None)
+    broad_aggregate = build_aggregates(broad_observations, AnalysisConfig())
+    recommendation = recommend_scope(
+        broad_aggregate,
+        scope="overall",
+        policy=RecommendationConfig(),
+    )
+    assert recommendation.status == "recommended"
+
+
+def test_category_uses_distinct_task_requirement(tmp_path: Path) -> None:
+    run = _write_run(
+        tmp_path,
+        "category",
+        [_row(task="python/only") for _ in range(5)],
+    )
+    config = AnalysisConfig(categories={"narrow": CategoryConfig(tasks=["python/only"])})
+    observations, _ = load_observations([run], config, None)
+    aggregates = build_aggregates(observations, config)
+    category = recommend_scope(
+        [item for item in aggregates if item.category == "narrow"],
+        scope="narrow",
+        policy=config.recommendation,
+    )
+    assert category.status == "insufficient_evidence"
+    explicitly_narrow = recommend_scope(
+        [item for item in aggregates if item.category == "narrow"],
+        scope="narrow",
+        policy=RecommendationConfig(
+            minimum_sample_count=2,
+            minimum_distinct_tasks=1,
+        ),
+    )
+    assert explicitly_narrow.status == "recommended"
+
+
+def test_lower_bound_default_can_abstain_when_point_estimate_passes(
+    tmp_path: Path,
+) -> None:
+    run = _write_run(
+        tmp_path,
+        "basis",
+        [
+            _row(task="python/a"),
+            _row(task="python/b"),
+            _row(
+                task="python/c",
+                passed=False,
+                verdict="FailureClass.ERROR",
+            ),
+        ],
+    )
+    observations, _ = load_observations([run], AnalysisConfig(), None)
+    aggregates = build_aggregates(observations, AnalysisConfig())
+    assert RecommendationConfig().reliability_basis == "lower_confidence_bound"
+    lower_bound = recommend_scope(
+        aggregates,
+        scope="overall",
+        policy=RecommendationConfig(reliability_threshold=0.6),
+    )
+    point_estimate = recommend_scope(
+        aggregates,
+        scope="overall",
+        policy=RecommendationConfig(
+            reliability_threshold=0.6,
+            reliability_basis="point_estimate",
+        ),
+    )
+    assert lower_bound.status == "no_configuration_satisfies_constraints"
+    assert point_estimate.status == "recommended"
+    assert point_estimate.primary is not None
+    assert point_estimate.primary.deployment_success_rate == 2 / 3
+
+
+def test_reliability_basis_is_recorded_in_outputs(tmp_path: Path) -> None:
+    run = _write_run(
+        tmp_path,
+        "recorded-basis",
+        [_row(task=f"python/{index}") for index in range(3)],
+    )
+    result = analyze_runs([run], out_dir=tmp_path / "out")
+    artifact = json.loads(result.recommendation_json.read_text(encoding="utf-8"))
+    assert artifact["overall"]["constraints"]["reliability_basis"] == "lower_confidence_bound"
+    assert artifact["methodology"]["reliability_eligibility_basis"] == "lower_confidence_bound"
+    assert "lower_confidence_bound" in result.markdown_report.read_text(encoding="utf-8")
+    assert "task-bootstrap reliability lower bound" in result.html_report.read_text(
+        encoding="utf-8"
+    )
+
+
 def test_recommendation_abstention_constraints_and_tie_breaking(tmp_path: Path) -> None:
     run = _write_run(
         tmp_path,
@@ -530,7 +651,10 @@ def test_recommendation_abstention_constraints_and_tie_breaking(tmp_path: Path) 
     insufficient = recommend_scope(
         aggregates,
         scope="overall",
-        policy=RecommendationConfig(minimum_sample_count=2),
+        policy=RecommendationConfig(
+            minimum_sample_count=2,
+            minimum_distinct_tasks=1,
+        ),
     )
     assert insufficient.status == "insufficient_evidence"
     impossible = recommend_scope(
@@ -538,6 +662,7 @@ def test_recommendation_abstention_constraints_and_tie_breaking(tmp_path: Path) 
         scope="overall",
         policy=RecommendationConfig(
             minimum_sample_count=1,
+            minimum_distinct_tasks=1,
             maximum_cost_per_attempt=1.0,
         ),
     )
@@ -545,12 +670,18 @@ def test_recommendation_abstention_constraints_and_tie_breaking(tmp_path: Path) 
     first = recommend_scope(
         aggregates,
         scope="overall",
-        policy=RecommendationConfig(minimum_sample_count=1),
+        policy=RecommendationConfig(
+            minimum_sample_count=1,
+            minimum_distinct_tasks=1,
+        ),
     )
     second = recommend_scope(
         list(reversed(aggregates)),
         scope="overall",
-        policy=RecommendationConfig(minimum_sample_count=1),
+        policy=RecommendationConfig(
+            minimum_sample_count=1,
+            minimum_distinct_tasks=1,
+        ),
     )
     assert first.status == "recommended"
     assert first.primary is not None and second.primary is not None

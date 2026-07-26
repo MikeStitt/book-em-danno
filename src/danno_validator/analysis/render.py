@@ -20,7 +20,7 @@ def _aggregate_dict(aggregate: Aggregate) -> dict[str, object]:
     return value
 
 
-def _selected(aggregate: Aggregate | None) -> dict[str, object] | None:
+def _selected(aggregate: Aggregate | None, reliability_basis: object) -> dict[str, object] | None:
     if aggregate is None:
         return None
     failures = sorted(aggregate.failure_classes.items(), key=lambda item: (-item[1], item[0]))
@@ -31,6 +31,14 @@ def _selected(aggregate: Aggregate | None) -> dict[str, object] | None:
         "harness": aggregate.harness,
         "model": aggregate.model,
         "recommended_limits": None,
+        "reliability_for_eligibility": {
+            "basis": reliability_basis,
+            "value": (
+                aggregate.deployment_success_interval[0]
+                if reliability_basis == "lower_confidence_bound"
+                else aggregate.deployment_success_rate
+            ),
+        },
         "evidence": {
             "tasks": aggregate.distinct_tasks,
             "observations": aggregate.observations,
@@ -60,13 +68,14 @@ def _selected(aggregate: Aggregate | None) -> dict[str, object] | None:
 
 
 def _recommendation_dict(recommendation: Recommendation) -> dict[str, object]:
+    reliability_basis = recommendation.constraints["reliability_basis"]
     return {
         "status": recommendation.status,
         "scope": recommendation.scope,
         "objective": recommendation.objective,
         "constraints": recommendation.constraints,
-        "primary": _selected(recommendation.primary),
-        "fallback": _selected(recommendation.fallback),
+        "primary": _selected(recommendation.primary, reliability_basis),
+        "fallback": _selected(recommendation.fallback, reliability_basis),
         "reason": recommendation.reason,
         "warnings": list(recommendation.warnings),
     }
@@ -123,6 +132,10 @@ def _recommendation_md(recommendation: Recommendation) -> list[str]:
         "",
         f"- status: `{recommendation.status}`",
         f"- objective: `{recommendation.objective}`",
+        f"- reliability eligibility: `{recommendation.constraints['reliability_basis']}`; "
+        f"minimum {recommendation.constraints['minimum_success_rate']}",
+        f"- evidence minimums: {recommendation.constraints['minimum_sample_count']} "
+        f"observations and {recommendation.constraints['minimum_distinct_tasks']} distinct tasks",
         f"- primary: {_configuration_label(recommendation.primary)}",
         f"- fallback: {_configuration_label(recommendation.fallback)}",
         f"- rationale: {recommendation.reason}",

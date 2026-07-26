@@ -126,6 +126,7 @@ def aggregate_group(
         deployment_success_rate=deployment_rate,
         deployment_success_interval=deployment_interval,
         success_interval_method=TASK_BOOTSTRAP_METHOD,
+        confidence_level=confidence,
         bootstrap_resamples=bootstrap_resamples,
         bootstrap_seed=scope_seed,
         iid_success_interval=iid_interval,
@@ -318,19 +319,29 @@ def pareto_analysis(aggregates: list[Aggregate], reliability_threshold: float) -
 def _constraints_dict(policy: RecommendationConfig) -> dict[str, object]:
     return {
         "minimum_success_rate": policy.reliability_threshold,
+        "reliability_basis": policy.reliability_basis,
         "maximum_cost_per_attempt": policy.maximum_cost_per_attempt,
         "maximum_cost_per_success": policy.maximum_cost_per_success,
         "maximum_p95_latency_s": policy.maximum_p95_latency_s,
         "allowed_harnesses": policy.allowed_harnesses,
         "allowed_models": policy.allowed_models,
         "minimum_sample_count": policy.minimum_sample_count,
+        "minimum_distinct_tasks": policy.minimum_distinct_tasks,
     }
+
+
+def _reliability_value(aggregate: Aggregate, policy: RecommendationConfig) -> float:
+    if policy.reliability_basis == "lower_confidence_bound":
+        return aggregate.deployment_success_interval[0]
+    return aggregate.deployment_success_rate
 
 
 def _eligible(aggregate: Aggregate, policy: RecommendationConfig) -> bool:
     if aggregate.observations < policy.minimum_sample_count:
         return False
-    if aggregate.deployment_success_rate < policy.reliability_threshold:
+    if aggregate.distinct_tasks < policy.minimum_distinct_tasks:
+        return False
+    if _reliability_value(aggregate, policy) < policy.reliability_threshold:
         return False
     if policy.allowed_harnesses is not None and aggregate.harness not in policy.allowed_harnesses:
         return False
@@ -378,6 +389,59 @@ def _rank_key(aggregate: Aggregate, objective: str) -> tuple[object, ...]:
         _ascending(aggregate.median_within_task_latency_variance),
         aggregate.configuration_id,
     )
+
+
+def _recommendation_reason(
+    primary: Aggregate,
+    fallback: Aggregate | None,
+    policy: RecommendationConfig,
+) -> str:
+    reliability = _reliability_value(primary, policy)
+    basis = (
+        f"{primary.confidence_level:.0%} task-bootstrap reliability lower bound"
+        if policy.reliability_basis == "lower_confidence_bound"
+        else "task-weighted reliability point estimate"
+    )
+    clauses = [
+        f"Selected {primary.harness} / {primary.model} because its {basis} was "
+        f"{reliability:.3f} across {primary.distinct_tasks} tasks and "
+        f"{primary.observations} observations, satisfying the "
+        f"{policy.reliability_threshold:.3f} requirement."
+    ]
+    if policy.objective == "lowest_cost" and primary.cost_per_success is not None:
+        clauses.append(
+            f"It had the lowest cost per successful task "
+            f"({primary.cost_per_success:.6g}) among eligible configurations."
+        )
+    elif policy.objective == "lowest_latency" and primary.p95_latency_s is not None:
+        clauses.append(
+            f"It had the lowest p95 latency ({primary.p95_latency_s:.6g}s) "
+            "among eligible configurations."
+        )
+    else:
+        clauses.append(
+            "It had the highest task-bootstrap reliability lower bound among "
+            "eligible configurations."
+        )
+    if fallback is not None:
+        fallback_name = f"{fallback.harness} / {fallback.model}"
+        if policy.objective == "lowest_cost" and fallback.cost_per_success is not None:
+            clauses.append(
+                f"It beat fallback {fallback_name}, whose cost per successful task was "
+                f"{fallback.cost_per_success:.6g}."
+            )
+        elif policy.objective == "lowest_latency" and fallback.p95_latency_s is not None:
+            clauses.append(
+                f"It beat fallback {fallback_name}, whose p95 latency was "
+                f"{fallback.p95_latency_s:.6g}s."
+            )
+        else:
+            clauses.append(
+                f"It beat fallback {fallback_name}, whose task-bootstrap reliability "
+                f"lower bound was {fallback.deployment_success_interval[0]:.3f}."
+            )
+    clauses.append(f"Evidence quality is {primary.evidence_quality}.")
+    return " ".join(clauses)
 
 
 def recommend_scope(
@@ -435,6 +499,22 @@ def recommend_scope(
                 f"No configuration has the required {policy.minimum_sample_count} observations."
             ),
         )
+    enough_tasks = [
+        item for item in aggregates if item.distinct_tasks >= policy.minimum_distinct_tasks
+    ]
+    if not enough_tasks:
+        return Recommendation(
+            scope=scope,
+            status="insufficient_evidence",
+            objective=policy.objective,
+            constraints=constraints,
+            primary=None,
+            fallback=None,
+            reason=(
+                "No configuration has evidence across the required "
+                f"{policy.minimum_distinct_tasks} distinct tasks."
+            ),
+        )
     eligible = sorted(
         (item for item in aggregates if _eligible(item, policy)),
         key=lambda item: _rank_key(item, policy.objective),
@@ -451,11 +531,7 @@ def recommend_scope(
         )
     primary = eligible[0]
     fallback = eligible[1] if len(eligible) > 1 else None
-    reason = (
-        f"Selected {primary.harness} / {primary.model} using deterministic {policy.objective} "
-        "ranking: hard constraints, objective, reliability lower bound, cost, p95 latency, "
-        "variance, then stable configuration identity."
-    )
+    reason = _recommendation_reason(primary, fallback, policy)
     return Recommendation(
         scope=scope,
         status="recommended",

@@ -59,6 +59,8 @@ def analyze_runs(
             "sampling_unit": "canonical_repository_task",
             "bootstrap_resamples": 10_000,
             "confidence_level": config.confidence_level,
+            "reliability_eligibility_basis": config.recommendation.reliability_basis,
+            "minimum_distinct_tasks": config.recommendation.minimum_distinct_tasks,
             "p95": "nearest_rank_minimum_two_observations",
             "statistics_seed": config.statistics_seed,
             "scope_seed": "sha256(configured_seed, configuration_id, scope)",
