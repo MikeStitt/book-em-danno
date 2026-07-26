@@ -55,10 +55,18 @@ def analyze_runs(
         currency=pricing.currency if pricing else None,
         pricing_effective_date=pricing.effective_date if pricing else None,
         methodology={
-            "success_interval": "wilson_score",
+            "deployment_success_interval": "task_cluster_percentile_bootstrap",
+            "sampling_unit": "canonical_repository_task",
+            "bootstrap_resamples": 10_000,
             "confidence_level": config.confidence_level,
             "p95": "nearest_rank_minimum_two_observations",
             "statistics_seed": config.statistics_seed,
+            "scope_seed": "sha256(configured_seed, configuration_id, scope)",
+            "iid_success_interval": "wilson_score_diagnostic_only",
+            "variance": {
+                "overall": "sample_variance_across_all_observations",
+                "within_task": "median_of_per_task_sample_variances",
+            },
             "pass_at_k": {
                 "status": "not_reported",
                 "reason": "current artifacts do not establish independent repeated sampling",
@@ -69,7 +77,7 @@ def analyze_runs(
                 "reliability_lower_bound",
                 "cost_per_success",
                 "p95_latency",
-                "latency_variance",
+                "median_within_task_latency_variance",
                 "configuration_id",
             ],
         },

@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import math
-import statistics
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable
-from statistics import NormalDist
+from collections.abc import Callable
 
 from danno_validator.analysis.config import AnalysisConfig, RecommendationConfig
 from danno_validator.analysis.models import (
@@ -16,43 +14,18 @@ from danno_validator.analysis.models import (
     Recommendation,
     TaskConsistency,
 )
-
-
-def _complete(values: Iterable[int | float | None], expected: int) -> list[float] | None:
-    present = [float(value) for value in values if value is not None]
-    return present if len(present) == expected else None
-
-
-def _mean(values: list[float] | None) -> float | None:
-    return statistics.fmean(values) if values else None
-
-
-def _median(values: list[float] | None) -> float | None:
-    return statistics.median(values) if values else None
-
-
-def _variance(values: list[float] | None) -> float | None:
-    return statistics.variance(values) if values is not None and len(values) >= 2 else None
-
-
-def _p95(values: list[float] | None) -> float | None:
-    """Nearest-rank p95; undefined for a single observation."""
-    if values is None or len(values) < 2:
-        return None
-    ordered = sorted(values)
-    return ordered[math.ceil(0.95 * len(ordered)) - 1]
-
-
-def wilson_interval(passed: int, total: int, confidence: float) -> tuple[float, float]:
-    """Wilson score interval for a Bernoulli success proportion."""
-    if total <= 0:
-        return (0.0, 1.0)
-    z = NormalDist().inv_cdf(0.5 + confidence / 2)
-    phat = passed / total
-    denominator = 1 + z * z / total
-    centre = (phat + z * z / (2 * total)) / denominator
-    margin = z * math.sqrt(phat * (1 - phat) / total + z * z / (4 * total * total)) / denominator
-    return (max(0.0, centre - margin), min(1.0, centre + margin))
+from danno_validator.analysis.statistics import (
+    BOOTSTRAP_RESAMPLES,
+    TASK_BOOTSTRAP_METHOD,
+    complete_values,
+    mean,
+    median,
+    p95,
+    sample_variance,
+    stable_scope_seed,
+    task_cluster_bootstrap,
+    wilson_interval,
+)
 
 
 def _quality(observations: int, distinct_tasks: int, interval: tuple[float, float]) -> str:
@@ -67,27 +40,46 @@ def _quality(observations: int, distinct_tasks: int, interval: tuple[float, floa
 
 
 def aggregate_group(
-    rows: list[Observation], *, category: str | None, confidence: float
+    rows: list[Observation],
+    *,
+    category: str | None,
+    confidence: float,
+    statistics_seed: int = 1729,
+    bootstrap_resamples: int = BOOTSTRAP_RESAMPLES,
 ) -> Aggregate:
     first = rows[0]
     count = len(rows)
     passed = sum(row.passed for row in rows)
-    interval = wilson_interval(passed, count, confidence)
-    input_values = _complete((row.input_tokens for row in rows), count)
-    output_values = _complete((row.output_tokens for row in rows), count)
-    total_values = _complete((row.total_tokens for row in rows), count)
-    latency_values = _complete((row.latency_s for row in rows), count)
-    cost_values = _complete((row.estimated_cost for row in rows), count)
-    cpu_values = _complete((row.cpu_peak_pct for row in rows), count)
-    ram_values = _complete((row.ram_peak_kb for row in rows), count)
-    gpu_values = _complete((row.gpu_peak_pct for row in rows), count)
-    vram_values = _complete((row.vram_peak_mb for row in rows), count)
+    iid_interval = wilson_interval(passed, count, confidence)
+    input_values = complete_values((row.input_tokens for row in rows), count)
+    output_values = complete_values((row.output_tokens for row in rows), count)
+    total_values = complete_values((row.total_tokens for row in rows), count)
+    latency_values = complete_values((row.latency_s for row in rows), count)
+    cost_values = complete_values((row.estimated_cost for row in rows), count)
+    cpu_values = complete_values((row.cpu_peak_pct for row in rows), count)
+    ram_values = complete_values((row.ram_peak_kb for row in rows), count)
+    gpu_values = complete_values((row.gpu_peak_pct for row in rows), count)
+    vram_values = complete_values((row.vram_peak_mb for row in rows), count)
     task_rows: dict[str, list[Observation]] = defaultdict(list)
     for row in rows:
         task_rows[f"{row.suite}/{row.task}"].append(row)
+    scope_seed = stable_scope_seed(
+        statistics_seed,
+        configuration_id=first.configuration_id,
+        scope=category or "overall",
+    )
+    deployment_rate, deployment_interval = task_cluster_bootstrap(
+        {task: [attempt.passed for attempt in attempts] for task, attempts in task_rows.items()},
+        confidence=confidence,
+        seed=scope_seed,
+        resamples=bootstrap_resamples,
+    )
     consistency: list[TaskConsistency] = []
     for task, attempts in sorted(task_rows.items()):
         task_passed = sum(row.passed for row in attempts)
+        task_tokens = complete_values((row.total_tokens for row in attempts), len(attempts))
+        task_latency = complete_values((row.latency_s for row in attempts), len(attempts))
+        task_cost = complete_values((row.estimated_cost for row in attempts), len(attempts))
         consistency.append(
             TaskConsistency(
                 task=task,
@@ -95,6 +87,9 @@ def aggregate_group(
                 passed=task_passed,
                 consistency=max(task_passed, len(attempts) - task_passed) / len(attempts),
                 flips=0 < task_passed < len(attempts),
+                token_variance=sample_variance(task_tokens),
+                latency_variance=sample_variance(task_latency),
+                cost_variance=sample_variance(task_cost),
             )
         )
     warnings: list[str] = []
@@ -128,21 +123,26 @@ def aggregate_group(
         observations=count,
         passed=passed,
         success_rate=passed / count,
-        success_interval=interval,
+        deployment_success_rate=deployment_rate,
+        deployment_success_interval=deployment_interval,
+        success_interval_method=TASK_BOOTSTRAP_METHOD,
+        bootstrap_resamples=bootstrap_resamples,
+        bootstrap_seed=scope_seed,
+        iid_success_interval=iid_interval,
         distinct_tasks=len(task_rows),
         tasks=tuple(sorted(task_rows)),
         repetitions=max(len(attempts) for attempts in task_rows.values()),
         total_input_tokens=int(sum(input_values)) if input_values is not None else None,
-        average_input_tokens=_mean(input_values),
+        average_input_tokens=mean(input_values),
         total_output_tokens=int(sum(output_values)) if output_values is not None else None,
-        average_output_tokens=_mean(output_values),
-        average_total_tokens=_mean(total_values),
-        median_total_tokens=_median(total_values),
-        token_variance=_variance(total_values),
-        average_latency_s=_mean(latency_values),
-        median_latency_s=_median(latency_values),
-        p95_latency_s=_p95(latency_values),
-        latency_variance=_variance(latency_values),
+        average_output_tokens=mean(output_values),
+        average_total_tokens=mean(total_values),
+        median_total_tokens=median(total_values),
+        overall_token_variance=sample_variance(total_values),
+        average_latency_s=mean(latency_values),
+        median_latency_s=median(latency_values),
+        p95_latency_s=p95(latency_values),
+        overall_latency_variance=sample_variance(latency_values),
         peak_cpu_pct=max(cpu_values) if cpu_values is not None else None,
         peak_ram_kb=int(max(ram_values)) if ram_values is not None else None,
         peak_gpu_pct=max(gpu_values) if gpu_values is not None else None,
@@ -154,10 +154,21 @@ def aggregate_group(
         total_cost=total_cost,
         cost_per_attempt=total_cost / count if total_cost is not None else None,
         cost_per_success=(total_cost / passed if total_cost is not None and passed > 0 else None),
-        cost_variance=_variance(cost_values),
+        overall_cost_variance=sample_variance(cost_values),
+        median_within_task_token_variance=median(
+            [item.token_variance for item in consistency if item.token_variance is not None] or None
+        ),
+        median_within_task_latency_variance=median(
+            [item.latency_variance for item in consistency if item.latency_variance is not None]
+            or None
+        ),
+        median_within_task_cost_variance=median(
+            [item.cost_variance for item in consistency if item.cost_variance is not None] or None
+        ),
+        tasks_with_repeated_measurements=sum(item.observations >= 2 for item in consistency),
         task_consistency=tuple(consistency),
         flip_tasks=tuple(item.task for item in consistency if item.flips),
-        evidence_quality=_quality(count, len(task_rows), interval),
+        evidence_quality=_quality(count, len(task_rows), deployment_interval),
         warnings=tuple(warnings),
     )
 
@@ -169,7 +180,12 @@ def build_aggregates(observations: list[Observation], config: AnalysisConfig) ->
         if row.category is not None:
             groups[(row.configuration_id, row.category)].append(row)
     return [
-        aggregate_group(rows, category=category, confidence=config.confidence_level)
+        aggregate_group(
+            rows,
+            category=category,
+            confidence=config.confidence_level,
+            statistics_seed=config.statistics_seed,
+        )
         for (_, category), rows in sorted(
             groups.items(),
             key=lambda item: (
@@ -314,7 +330,7 @@ def _constraints_dict(policy: RecommendationConfig) -> dict[str, object]:
 def _eligible(aggregate: Aggregate, policy: RecommendationConfig) -> bool:
     if aggregate.observations < policy.minimum_sample_count:
         return False
-    if aggregate.success_rate < policy.reliability_threshold:
+    if aggregate.deployment_success_rate < policy.reliability_threshold:
         return False
     if policy.allowed_harnesses is not None and aggregate.harness not in policy.allowed_harnesses:
         return False
@@ -346,7 +362,7 @@ def _ascending(value: float | None) -> float:
 
 
 def _rank_key(aggregate: Aggregate, objective: str) -> tuple[object, ...]:
-    lower_reliability = aggregate.success_interval[0]
+    lower_reliability = aggregate.deployment_success_interval[0]
     if objective == "lowest_cost":
         leading: tuple[object, ...] = (
             _ascending(aggregate.cost_per_success),
@@ -359,7 +375,7 @@ def _rank_key(aggregate: Aggregate, objective: str) -> tuple[object, ...]:
     return (
         *leading,
         _ascending(aggregate.p95_latency_s),
-        _ascending(aggregate.latency_variance),
+        _ascending(aggregate.median_within_task_latency_variance),
         aggregate.configuration_id,
     )
 

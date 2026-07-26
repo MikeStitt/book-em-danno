@@ -12,7 +12,8 @@ from danno_validator.analysis.models import Aggregate, Recommendation, Study
 
 def _aggregate_dict(aggregate: Aggregate) -> dict[str, object]:
     value = asdict(aggregate)
-    value["success_interval"] = list(aggregate.success_interval)
+    value["deployment_success_interval"] = list(aggregate.deployment_success_interval)
+    value["iid_success_interval"] = list(aggregate.iid_success_interval)
     value["task_consistency"] = [asdict(item) for item in aggregate.task_consistency]
     value["flip_tasks"] = list(aggregate.flip_tasks)
     value["warnings"] = list(aggregate.warnings)
@@ -35,8 +36,11 @@ def _selected(aggregate: Aggregate | None) -> dict[str, object] | None:
             "observations": aggregate.observations,
             "repetitions": aggregate.repetitions,
             "passed": aggregate.passed,
-            "success_rate": aggregate.success_rate,
-            "confidence_interval": list(aggregate.success_interval),
+            "observed_success_rate": aggregate.success_rate,
+            "deployment_success_rate": aggregate.deployment_success_rate,
+            "deployment_success_interval": list(aggregate.deployment_success_interval),
+            "interval_method": aggregate.success_interval_method,
+            "task_clusters": aggregate.distinct_tasks,
             "evidence_quality": aggregate.evidence_quality,
         },
         "economics": {
@@ -128,7 +132,8 @@ def _recommendation_md(recommendation: Recommendation) -> list[str]:
         lines += [
             f"- evidence: {primary.passed}/{primary.observations} passed across "
             f"{primary.distinct_tasks} task(s); {_pct(primary.success_rate)} "
-            f"({_pct(primary.success_interval[0])}–{_pct(primary.success_interval[1])} CI)",
+            f"observed, with a {_pct(primary.deployment_success_interval[0])}–"
+            f"{_pct(primary.deployment_success_interval[1])} task-bootstrap interval",
             f"- cost: {_fmt(primary.cost_per_attempt)} per attempt; "
             f"{_fmt(primary.cost_per_success)} per success",
             f"- latency: {_fmt(primary.average_latency_s, suffix='s')} average; "
@@ -176,8 +181,9 @@ def render_markdown(study: Study) -> str:
         lines.append(
             f"| `{item.harness}` / `{item.model}` | `{item.cohort_id}` | "
             f"{item.observations} | {item.distinct_tasks} | {item.passed} | "
-            f"{_pct(item.success_rate)} ({_pct(item.success_interval[0])}–"
-            f"{_pct(item.success_interval[1])}) | {_fmt(item.cost_per_attempt)} | "
+            f"{_pct(item.success_rate)} ({_pct(item.deployment_success_interval[0])}–"
+            f"{_pct(item.deployment_success_interval[1])}) | "
+            f"{_fmt(item.cost_per_attempt)} | "
             f"{_fmt(item.cost_per_success)} | {_fmt(item.average_latency_s, suffix='s')} | "
             f"{_fmt(item.p95_latency_s, suffix='s')} | {_pct(item.gate_breach_rate)} | "
             f"{item.evidence_quality} |"
@@ -223,8 +229,10 @@ def render_markdown(study: Study) -> str:
     for item in overall_aggregates:
         lines.append(
             f"| `{item.harness}` / `{item.model}` | {item.repetitions} | "
-            f"{', '.join(item.flip_tasks) or 'none'} | {_fmt(item.token_variance)} | "
-            f"{_fmt(item.latency_variance)} | {_fmt(item.cost_variance)} |"
+            f"{', '.join(item.flip_tasks) or 'none'} | "
+            f"{_fmt(item.overall_token_variance)} | "
+            f"{_fmt(item.overall_latency_variance)} | "
+            f"{_fmt(item.overall_cost_variance)} |"
         )
     lines += ["", "## Cost analysis", ""]
     if study.currency is None:
@@ -327,8 +335,8 @@ def render_html(study: Study) -> str:
         f"<td>{html.escape(item.harness)}</td><td>{html.escape(item.model)}</td>"
         f"<td>{item.observations}</td><td>{item.distinct_tasks}</td>"
         f"<td>{html.escape(_pct(item.success_rate))}</td>"
-        f"<td>{html.escape(_pct(item.success_interval[0]))}–"
-        f"{html.escape(_pct(item.success_interval[1]))}</td>"
+        f"<td>{html.escape(_pct(item.deployment_success_interval[0]))}–"
+        f"{html.escape(_pct(item.deployment_success_interval[1]))}</td>"
         f"<td>{html.escape(_fmt(item.cost_per_attempt))}</td>"
         f"<td>{html.escape(_fmt(item.p95_latency_s, suffix='s'))}</td>"
         f"<td>{html.escape(item.evidence_quality)}</td></tr>"
@@ -359,9 +367,9 @@ def render_html(study: Study) -> str:
         f"<td>{html.escape(item.harness)}/{html.escape(item.model)}</td>"
         f"<td>{item.repetitions}</td>"
         f"<td>{html.escape(', '.join(item.flip_tasks) or 'none')}</td>"
-        f"<td>{html.escape(_fmt(item.token_variance))}</td>"
-        f"<td>{html.escape(_fmt(item.latency_variance))}</td>"
-        f"<td>{html.escape(_fmt(item.cost_variance))}</td></tr>"
+        f"<td>{html.escape(_fmt(item.overall_token_variance))}</td>"
+        f"<td>{html.escape(_fmt(item.overall_latency_variance))}</td>"
+        f"<td>{html.escape(_fmt(item.overall_cost_variance))}</td></tr>"
         for item in overall_aggregates
     )
     resource_rows = "".join(

@@ -77,6 +77,9 @@ class TaskConsistency:
     passed: int
     consistency: float
     flips: bool
+    token_variance: float | None
+    latency_variance: float | None
+    cost_variance: float | None
 
 
 @dataclass(frozen=True)
@@ -92,7 +95,12 @@ class Aggregate:
     observations: int
     passed: int
     success_rate: float
-    success_interval: tuple[float, float]
+    deployment_success_rate: float
+    deployment_success_interval: tuple[float, float]
+    success_interval_method: str
+    bootstrap_resamples: int
+    bootstrap_seed: int
+    iid_success_interval: tuple[float, float]
     distinct_tasks: int
     tasks: tuple[str, ...]
     repetitions: int
@@ -102,11 +110,11 @@ class Aggregate:
     average_output_tokens: float | None
     average_total_tokens: float | None
     median_total_tokens: float | None
-    token_variance: float | None
+    overall_token_variance: float | None
     average_latency_s: float | None
     median_latency_s: float | None
     p95_latency_s: float | None
-    latency_variance: float | None
+    overall_latency_variance: float | None
     peak_cpu_pct: float | None
     peak_ram_kb: int | None
     peak_gpu_pct: float | None
@@ -116,7 +124,11 @@ class Aggregate:
     total_cost: float | None
     cost_per_attempt: float | None
     cost_per_success: float | None
-    cost_variance: float | None
+    overall_cost_variance: float | None
+    median_within_task_token_variance: float | None
+    median_within_task_latency_variance: float | None
+    median_within_task_cost_variance: float | None
+    tasks_with_repeated_measurements: int
     task_consistency: tuple[TaskConsistency, ...]
     flip_tasks: tuple[str, ...]
     evidence_quality: str

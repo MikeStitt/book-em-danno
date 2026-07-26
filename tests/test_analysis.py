@@ -24,6 +24,10 @@ from danno_validator.analysis.engine import (
 )
 from danno_validator.analysis.loader import load_observations
 from danno_validator.analysis.service import analyze_runs
+from danno_validator.analysis.statistics import (
+    stable_scope_seed,
+    task_cluster_bootstrap,
+)
 
 
 def _row(
@@ -211,7 +215,8 @@ def test_multiple_repetitions_categories_flips_and_variance(tmp_path: Path) -> N
     assert overall.observations == 2
     assert overall.repetitions == 2
     assert overall.flip_tasks == ("aider/python/alpha",)
-    assert overall.latency_variance == 50.0
+    assert overall.overall_latency_variance == 50.0
+    assert overall.median_within_task_latency_variance == 50.0
     assert category.observations == 2
     assert result.study.recommendations[0].status == "recommended"
 
@@ -393,7 +398,92 @@ def test_p95_small_samples_and_confidence_are_deterministic(tmp_path: Path) -> N
     one = aggregate_group(observations, category=None, confidence=0.95)
     assert one.p95_latency_s is None
     assert wilson_interval(7, 10, 0.95) == wilson_interval(7, 10, 0.95)
-    assert one.success_interval == wilson_interval(1, 1, 0.95)
+    assert one.deployment_success_interval == (1.0, 1.0)
+    assert one.iid_success_interval == wilson_interval(1, 1, 0.95)
+
+
+def test_task_bootstrap_is_seeded_order_invariant_and_task_weighted(
+    tmp_path: Path,
+) -> None:
+    rows = [
+        *[_row(task="python/frequent", passed=True) for _ in range(10)],
+        _row(task="python/rare", passed=False, verdict="FailureClass.ERROR"),
+    ]
+    run = _write_run(tmp_path, "clusters", rows)
+    observations, _ = load_observations([run], AnalysisConfig(), None)
+    first = aggregate_group(
+        observations,
+        category=None,
+        confidence=0.95,
+        statistics_seed=123,
+    )
+    reordered = aggregate_group(
+        list(reversed(observations)),
+        category=None,
+        confidence=0.95,
+        statistics_seed=123,
+    )
+    assert first.deployment_success_interval == reordered.deployment_success_interval
+    assert first.bootstrap_seed == reordered.bootstrap_seed
+    assert first.deployment_success_rate == 0.5
+    assert first.success_rate == 10 / 11
+    assert first.distinct_tasks == 2
+
+
+def test_bootstrap_seed_can_change_nontrivial_interval() -> None:
+    outcomes = {
+        f"task/{index}": [True] * (((index * index + 3 * index + 1) % 7) + 1) + [False] * 9
+        for index in range(4)
+    }
+    _, first = task_cluster_bootstrap(
+        outcomes,
+        confidence=0.873,
+        seed=101,
+    )
+    _, second = task_cluster_bootstrap(
+        outcomes,
+        confidence=0.873,
+        seed=202,
+    )
+    assert first != second
+
+
+def test_scope_seed_is_stable_and_scope_specific() -> None:
+    overall = stable_scope_seed(42, configuration_id="config-a", scope="overall")
+    assert overall == stable_scope_seed(42, configuration_id="config-a", scope="overall")
+    assert overall != stable_scope_seed(42, configuration_id="config-a", scope="bug-fix")
+    assert overall != stable_scope_seed(43, configuration_id="config-a", scope="overall")
+
+
+def test_overall_and_within_task_variance_are_distinct(tmp_path: Path) -> None:
+    run = _write_run(
+        tmp_path,
+        "variance",
+        [
+            _row(task="python/repeated", latency=10, input_tokens=100),
+            _row(task="python/repeated", latency=10, input_tokens=100),
+            _row(task="python/long", latency=100, input_tokens=10_000),
+        ],
+    )
+    observations, _ = load_observations([run], AnalysisConfig(), None)
+    aggregate = aggregate_group(observations, category=None, confidence=0.95)
+    assert aggregate.overall_latency_variance is not None
+    assert aggregate.overall_latency_variance > 0
+    assert aggregate.median_within_task_latency_variance == 0.0
+    assert aggregate.median_within_task_token_variance == 0.0
+    assert aggregate.tasks_with_repeated_measurements == 1
+
+
+def test_within_task_variance_unavailable_without_repetition(tmp_path: Path) -> None:
+    run = _write_run(
+        tmp_path,
+        "no-repeat",
+        [_row(task="python/a"), _row(task="python/b")],
+    )
+    observations, _ = load_observations([run], AnalysisConfig(), None)
+    aggregate = aggregate_group(observations, category=None, confidence=0.95)
+    assert aggregate.median_within_task_latency_variance is None
+    assert aggregate.tasks_with_repeated_measurements == 0
 
 
 def test_pareto_frontier_marks_dominated_configuration(tmp_path: Path) -> None:
