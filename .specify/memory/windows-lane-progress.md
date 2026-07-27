@@ -4,7 +4,7 @@
 **Work order:** `.docs/2026-07-22-windows-handoff-slow-tui.md`
 **Branch:** `slow-sandbox-tui-tests-windows` (off `slow-sandbox-tui-tests` tip `ba53927`)
 
-## Status: Windows-native + WSL2 lanes DONE (opencode+codex green on all three); claurst blocked on external x86_64 artifact
+## Status: Windows-native + WSL2 lanes DONE — opencode + codex + claurst all green on all three (cmd, PowerShell, WSL2)
 
 ### Completed
 - **§2 Preconditions** — all confirmed: `sbx` resolves (after `sbx login`); Python 3.13+/uv;
@@ -19,11 +19,18 @@
 - **Results written:** `windows-cmd.md`, `windows-powershell.md`, rollup README updated;
   `plan-test-danno-cross-platform.md` fix record appended.
 
-### Blocked (external artifact — NOT danno code, NOT runtime absence)
-- **claurst on Windows-x86_64:** danno is now arch-aware and fails **loud (404)**, but the
-  `MikeStitt/claurst` `v0.1.6-danno1` release has only `claurst-linux-aarch64.tar.gz`. Needs a
-  `claurst-linux-x86_64.tar.gz` build published. No `gh`/token locally to publish; user decision
-  pending. Build is feasible inside the x86_64 sandbox VM (rustup + cargo).
+### claurst x86_64 artifact — RESOLVED (2026-07-27)
+- The former blocker (release shipped only `claurst-linux-aarch64.tar.gz`) is **closed**. Built
+  `claurst-linux-x86_64.tar.gz` natively (amd64, clean `rust:1-bookworm`, from `danno-integration`
+  tip `dafbde1` ≡ release `d466ec4`) and published it to the **existing** `v0.1.6-danno1` release
+  on `MikeStitt/claurst` via `gh release upload` — aarch64 asset + npm + release notes untouched.
+  `sha256:fcf9e047a37b3316074ee7a070ceda22b23ecd876dd14c74bd63667b4a769d08`, 14583484 bytes.
+  (Windows `gh` had its own per-machine token with `repo` write, per the handoff.)
+- **Re-ran the previously-red leg on all three lanes → green:** claurst A/H/`0`
+  (`1 passed`) on Windows-cmd (215s), Windows-PowerShell (249s), WSL2 (301s). The arch-aware
+  installer selects `x86_64` and fetches with no 404. Results files + README rollup updated.
+- Follow-up (not this branch): the arch-aware `claurst.py` selector still needs to merge forward
+  onto the base branches (`harness-api-add-codex`), which still hardcode `aarch64`.
 
 ### P3 — WSL2 (DONE)
 - Reused `PexpectDriver` unchanged; ext4 checkout (`~/book-em-danno`); `sbx` standalone in WSL2

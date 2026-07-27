@@ -9,7 +9,7 @@ fidelity: host-pty (real `sbx exec -it`, ConPTY via pywinpty)
 |----------|---|---|---|----------------|---------------|--------------------|
 | opencode | ✅ | ✅ | ✅ | works          | —             | A/H/C green through WinPtyDriver first try. |
 | codex    | ✅ | ✅ | ✅ | works          | —             | Green with the `model_auto_compact_token_limit` graft; compaction request on the wire. |
-| claurst  | ❌ | — | — | breaks         | danno-product → **blocked on release artifact** | Install fails before the TUI: `claurst.py` hardcoded `claurst-linux-aarch64.tar.gz`, but the Windows sandbox VM is **x86_64** → the aarch64 binary can't exec. **Fixed in-lane** — install is now arch-aware (`uname -m`, commit `fix(claurst): select the release asset by container arch`). **Residual blocker (NOT danno code):** `MikeStitt/claurst` `v0.1.6-danno1` publishes only `claurst-linux-aarch64.tar.gz`; the x86_64 install now fails **loud with a 404** until a `claurst-linux-x86_64.tar.gz` build is published to that release. |
+| claurst  | ✅ | ✅ | `0` | works          | —             | A/H/`0` green through WinPtyDriver (`1 passed in 249s`, 2026-07-27). Previously blocked: `claurst.py` hardcoded `claurst-linux-aarch64.tar.gz` but the sandbox VM is **x86_64**; **fixed in-lane** to be arch-aware (`uname -m`, commit `fix(claurst): select the release asset by container arch`). The residual gap — the release shipped only the aarch64 asset — is **now closed**: `claurst-linux-x86_64.tar.gz` was built + published to `MikeStitt/claurst` `v0.1.6-danno1` (provenance below). The installer selects `x86_64`, fetches with no 404, and A/H/`0` pass. `0` = compacts=False change-detector asserting `summarization_requests == 0`. |
 
 ## Environment / runtime notes
 
@@ -28,3 +28,22 @@ fidelity: host-pty (real `sbx exec -it`, ConPTY via pywinpty)
 - **Driver read lever:** pywinpty 3.0.5's high-level `read()` blocks on its socket transport
   (the `PYWINPTY_BLOCK`/`read_blocking` path is commented out in this release); non-blocking
   reads use `fileobj.settimeout()` → `TimeoutError` == "no data this round". Pinned `==3.0.5`.
+
+## claurst x86_64 release artifact (2026-07-27) — blocker closed
+
+The one previously-red cell was **not a danno bug** (danno was already arch-aware and failed
+loud with a 404); it was a **missing release artifact**. Built and published per
+`.docs/2026-07-27-windows-claurst-x86_64-build-handoff.md`:
+
+- **Built from:** `MikeStitt/claurst` `danno-integration` tip `dafbde1` (source-identical to the
+  release commit `d466ec4` the aarch64 asset was cut from). Native amd64 build in a clean
+  `rust:1-bookworm` container (`cargo build --release --locked -p claurst`, then `strip`) — no
+  QEMU, ~9 min. `file` → `ELF 64-bit LSB pie executable, x86-64 … stripped`; `--version` → the
+  bare `claurst 0.1.6`.
+- **Published asset:** `claurst-linux-x86_64.tar.gz` (single `claurst` at tar root, mode `0755`),
+  **added** to the existing `v0.1.6-danno1` release via `gh release upload` (never `release.yml`).
+  Size `14583484`, `sha256:fcf9e047a37b3316074ee7a070ceda22b23ecd876dd14c74bd63667b4a769d08`.
+- **aarch64 asset untouched** (still `sha256:8c95dada…`, 2026-06-27); npm registry + release notes
+  unchanged.
+- **Re-run result:** claurst A/H/`0` green on Windows-PowerShell, Windows-cmd, and WSL2 — the
+  arch-aware installer selects `x86_64` and fetches with no 404. See the sibling result files.

@@ -13,7 +13,7 @@ outer shell differs from the PowerShell run.
 |----------|---|---|---|----------------|---------------|--------------------|
 | opencode | ✅ | ✅ | ✅ | works          | —             | A/H/C green from cmd.exe (`2 passed in 291s` with codex). |
 | codex    | ✅ | ✅ | ✅ | works          | —             | Green from cmd.exe; compaction request on the wire. |
-| claurst  | ⏭️ | — | — | not run from cmd | danno-product → **blocked on release artifact** | Not re-run from cmd: the failure is the claurst **install** (missing `claurst-linux-x86_64.tar.gz` in the `MikeStitt/claurst` `v0.1.6-danno1` release), which happens inside the VM **before** the pty/driver and is **shell-independent** — identical to the PowerShell run. See [windows-powershell.md](windows-powershell.md). danno is now arch-aware (fixed in-lane); re-run once the x86_64 asset is published. |
+| claurst  | ✅ | ✅ | `0` | works          | —             | A/H/`0` green from a real `cmd.exe` outer shell (`1 passed in 215s`, 2026-07-27), once the x86_64 release artifact was published (see [windows-powershell.md](windows-powershell.md) → "claurst x86_64 release artifact"). The arch-aware installer (`uname -m` → `x86_64`) fetches `claurst-linux-x86_64.tar.gz` with no 404. `0` = compacts=False change-detector asserting `summarization_requests == 0`. |
 
 ## Notes
 
