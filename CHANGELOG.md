@@ -8,6 +8,7 @@ commits by [git-cliff](https://git-cliff.org).
 ### CI
 
 - Skip the full check matrix on version-only PRs (job-level gate)
+- Fix version-only skip to gate STEPS, not the matrix job (unblocks release PRs)
 
 ## [0.17.0] - 2026-07-27
 
