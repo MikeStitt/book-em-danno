@@ -1,0 +1,215 @@
+name: fast-gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # A cheap pre-gate that decides whether the expensive `fast-checks` matrix needs to run
+  # for THIS pull request. Its whole purpose: a release PR that changes ONLY the version
+  # number should merge fast, without paying the full multi-OS gate — the full suite
+  # re-runs post-merge via the `push: main` trigger below.
+  #
+  # WHY A JOB-LEVEL SKIP (not `on: paths-ignore`): `fast-checks (ubuntu-latest)` /
+  # `fast-checks (macos-latest)` are REQUIRED by the `protect-main` ruleset. A required
+  # check whose workflow is filtered out by `paths-ignore` never reports a status, so the
+  # PR sits "Expected — waiting for status" FOREVER (blocked). But a required job SKIPPED
+  # via `if:` posts a neutral/skipped conclusion that SATISFIES the required check. So we
+  # always let the workflow trigger, and skip the heavy matrix conditionally instead.
+  changes:
+    name: changes (version-only detector)
+    runs-on: ubuntu-latest
+    outputs:
+      # 'true'  -> run the full fast-checks matrix (any real code/deps change, OR any doubt).
+      # 'false' -> version-only PR; the matrix is skipped (and its required contexts
+      #            report skipped == satisfied).
+      code_touched: ${{ steps.decide.outputs.code_touched }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need the base-branch history to diff the PR against it
+      - id: decide
+        shell: bash
+        run: |
+          # FAIL-SAFE: default to running the full gate. Only a positively-detected
+          # version-only PR turns it off; every uncertain path leaves it ON.
+          set -uo pipefail
+          code_touched=true
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+            if changed=$(git diff --name-only "$base"...HEAD 2>/dev/null); then
+              printf '::group::changed files\n%s\n::endgroup::\n' "$changed"
+
+              # (1) PATH allow-list: the only paths a pure version bump may touch.
+              #     A bump edits pyproject.toml AND re-pins the package in uv.lock; the
+              #     release flow may also touch CHANGELOG.md. Any path outside this set
+              #     is a real change -> full gate.
+              extra=$(printf '%s\n' "$changed" \
+                | grep -vE '^(pyproject\.toml|uv\.lock|CHANGELOG\.md)$' || true)
+
+              if [ -z "$extra" ]; then
+                # (2) CONTENT check on pyproject.toml: its ONLY changed line must be the
+                #     `version = ` line. Without this, a dependency edit (which touches
+                #     the SAME two paths — pyproject.toml + uv.lock — as a version bump)
+                #     would masquerade as version-only and wrongly skip the gate. uv.lock
+                #     needs no content check: it is a derived artifact that can only
+                #     change because pyproject.toml changed, which this check guards.
+                version_only=true
+                if printf '%s\n' "$changed" | grep -qxF 'pyproject.toml'; then
+                  delta=$(git diff -U0 "$base"...HEAD -- pyproject.toml \
+                    | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' || true)
+                  if [ -z "$delta" ] || printf '%s\n' "$delta" | grep -qvE '^[+-]version = '; then
+                    version_only=false  # empty/odd delta or a non-version line -> not version-only
+                  fi
+                fi
+                [ "$version_only" = true ] && code_touched=false
+              fi
+            else
+              echo "::warning::could not diff against ${base} — running the full gate (fail-safe)"
+            fi
+          else
+            echo "::notice::event=${{ github.event_name }} is not a pull_request — running the full gate"
+          fi
+
+          echo "code_touched=${code_touched}" >> "$GITHUB_OUTPUT"
+
+          # LOUD verdict — render a banner on the run-summary page AND drop an annotation,
+          # in BOTH cases, so a human reading the run page never has to guess whether the
+          # gate ran or was skipped.
+          if [ "$code_touched" = "false" ]; then
+            {
+              echo "## ⏭️ fast-gates SKIPPED — version-only change"
+              echo ""
+              echo "This PR changes only the \`version\` line in \`pyproject.toml\` (plus the derived"
+              echo "\`uv.lock\` / \`CHANGELOG.md\`). The \`fast-checks\` gate is **skipped** so the release"
+              echo "merges fast; it re-runs in full post-merge on \`main\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=fast-gates SKIPPED (version-only)::Only the version bump changed — skipping lint/format/typecheck/tests on all legs; they re-run post-merge on main."
+          else
+            {
+              echo "## ▶️ fast-gates RUNNING — real change"
+              echo ""
+              echo "This PR changes more than the version bump, so the full \`fast-checks\` gate"
+              echo "(lint + format + typecheck + fast tests) runs on **all four OS legs**."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=fast-gates RUNNING (real change)::Changes beyond the version bump detected — running the full gate on all four OS legs."
+          fi
+
+  fast-checks:
+    # This job ALWAYS runs (its heavy STEPS are what get skipped on a version-only PR
+    # — see the per-step `if:`s below). It must NOT be skipped at the job level: a
+    # skipped MATRIX job never expands, so GitHub reports one
+    # `fast-checks (${{ matrix.label }})` = skipped under the UNEXPANDED name and the
+    # per-leg contexts `fast-checks (ubuntu-latest)` / `fast-checks (macos-latest)` that
+    # `protect-main` REQUIRES are never posted — the PR then waits on them forever
+    # (BLOCKED). Keeping the job running expands the matrix, so all four required contexts
+    # are reported; on a version-only PR they go green in seconds because every
+    # install/gate step is skipped. (The "skip a required job -> satisfied" trick works
+    # only for a NON-matrix job whose own name IS the required context — see
+    # slow-sandbox-tui-gates.yml, which IS a single job and so skips at the job level.)
+    #
+    # `!cancelled()` (instead of the implicit `success()`) forces this `if:` to be
+    # evaluated even when `changes` failed, so a detector-job failure still runs the
+    # matrix (fail-safe) rather than skipping it — the heavy steps then also run because
+    # their gate is `!= 'false'` and a failed detector yields an empty output.
+    needs: changes
+    if: ${{ !cancelled() }}
+    # One leg per OS, plus BOTH Windows shells (cmd + Windows PowerShell) so the
+    # gate is exercised through each shell's quoting/PATH surface — the same two
+    # shells the slow-sandbox-tui-gates Windows lane runs under. The runners have no
+    # Docker sandbox or Ollama, so only the fast gate (`-m "not slow"`) runs here;
+    # the live @slow/@sandbox tiers are validated in the Windows lane, not in CI.
+    #
+    # NOTE: a step's `shell:` key CANNOT use the `matrix` context (GitHub makes no
+    # context available there), so the shell is hardcoded per step and selected
+    # with `if:` on `matrix.shell` (the `if:` key DOES allow `matrix`).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Labels match the contexts the `protect-main` ruleset requires
+          # (`fast-checks (ubuntu-latest)` / `fast-checks (macos-latest)`) — the job
+          # name is `fast-checks (${{ matrix.label }})`, so renaming these would leave
+          # the required checks forever "waiting for status to be reported".
+          - os: ubuntu-latest
+            label: ubuntu-latest
+          - os: macos-latest
+            label: macos-latest
+          - os: windows-latest
+            label: windows-cmd
+            shell: cmd
+          - os: windows-latest
+            label: windows-powershell
+            shell: powershell
+    name: fast-checks (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    # Every heavy step below is gated on `needs.changes.outputs.code_touched != 'false'`
+    # — it runs unless the detector POSITIVELY reported version-only ('false'). An empty
+    # value (detector job failed) is `!= 'false'`, so the gate still runs: fail-safe.
+    # `checkout` and the announce step stay ungated so the job always has a first step and
+    # reports cleanly.
+    steps:
+      - uses: actions/checkout@v4
+
+      # LOUD per-leg verdict — annotate every leg with whether it actually gates this PR
+      # or was skipped, so the reason is visible on the leg itself (not only the detector).
+      - name: Announce
+        shell: bash
+        run: |
+          if [ "${{ needs.changes.outputs.code_touched }}" = "false" ]; then
+            echo "::notice title=fast-checks (${{ matrix.label }}) SKIPPED::version-only change — no lint/format/typecheck/tests run on this leg."
+          else
+            echo "::notice title=fast-checks (${{ matrix.label }}) RUNNING::running lint + format + typecheck + fast tests."
+          fi
+
+      - name: Install uv
+        if: ${{ needs.changes.outputs.code_touched != 'false' }}
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install ninja (Unix)
+        if: ${{ needs.changes.outputs.code_touched != 'false' && runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            brew install ninja
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y ninja-build
+          fi
+          ninja --version
+
+      - name: Install ninja (Windows)
+        if: ${{ needs.changes.outputs.code_touched != 'false' && runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          choco install ninja -y
+          ninja --version
+
+      - name: Sync dependencies
+        if: ${{ needs.changes.outputs.code_touched != 'false' }}
+        # --locked fails the run if uv.lock is out of date with pyproject.toml,
+        # so version drift surfaces in CI instead of hiding. On Windows this pulls
+        # pywinpty (the pexpect line is POSIX-only via its marker), so drift in the
+        # platform-split pty deps also surfaces here.
+        run: uv sync --locked --all-extras --dev
+
+      - name: ninja check (Unix)
+        if: ${{ needs.changes.outputs.code_touched != 'false' && runner.os != 'Windows' }}
+        run: ninja check
+
+      # Ninja on Windows runs each rule command directly via CreateProcess (no
+      # shell), so the `check` rule's `&&`-chained compound would not parse.
+      # Invoke the four single-command targets instead — same gate, no shell
+      # operator. (build.ninja: lint | fmt | typecheck | test.)
+      - name: ninja check (Windows cmd)
+        if: ${{ needs.changes.outputs.code_touched != 'false' && matrix.shell == 'cmd' }}
+        shell: cmd
+        run: ninja lint fmt typecheck test
+
+      - name: ninja check (Windows PowerShell)
+        if: ${{ needs.changes.outputs.code_touched != 'false' && matrix.shell == 'powershell' }}
+        shell: powershell
+        run: ninja lint fmt typecheck test
