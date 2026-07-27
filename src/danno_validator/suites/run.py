@@ -18,12 +18,22 @@ from pathlib import Path
 from book_em_danno.capture.wiring import CaptureBinding
 from book_em_danno.core.exec import Runner
 from danno_validator.driver import TurnFn
-from danno_validator.suites.aider import AiderTask, load_aider_tasks
+from danno_validator.suites.aider import (
+    AiderTask,
+    install_toolchains,
+    languages_in,
+    load_aider_tasks,
+)
 from danno_validator.suites.base import BenchVerdict, run_bench_task
 from danno_validator.suites.config import ResolvedGates
 from danno_validator.telemetry.sampler import SampleBinding
 
 _GIT_PREFIX = "git:"
+
+# Aider Polyglot's canonical protocol: two attempts per exercise (the second re-prompted
+# with the first's test output). Keeping it at 2 makes danno's pass rate comparable to the
+# published Aider numbers (`.docs/benchmark-grading-harness-fidelity.md` §2, D2).
+AIDER_ATTEMPTS = 2
 
 
 def clone_polyglot(runner: Runner, source: str, dest: Path) -> Path:
@@ -55,17 +65,21 @@ def run_aider_suite(
     capture: CaptureBinding | None = None,
     sampler: SampleBinding | None = None,
     gates: ResolvedGates | None = None,
+    attempts: int = AIDER_ATTEMPTS,
 ) -> list[BenchVerdict]:
     """Run the selected Aider Polyglot exercises against one HUT, in `select` order.
 
-    Each exercise is seeded into its own workspace subdir (`task.provision`), the
-    agent is driven with its cwd set to that subdir, and the exercise's own tests
-    grade it. `run_turn` is the HUT's turn producer (e.g. `claurst_run` or an authed
-    variant); `model` is the model ref passed through to it (the permutation axis).
-    `capture` (from `--capture`) and `sampler` (from `--sample`) are threaded to
-    `run_bench_task` for per-permutation wire recording and resource profiling.
+    Each exercise is seeded into its own language-namespaced workspace subdir
+    (`task.provision`), the agent is driven with its cwd set to that subdir over up to
+    `attempts` turns (the 2-attempt protocol), and the exercise's own tests grade it.
+    `run_turn` is the HUT's turn producer (e.g. `claurst_run` or an authed variant);
+    `model` is the model ref passed through to it (the permutation axis). `capture`
+    (from `--capture`) and `sampler` (from `--sample`) are threaded to `run_bench_task`
+    for per-permutation wire recording and resource profiling. The selected languages'
+    toolchains are installed once (idempotent) before the task loop.
     """
     tasks: list[AiderTask] = load_aider_tasks(checkout, list(select))
+    install_toolchains(runner, sandbox, languages_in(list(select)))
     verdicts: list[BenchVerdict] = []
     for task in tasks:
         task.provision(runner, sandbox, workspace)
@@ -81,6 +95,7 @@ def run_aider_suite(
                 capture=capture,
                 sampler=sampler,
                 gates=gates,
+                attempts=attempts,
             )
         )
     return verdicts

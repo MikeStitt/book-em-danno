@@ -26,7 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # RELEASE_TOKEN (a PAT or GitHub App token with contents + PR write) is
-      # required so the pushed branch / opened PR actually trigger check.yml.
+      # required so the pushed branch / opened PR actually trigger fast-gates.yml
+      # (and slow-sandbox-tui-gates.yml).
       # The default GITHUB_TOKEN cannot: events it raises do not start other
       # workflow runs, so required status checks would never run and the release
       # PR could never satisfy the protect-main ruleset. Fail loud if it is unset.
@@ -86,7 +87,7 @@ jobs:
           git cliff --tag "${TAG}" -o CHANGELOG.md
           grep -q "^version = \"${VERSION}\"" pyproject.toml
           # Refresh uv.lock's self-version so it stays in sync with the bump;
-          # without this the lock drifts and check.yml (uv sync --locked) fails.
+          # without this the lock drifts and fast-gates.yml (uv sync --locked) fails.
           uv lock
 
       - name: Open release PR

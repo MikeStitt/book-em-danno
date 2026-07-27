@@ -39,7 +39,7 @@ from book_em_danno.commands import sandbox as sb
 from book_em_danno.commands import sandbox_cli
 from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import CommandFailedError, Runner, log_info, log_warn
-from danno_validator import claurst, occ
+from danno_validator import harnesses
 from danno_validator.baseline import BASELINE_MODEL, run_baseline
 from danno_validator.events import ValidateEvent
 from danno_validator.judge import JudgeFn
@@ -311,44 +311,32 @@ def run_validate(
     # The proxies must be up for every harness request; start them before provisioning
     # and tear them down after the last turn (a no-op context when capture is off).
     with captures_running(capture_targets):
-        # `opts.harness` selects the harness-under-test for the sweep. For the default
-        # "opencode" it is also the prebuilt Docker image; the sweep drives opencode
-        # with its own read-write run-agent ("build", run_sweep's default). "claurst"
-        # is NOT a prebuilt image: it is hosted in a `shell` VM and installed post-
-        # provision, then driven by `claurst.authed_claurst_run` (which relays Ollama
-        # per turn). Other values pass through as a Docker image name unchanged.
-        is_claurst = opts.harness == "claurst"
-        is_occ = opts.harness == "occ"
-        if is_claurst:
-            image = claurst.CLAURST_SANDBOX_IMAGE
-        elif is_occ:
-            image = occ.OCC_SANDBOX_IMAGE
-        else:
-            image = opts.harness
+        # `opts.harness` selects the harness-under-test for the sweep — always a dialer
+        # (claude is the separate `--baseline` reference, provisioned below). The
+        # registry owns each dialer's sandbox image and post-provision install: opencode
+        # is a prebuilt image with nothing to install; claurst runs in a `shell` VM
+        # and installs post-provision. opencode is driven by run_sweep's built-in
+        # read-write run-agent ("build", the per-level default), so it injects no
+        # `make_run_turn`; other dialers inject their registry `TurnFn` factory.
+        harness = harnesses.get(opts.harness)
         reporter.phase(f"provision {opts.harness} sandbox  {plan.sweep_sandbox}")
+        # `provision` takes the harness NAME (resolves the docker image internally); passing
+        # `.sandbox_image` breaks the registry lookup for claurst/codex (image `shell` != name).
         sb.provision(
             runner,
             plan.sweep_sandbox,
             plan.workspace,
-            harness=image,
+            harness=opts.harness,
             allow_hosts=allow_hosts,
             registry_path=None,
         )
-        if is_claurst:
-            reporter.phase(f"install claurst  {plan.sweep_sandbox}")
-            claurst.install_claurst(runner, plan.sweep_sandbox)
-        elif is_occ:
-            reporter.phase(f"install occ  {plan.sweep_sandbox}")
-            occ.install_occ(runner, plan.sweep_sandbox, config)
+        if opts.harness != DEFAULT_HARNESS:
+            reporter.phase(f"install {opts.harness}  {plan.sweep_sandbox}")
+            harness.install(runner, plan.sweep_sandbox, config)
         # Credentials for swept cloud configs: bound into every harness exec via
         # --env-file, removed after the sweep (the secret never lingers on disk).
         sweep_env_file = _build_sweep_env_file(config, opts, plan.workspace)
-        if is_occ:
-            make_run_turn = occ.authed_occ_run
-        elif is_claurst:
-            make_run_turn = claurst.authed_claurst_run
-        else:
-            make_run_turn = None
+        make_run_turn = None if opts.harness == DEFAULT_HARNESS else harness.turn_fn
         try:
             results = run_sweep(
                 runner,

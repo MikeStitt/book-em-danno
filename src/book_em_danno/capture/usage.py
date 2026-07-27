@@ -19,7 +19,7 @@ from typing import Any
 # `eval_count`, not `usage` — is counted too (F1). Kept here as the single source both the
 # live proxy (`capture.proxy`) and the post-hoc parser (`telemetry.wire_metrics`) import.
 _INFERENCE_SUFFIXES = (
-    "/chat/completions",  # OpenAI-compatible (opencode /v1, occ OPENAI_BASE_URL)
+    "/chat/completions",  # OpenAI-compatible (opencode /v1, claurst)
     "/responses",  # Responses API (opencode ↔ NVIDIA)
     "/messages",  # Anthropic Messages
     "/api/chat",  # Ollama native (claurst local)

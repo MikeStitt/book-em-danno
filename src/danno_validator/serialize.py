@@ -205,5 +205,5 @@ def write_results_json(record: Mapping[str, Any], out_path: Path) -> Path:
     `ensure_ascii=False` keeps the unicode verdict badges (`✓ · ✗`) readable.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n")
+    out_path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return out_path

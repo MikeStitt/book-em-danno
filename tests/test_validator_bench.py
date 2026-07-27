@@ -16,10 +16,11 @@ from book_em_danno.config.schema import (
     Model,
     OllamaBackend,
     OpenAIBackend,
+    backend_wire_offers,
 )
 from book_em_danno.core import exec as exec_mod
 from book_em_danno.core.exec import CommandFailedError, Runner
-from danno_validator import baseline
+from danno_validator import baseline, harnesses
 from danno_validator.matrix import model_variants
 from danno_validator.suites import aut, bench
 from danno_validator.suites.config import BenchmarksConfig
@@ -80,60 +81,17 @@ def test_resolve_image_claude_is_prebuilt_image() -> None:
 
 def test_run_turn_for_claude_requires_env_file() -> None:
     # claude's turn producer needs an auth env-file — a None reaching it is a bug, not a
-    # local run (unlike opencode/claurst/occ which accept None for the no-secrets local case).
+    # local run (unlike opencode/claurst which accept None for the no-secrets local case).
     with pytest.raises(ValueError, match="auth env-file"):
         aut.run_turn_for("claude", None)
     assert callable(aut.run_turn_for("claude", Path("/tmp/danno-claude-auth")))
-
-
-def test_build_bench_env_files_occ_carries_knob_defaults_overridable(tmp_path: Path) -> None:
-    # occ's level-4 loop-ceiling knobs seed the file; danno.toml [env] composes on top.
-    cfg = DannoConfig(
-        backends={"ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1")},
-        models={
-            "qwen": Model(
-                backend="ollama", tag="qwen3:latest", context_budget=32000, output_limit=8192
-            )
-        },
-        env={"CLAUDE_CODE_MAX_RECURSION_DEPTH": "5"},  # [env] lowers the generous default
-    )
-    opts = bench.BenchOptions(target=tmp_path, harness="occ")
-    variants = model_variants(cfg)
-    files = bench._build_bench_env_files(cfg, opts, variants)
-    path = files[variants[0].model_ref]
-    assert path is not None
-    body = path.read_text(encoding="utf-8")
-    _cleanup_env_files(files)
-    assert "CLAUDE_CODE_API_TIMEOUT=" in body  # the level-4 default survives
-    assert "CLAUDE_CODE_MAX_RECURSION_DEPTH=5" in body  # [env] beat the default
-    assert "CLAUDE_CODE_MAX_RECURSION_DEPTH=500" not in body
-
-
-def test_build_bench_env_files_occ_cloud_variant_injects_openai_base_and_key(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    # A cloud (openai) variant carries occ's OPENAI_BASE_URL + OPENAI_API_KEY mapping; the
-    # local variant does NOT. Distinct env-files per row is what fixed the cloud 404 (occ
-    # fell back to api.anthropic.com when no per-variant auth was injected).
-    monkeypatch.setenv("NVIDIA_API_KEY", "nv-secret")
-    cfg = _cloud_config()
-    opts = bench.BenchOptions(target=tmp_path, harness="occ")
-    variants = model_variants(cfg)  # sorted: nemo (cloud), qwen (local)
-    files = bench._build_bench_env_files(cfg, opts, variants)
-    by_name = {v.model_name: files[v.model_ref] for v in variants}
-    cloud_body = by_name["nemo"].read_text(encoding="utf-8")  # type: ignore[union-attr]
-    local_body = by_name["qwen"].read_text(encoding="utf-8")  # type: ignore[union-attr]
-    _cleanup_env_files(files)
-    assert "OPENAI_BASE_URL=https://integrate.api.nvidia.com/v1" in cloud_body
-    assert "OPENAI_API_KEY=nv-secret" in cloud_body
-    assert "OPENAI_API_KEY=" not in local_body  # local Ollama needs no cloud auth
 
 
 def test_build_bench_env_files_opencode_cloud_variant_injects_raw_provider_key(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     # opencode/claurst read the provider key under its OWN var (the generated provider block
-    # references {env:NVIDIA_API_KEY}), not occ's OPENAI_* mapping.
+    # references {env:NVIDIA_API_KEY}).
     monkeypatch.setenv("NVIDIA_API_KEY", "nv-secret")
     cfg = _cloud_config()
     for harness in ("opencode", "claurst"):
@@ -154,7 +112,7 @@ def test_build_bench_env_files_cloud_variant_fails_loud_without_key(
     # provisioned), naming the missing var — not mid-session at an auth failure.
     monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
     cfg = _cloud_config()
-    opts = bench.BenchOptions(target=tmp_path, harness="occ")
+    opts = bench.BenchOptions(target=tmp_path, harness="claurst")
     with pytest.raises(CommandFailedError, match="NVIDIA_API_KEY"):
         bench._build_bench_env_files(cfg, opts, model_variants(cfg))
 
@@ -171,8 +129,8 @@ def test_seed_opencode_config_writes_provider_and_models(tmp_path: Path) -> None
 
 
 def test_seed_opencode_config_noop_for_non_opencode_harnesses(tmp_path: Path) -> None:
-    # claurst/occ/claude dial Ollama through the relay or a cloud provider, not opencode.jsonc.
-    for harness in ("claurst", "occ", "claude"):
+    # claurst/claude dial Ollama through the relay or a cloud provider, not opencode.jsonc.
+    for harness in ("claurst", "claude"):
         bench._seed_opencode_config(_config(), harness, tmp_path)
         assert not (tmp_path / ".opencode" / "opencode.jsonc").exists()
 
@@ -307,6 +265,268 @@ def test_run_bench_claude_sweeps_declared_inert_models(
     assert captured["model_refs"] == ["claude-opus-4-8", "claude-sonnet-4-6"]  # bare tags
 
 
+def test_openai_compat_variants_excludes_inert_models() -> None:
+    cfg = _claude_config()
+    # opencode/claurst sweep the OpenAI-compatible models only — the inert claude
+    # rows (opus/sonnet) are excluded, since danno can't dial them.
+    assert [v.model_name for v in bench._openai_compat_variants(cfg, None)] == ["qwen"]
+    # a mixed --only keeps the local model and drops nothing it was asked for
+    assert [v.model_name for v in bench._openai_compat_variants(cfg, ["qwen"])] == ["qwen"]
+
+
+def test_openai_compat_variants_explicit_only_inert_fails_loud() -> None:
+    cfg = _claude_config()
+    # asking a config-driven harness to run an inert (claude-only) model is impossible;
+    # fail loud rather than silently collapse to an empty sweep (Working Rule 8).
+    with pytest.raises(ValueError, match="can't speak these models"):
+        bench._openai_compat_variants(cfg, ["opus"])
+
+
+def test_codex_matrix_drops_cloud_model_from_implicit_sweep(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # codex speaks the Responses API only. The NIM cloud row is Chat-only (default
+    # `wire = {chat}`), so even though codex now dials `openai` backends, it shares no wire
+    # with NIM → the row is DROPPED (a harness-capability boundary), so codex sweeps only the
+    # local qwen; it does NOT abort the whole codex column the way the old raise did.
+    cfg = _cloud_config()
+    codex = harnesses.get("codex")
+    variants = codex.model_matrix(cfg, None)
+    assert [v.model_name for v in variants] == ["qwen"]
+    # loud, not silent: the skipped cloud row is named with its reason (via log_warn → stdout).
+    out = capsys.readouterr().out
+    assert "nemo" in out and "codex" in out
+
+
+def test_codex_matrix_explicit_only_cloud_model_fails_loud() -> None:
+    # But naming the Chat-only cloud model explicitly (`--only nemo`) is an impossible
+    # pairing → fail loud (Working Rule 8), rather than collapse to a fake-green empty sweep.
+    cfg = _cloud_config()
+    codex = harnesses.get("codex")
+    with pytest.raises(ValueError, match="can't speak these models"):
+        codex.model_matrix(cfg, ["nemo"])
+
+
+def _responses_cloud_config() -> DannoConfig:
+    """A mixed local + Responses-capable cloud matrix: `qwen` (Ollama) and `o4` (an OpenAI
+    backend declaring `wire = ["chat", "responses"]`, so codex CAN speak it — Layer 3)."""
+    return DannoConfig(
+        backends={
+            "ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1"),
+            "oai": OpenAIBackend(
+                kind="openai",
+                base_url="https://api.openai.com/v1",
+                api_key_env="OPENAI_API_KEY",
+                wire=frozenset({"chat", "responses"}),
+            ),
+        },
+        models={
+            "qwen": Model(
+                backend="ollama", tag="qwen3:latest", context_budget=32000, output_limit=8192
+            ),
+            "o4": Model(
+                backend="oai",
+                tag="o4-mini",
+                context_budget=200000,
+                output_limit=32768,
+                reasoning_effort="high",
+            ),
+        },
+        agents={"build": "qwen"},
+    )
+
+
+def test_codex_matrix_includes_responses_capable_cloud_model() -> None:
+    # Layer 3: an OpenAI backend that offers the Responses API IS speakable by codex, so the
+    # cloud row is swept (not dropped) alongside the local one.
+    cfg = _responses_cloud_config()
+    variants = harnesses.get("codex").model_matrix(cfg, None)
+    assert [v.model_name for v in variants] == ["o4", "qwen"]  # sorted by danno.toml key
+
+
+def test_codex_dial_provider_cloud_and_local() -> None:
+    # The cloud dial target threaded to the codex turn (base_url + key-env NAME + reasoning
+    # knob) is resolved from the backend; a local Ollama row gets None (relay-free path).
+    cfg = _responses_cloud_config()
+    codex = harnesses.get("codex")
+    assert codex.dial_provider is not None
+    o4 = next(v for v in codex.model_matrix(cfg, None) if v.model_name == "o4")
+    prov = codex.dial_provider(cfg, o4)
+    assert prov is not None
+    assert prov.base_url == "https://api.openai.com/v1"
+    assert prov.env_key == "OPENAI_API_KEY"
+    assert prov.reasoning_effort == "high"
+    qwen = next(v for v in codex.model_matrix(cfg, None) if v.model_name == "qwen")
+    assert codex.dial_provider(cfg, qwen) is None
+
+
+def test_harness_dial_provider_none_for_non_codex() -> None:
+    # Only codex sets `dial_provider`; opencode/claurst/claude return None so `run_turn_for`
+    # never hands their factories the codex-only kwarg.
+    cfg = _responses_cloud_config()
+    o4 = next(v for v in harnesses.get("codex").model_matrix(cfg, None) if v.model_name == "o4")
+    for harness in ("opencode", "claurst", "claude"):
+        assert bench._harness_dial_provider(harness, cfg, o4) is None
+
+
+def test_opencode_matrix_still_sweeps_cloud_model() -> None:
+    # Regression: the codex filter must NOT change opencode/claurst — they still dial the
+    # NIM cloud row (they speak its chat wire); only codex's narrower dial-set excludes it.
+    cfg = _cloud_config()
+    # (model_variants sorts by danno.toml key, so nemo precedes qwen)
+    assert [v.model_name for v in harnesses.get("opencode").model_matrix(cfg, None)] == [
+        "nemo",
+        "qwen",
+    ]
+
+
+def test_backend_wire_offers_by_kind() -> None:
+    # Ollama serves both wires; a default OpenAI-compatible host is Chat-only (NIM/vLLM); an
+    # endpoint that also serves Responses declares `wire = ["chat", "responses"]`.
+    assert backend_wire_offers(OllamaBackend(kind="ollama", base_url="x")) == frozenset(
+        {"chat", "responses"}
+    )
+    nim = OpenAIBackend(kind="openai", base_url="x", api_key_env="K")
+    assert backend_wire_offers(nim) == frozenset({"chat"})
+    openai = OpenAIBackend(
+        kind="openai", base_url="x", api_key_env="K", wire=frozenset({"chat", "responses"})
+    )
+    assert backend_wire_offers(openai) == frozenset({"chat", "responses"})
+
+
+def _responses_only_ollama_config() -> DannoConfig:
+    """A single Ollama model flagged `requires_wire = ["responses"]` — the protocol arm of the
+    predicate, isolated from backend kind (every harness here dials the same Ollama endpoint)."""
+    return DannoConfig(
+        backends={"ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1")},
+        models={
+            "qwen": Model(
+                backend="ollama",
+                tag="qwen3:latest",
+                context_budget=32000,
+                output_limit=8192,
+                requires_wire=frozenset({"responses"}),
+            )
+        },
+        agents={"build": "qwen"},
+    )
+
+
+def test_requires_wire_gates_chat_only_harness(capsys: pytest.CaptureFixture[str]) -> None:
+    # A Responses-only model is speakable by opencode (speaks chat+responses) but N/A for
+    # claurst (speaks chat only) — proven WITHOUT a cloud backend, so it isolates the wire
+    # arm from the `dials` (backend-kind) arm.
+    cfg = _responses_only_ollama_config()
+    assert [v.model_name for v in harnesses.get("opencode").model_matrix(cfg, None)] == ["qwen"]
+    assert harnesses.get("claurst").model_matrix(cfg, None) == []
+    out = capsys.readouterr().out
+    assert "responses" in out and "claurst" in out
+
+
+def test_requires_wire_explicit_only_chat_only_harness_fails_loud() -> None:
+    # Naming the Responses-only model explicitly for a Chat-only harness is an impossible
+    # pairing → fail loud (Working Rule 8), not a silent empty sweep.
+    cfg = _responses_only_ollama_config()
+    with pytest.raises(ValueError, match="can't speak these models"):
+        harnesses.get("claurst").model_matrix(cfg, ["qwen"])
+
+
+def test_run_bench_non_claude_harness_skips_inert_models(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # With inert claude models declared alongside a local model, a dialer harness must sweep
+    # ONLY the local model — never the inert rows (which would raise loud mid-sweep).
+    captured: dict[str, object] = {}
+
+    def fake_write(
+        report,
+        *,
+        config_path,
+        harness,
+        variants,
+        num_ctx_by_model=None,
+        capture_dir=None,
+        captures_persisted=True,
+    ):  # type: ignore[no-untyped-def]
+        captured["model_names"] = [v.model_name for v in variants]
+        path = report.out_dir / "bench.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"harness": harness, "results": []}) + "\n", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(bench, "_write_results", fake_write)
+    opts = bench.BenchOptions(target=tmp_path, harness="claurst", out_dir=tmp_path / "out")
+    bench.run_bench(_claude_config(), BenchmarksConfig(), opts, Runner())
+    assert captured["model_names"] == ["qwen"]  # inert opus/sonnet excluded
+
+
+def test_run_bench_codex_fails_loud_when_responses_api_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # codex speaks ONLY the Responses API; a too-old Ollama (probe → False) must fail loud
+    # up front, not error mid-sweep on every cell.
+    monkeypatch.setattr(bench.ollama, "responses_api_ready", lambda *a, **k: False)
+    opts = bench.BenchOptions(target=tmp_path, harness="codex", out_dir=tmp_path / "out")
+    with pytest.raises(CommandFailedError, match="Responses API"):
+        bench.run_bench(_config(), BenchmarksConfig(), opts, Runner())
+
+
+def test_run_bench_codex_dry_run_skips_responses_preflight(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # --dry-run never touches a live Ollama, so the pre-flight probe is bypassed entirely
+    # (a False stub here would raise if it ran).
+    monkeypatch.setattr(bench.ollama, "responses_api_ready", lambda *a, **k: False)
+    opts = bench.BenchOptions(
+        target=tmp_path, harness="codex", out_dir=tmp_path / "out", dry_run=True
+    )
+    report = bench.run_bench(_config(), BenchmarksConfig(), opts, Runner())
+    assert report.dry_run is True
+
+
+@pytest.mark.parametrize("harness", ["claurst", "codex"])
+def test_run_aider_provisions_by_harness_name_not_sandbox_image(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, harness: str
+) -> None:
+    # Regression (b1fcfea): `sb.provision` takes the harness NAME and resolves the docker
+    # image internally. claurst/codex have no prebuilt image — they ride "shell" — so passing
+    # `Harness.sandbox_image` (as the old code did) made provision look up an unregistered
+    # harness "shell" and crash the whole sweep. Guard: the value handed to provision must be
+    # a registered harness name, never the "shell" image.
+    seen: dict[str, object] = {}
+
+    class _StopEarly(Exception):
+        pass
+
+    def fake_provision(runner, name, workspace, *, harness, **kw):  # type: ignore[no-untyped-def]
+        seen["harness"] = harness
+        raise _StopEarly
+
+    monkeypatch.setattr(bench.sb, "provision", fake_provision)
+    cfg = BenchmarksConfig()
+    cfg.aider_polyglot.enabled = True
+    cfg.aider_polyglot.select = ["python/anagram"]
+    opts = bench.BenchOptions(target=tmp_path, harness=harness, out_dir=tmp_path / "out")
+    with pytest.raises(_StopEarly):
+        bench._run_aider(
+            Runner(),
+            cfg,
+            opts,
+            workspace=tmp_path / "ws",
+            variants=[],
+            config=_config(),
+            env_files={},
+            capture=None,
+            sampler=None,
+            allow_hosts=("localhost:11434",),
+            capture_port=None,
+            warm=False,
+            warmup=[],
+        )
+    assert seen["harness"] == harness
+    assert seen["harness"] in harnesses.all_names()  # never the "shell" image
+
+
 def test_run_turn_for_opencode_pins_build_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, object] = {}
 
@@ -405,7 +625,7 @@ def test_run_bench_no_save_captures_creates_no_capture_dir_on_abort(
 
 def test_setup_bench_capture_default_saves_under_out_and_opens_port(tmp_path: Path) -> None:
     # Default (save) rewrites the ollama backend base_url at a proxy, opens its egress port,
-    # persists under <out>/captures, and reports that port as the occ/claurst relay upstream.
+    # persists under <out>/captures, and reports that port as the claurst relay upstream.
     cfg = _config()
     opts = bench.BenchOptions(target=Path("."), harness="opencode")  # save_captures defaults True
     cfg_for_run, binding, allow, port = bench._setup_bench_capture(cfg, opts, tmp_path)
@@ -442,33 +662,6 @@ def test_capture_binding_namespaces_per_permutation(tmp_path: Path) -> None:
     # a null model (claude reference row) still gets a stable segment
     dflt = binding.permutation_targets(suite="aider", task_id="t", model=None)
     assert dflt[0].capture_file.name == "default.ollama.jsonl"
-
-
-def test_run_turn_for_occ_forwards_capture_port(monkeypatch: pytest.MonkeyPatch) -> None:
-    # --capture threads the proxy port into occ's relay upstream (capture_port).
-    from danno_validator import occ
-
-    seen: dict[str, object] = {}
-
-    def fake_occ_run(runner, name, prompt, **kw):  # type: ignore[no-untyped-def]
-        seen.update(kw)
-        return object()
-
-    monkeypatch.setattr(occ, "occ_run", fake_occ_run)
-    aut.run_turn_for("occ", None, capture_port=7777)(Runner(), "box", "go", model="ollama/x")
-    assert seen["capture_port"] == 7777
-
-
-def test_run_turn_for_occ_forwards_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    # run_turn_for threads the normalized dial ref into occ_run (item-3 fix).
-    from danno_validator import occ
-
-    seen: dict[str, object] = {}
-    monkeypatch.setattr(occ, "occ_run", lambda r, n, p, **kw: seen.update(kw) or object())
-    aut.run_turn_for("occ", None, model_override="ollama/qwen")(
-        Runner(), "box", "go", model="danno-ollama/qwen"
-    )
-    assert seen["model"] == "ollama/qwen"
 
 
 def test_run_turn_for_claurst_forwards_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -511,25 +704,20 @@ def _dial_config() -> DannoConfig:
     )
 
 
-def test_harness_dial_ref_occ_local_normalizes_backend_name() -> None:
-    # The reported ref is `danno-ollama/…` (misread as cloud); the dial ref is `ollama/…`.
-    cfg = _dial_config()
-    (qwen,) = [v for v in model_variants(cfg) if v.model_name == "qwen"]
-    assert qwen.model_ref == "danno-ollama/qwen3-coder-next"
-    assert bench._harness_dial_ref("occ", cfg, qwen) == "ollama/qwen3-coder-next"
-
-
 def test_harness_dial_ref_claurst_local_normalizes_backend_name() -> None:
     cfg = _dial_config()
     (qwen,) = [v for v in model_variants(cfg) if v.model_name == "qwen"]
     assert bench._harness_dial_ref("claurst", cfg, qwen) == "ollama/qwen3-coder-next"
 
 
-def test_harness_dial_ref_cloud_matches_reported_ref_for_occ() -> None:
-    # A cloud (openai) backend's dial ref equals its reported `<backend>/<tag>` ref.
+def test_harness_dial_ref_cloud_normalizes_to_provider_for_claurst() -> None:
+    # A cloud (openai) backend's dial ref drops the danno backend name for the provider id
+    # claurst dials directly (`nv/…` reported → `nvidia/…` dialed), distinct from the local
+    # `ollama/…` normalization.
     cfg = _dial_config()
     (nemo,) = [v for v in model_variants(cfg) if v.model_name == "nemo"]
-    assert bench._harness_dial_ref("occ", cfg, nemo) == nemo.model_ref
+    assert nemo.model_ref == "nv/nvidia/nemotron-super-49b"
+    assert bench._harness_dial_ref("claurst", cfg, nemo) == "nvidia/nvidia/nemotron-super-49b"
 
 
 def test_harness_dial_ref_opencode_and_claude_are_none() -> None:
@@ -625,14 +813,17 @@ def test_resolve_bench_harnesses_defaults_to_single_opencode() -> None:
 
 
 def test_resolve_bench_harnesses_reads_benchmarks_toml_list() -> None:
-    cfg = BenchmarksConfig(harnesses=["occ", "claurst"])
-    assert bench.resolve_bench_harnesses(None, cfg) == ["occ", "claurst"]
+    cfg = BenchmarksConfig(harnesses=["opencode", "claurst"])
+    assert bench.resolve_bench_harnesses(None, cfg) == ["opencode", "claurst"]
 
 
 def test_resolve_bench_harnesses_cli_overrides_toml_and_dedupes() -> None:
     # --harness wins over benchmarks.toml [harnesses]; repeats collapse but order is preserved.
-    cfg = BenchmarksConfig(harnesses=["occ"])
-    assert bench.resolve_bench_harnesses(["claude", "occ", "claude"], cfg) == ["claude", "occ"]
+    cfg = BenchmarksConfig(harnesses=["opencode"])
+    assert bench.resolve_bench_harnesses(["claude", "opencode", "claude"], cfg) == [
+        "claude",
+        "opencode",
+    ]
 
 
 def test_resolve_bench_harnesses_unknown_fails_loud() -> None:
@@ -656,10 +847,10 @@ def test_run_bench_harnesses_multi_harness_uses_per_harness_subdirs(tmp_path: Pa
         target=Path("."), harness="opencode", out_dir=tmp_path / "root", dry_run=True
     )
     reports = bench.run_bench_harnesses(
-        _config(), BenchmarksConfig(), opts, Runner(), ["occ", "claurst"]
+        _config(), BenchmarksConfig(), opts, Runner(), ["opencode", "claurst"]
     )
     root = tmp_path / "root"
-    assert [r.out_dir for r in reports] == [root / "occ", root / "claurst"]
+    assert [r.out_dir for r in reports] == [root / "opencode", root / "claurst"]
 
 
 def test_warm_variant_warms_local_skips_cloud_and_respects_no_warm(

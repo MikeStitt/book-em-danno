@@ -29,18 +29,20 @@ from book_em_danno.capture.wiring import (
 from book_em_danno.commands import ollama, sandbox_cli
 from book_em_danno.commands import sandbox as sb
 from book_em_danno.config.generate import generate
-from book_em_danno.config.schema import DannoConfig, InertBackend
+from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import CommandFailedError, Runner, log_info, log_warn
-from danno_validator import baseline
-from danno_validator.driver import seed_workspace
+from danno_validator import baseline, harnesses
+from danno_validator.driver import CodexProvider, seed_workspace
 from danno_validator.level0 import DEFAULT_RUN_AGENT
-from danno_validator.matrix import ConfigVariant, model_variants
+from danno_validator.matrix import ConfigVariant
+from danno_validator.suites.aider import (
+    doctor_toolchains,
+    install_toolchains,
+    languages_in,
+    toolchain_egress,
+)
 from danno_validator.suites.aut import (
-    CLAUDE,
-    CLAURST,
-    OCC,
     install_harness,
-    resolve_image,
     run_turn_for,
 )
 from danno_validator.suites.base import BenchVerdict, error_verdict, run_bench_task
@@ -96,11 +98,6 @@ class BenchReport:
     results_json: Path | None = None
 
 
-# The harnesses-under-test `danno bench` can drive (occ/claurst/opencode on the local +
-# cloud matrix; claude sweeps its inert-backend models, or one `(default model)` row if
-# none are declared). Ordered for a stable report layout.
-BENCH_HARNESSES: tuple[str, ...] = (sb.DEFAULT_HARNESS, CLAURST, OCC, CLAUDE)
-
 _OLLAMA_PREFIX = "ollama/"
 
 
@@ -110,15 +107,15 @@ def resolve_bench_harnesses(
     """The de-duplicated, order-preserving list of harnesses to benchmark, with precedence
     `--harness` (CLI) > `benchmarks.toml [harnesses]` > the single opencode default.
 
-    Fails loud (Working Rule 8) on an unknown harness name from either source, naming the
-    valid set, rather than provisioning a sandbox for a typo."""
+    The valid set is the harness registry (`harnesses.all_names()`) — no local name-set to
+    keep in sync. Fails loud (Working Rule 8) on an unknown harness name from either source,
+    naming the valid set, rather than provisioning a sandbox for a typo."""
+    valid = harnesses.all_names()
     chosen: list[str] = list(cli_harnesses or bench_cfg.harnesses) or [sb.DEFAULT_HARNESS]
     seen: dict[str, None] = {}
     for name in chosen:
-        if name not in BENCH_HARNESSES:
-            raise ValueError(
-                f"unknown --harness '{name}'. Valid harnesses: {', '.join(BENCH_HARNESSES)}."
-            )
+        if name not in valid:
+            raise ValueError(f"unknown --harness '{name}'. Valid harnesses: {', '.join(valid)}.")
         seen.setdefault(name, None)
     return list(seen)
 
@@ -147,65 +144,55 @@ def _teardown(runner: Runner, name: str, *, keep: bool) -> None:
 def _variant_cloud_env_lines(harness: str, config: DannoConfig, model_name: str) -> list[str]:
     """The cloud-provider auth env-file lines for one bench variant, or [] for a local model.
 
-    Reuses the exact builders `danno sandbox start` uses, so bench authenticates a cloud
-    model identically per harness: occ needs the `OPENAI_BASE_URL`/`OPENAI_API_KEY` mapping;
-    claurst and opencode read the provider key under its own `{api_key_env}` name (opencode's
-    generated provider block references `{env:<api_key_env>}`). Fails loud (Working Rule 8)
-    when the key var is unset. `model_name` is the danno.toml `[models]` key (a raw
-    `<provider>/<tag>` ref, which the matrix never yields for a cloud row, resolves to [])."""
-    if harness == OCC:
-        return sb.occ_cloud_env_lines(config, model_name)
-    if harness == CLAURST:
-        return sb.claurst_cloud_env_lines(config, model_name)
-    if harness == sb.DEFAULT_HARNESS:  # opencode
-        return sb.cloud_api_key_env_lines(config, model_name)
-    return []  # claude: the cloud reference HUT carries its own auth (never a [models] key)
+    Delegates to the harness registry (`Harness.cloud_env_lines`), which reuses the exact
+    builders `danno sandbox start` uses: claurst and opencode read the provider key under
+    its own `{api_key_env}` name; the claude reference row carries its own auth (→ []).
+    Fails loud (Working Rule 8) when the key var is unset. `model_name` is the danno.toml
+    `[models]` key."""
+    return harnesses.get(harness).cloud_env_lines(config, model_name)
 
 
+# The model-matrix helpers now live on the harness side (`harnesses._dialer` /
+# `harnesses.claude`); these thin seams keep the historical bench names/signatures the
+# tests exercise while the branching lives in the registry.
 def _claude_inert_models(config: DannoConfig, only: Sequence[str] | None) -> list[str]:
-    """The declared inert-backend model names claude should sweep, sorted (`only`-filtered).
+    """The declared inert-backend model names claude should sweep (registry-backed)."""
+    return harnesses.claude.inert_model_names(config, only)
 
-    claude selects its model by `--model`, so only inert-backend [models] (whose `tag` is
-    the raw `--model` value) are meaningful to it — local/cloud OpenAI-compatible models
-    are opencode/occ/claurst's matrix, not claude's. Empty → the caller falls back to the
-    single install-default reference row."""
-    names = [
-        n
-        for n in sorted(config.models)
-        if isinstance(config.backends[config.models[n].backend], InertBackend)
-    ]
-    if only is not None:
-        keep = set(only)
-        names = [n for n in names if n in keep]
-    return names
+
+def _openai_compat_variants(config: DannoConfig, only: Sequence[str] | None) -> list[ConfigVariant]:
+    """The dialer model matrix: the declared catalog restricted to dialable backend kinds
+    (`{"ollama", "openai"}`) — i.e. minus inert-backend models. Registry-backed; drops inert
+    from an implicit sweep (loud) and fails loud on an inert `--only` for a dialer."""
+    return harnesses._dialer.dialable_variants(
+        config,
+        only,
+        speaks=frozenset({"chat", "responses"}),
+        dials=frozenset({"ollama", "openai"}),
+        harness="opencode",
+    )
 
 
 def _harness_dial_ref(harness: str, config: DannoConfig, variant: ConfigVariant) -> str | None:
-    """The ref occ/claurst must actually dial for `variant`, or None (report ref stands).
+    """The ref this harness must actually dial for `variant`, or None (report ref stands).
 
-    The matrix reports the generic `<backend>/<tag>` ref (`variant.model_ref`) so the
-    comparison grid and §6.3 headroom lookups key consistently. But occ/claurst detect
-    local-vs-cloud by the ref's leading segment (`startswith("ollama/")`), so an Ollama
-    backend named anything other than the literal `ollama` (e.g. `danno-ollama/…`) is
-    misread as cloud and falls back to Anthropic — the item-3 bug. Reuse the exact
-    resolvers `danno sandbox start` dials with (`resolve_occ_model`/`resolve_claurst_model`,
-    from the `[models]` name) so bench dials a ref their locality check understands: Ollama
-    → `ollama/<tag>`, cloud → each harness's own provider namespace. opencode (whose provider
-    is the backend name in the generated `opencode.jsonc`) and claude need no override."""
-    if harness == OCC:
-        return sb.resolve_occ_model(config, variant.model_name)
-    if harness == CLAURST:
-        return sb.resolve_claurst_model(config, variant.model_name)
-    if harness == CLAUDE:
-        # claude picks its model by `--model <alias|id>`, not an OpenAI-compatible ref.
-        # Only an INERT-backend model's tag is that value (e.g. "claude-opus-4-8"); a
-        # local/cloud model or the synthetic reference row (`baseline_variant`, whose
-        # model_name isn't in [models]) → None → claude's install default.
-        model = config.models.get(variant.model_name)
-        if model is not None and isinstance(config.backends[model.backend], InertBackend):
-            return model.tag
-        return None
-    return None
+    Delegates to the harness registry (`Harness.dial_ref`): claurst normalizes an Ollama
+    backend not literally named `ollama` (the item-3 bug); claude maps an inert model's tag
+    to its `--model` value; opencode needs no override."""
+    return harnesses.get(harness).dial_ref(config, variant)
+
+
+def _harness_dial_provider(
+    harness: str, config: DannoConfig, variant: ConfigVariant
+) -> CodexProvider | None:
+    """The CLOUD dial target this harness needs for `variant`, or None.
+
+    Delegates to the harness registry (`Harness.dial_provider`); only codex sets it (its
+    config.toml is written inline in the VM, so a cloud row's base_url/key-env must be
+    threaded to the turn — see `CodexProvider`). `config` here is the capture-rewritten one,
+    so a cloud base_url is already the recording-proxy URL. None for every other harness."""
+    fn = harnesses.get(harness).dial_provider
+    return fn(config, variant) if fn is not None else None
 
 
 def _merge_env_lines(base: list[str], extra: list[str]) -> list[str]:
@@ -225,17 +212,18 @@ def _build_bench_env_files(
     variant's bench turns.
 
     A single base set of lines is shared by every variant — the HUT's level-4 defaults
-    (occ's loop ceilings, opencode's `OLLAMA_BASE_URL`) plus `danno.toml [env]` and any
+    (opencode's `OLLAMA_BASE_URL`) plus `danno.toml [env]` and any
     `--env`/`--env-file`. A CLOUD variant additionally injects its provider auth for the
     HUT (`_variant_cloud_env_lines`), so a mixed local+cloud matrix authenticates each row
     correctly — the previous single harness-scoped file left cloud rows unauthenticated, so
-    occ fell back to api.anthropic.com and 404'd. Cloud-key resolution fails loud HERE,
-    before any sandbox is provisioned. Files are de-duplicated by content, so local variants
-    share one file and all variants on the same cloud backend share another. `config` is the
-    (capture-rewritten) config the run drives from, so occ cloud's `OPENAI_BASE_URL` points
-    at the `--capture` proxy when capture is on. claude is special: a single model-independent
-    auth file (fails loud without a host token, exactly like the baseline)."""
-    if opts.harness == CLAUDE:
+    a cloud row fell back to its harness's default endpoint and 404'd. Cloud-key resolution
+    fails loud HERE, before any sandbox is provisioned. Files are de-duplicated by content, so
+    local variants share one file and all variants on the same cloud backend share another.
+    `config` is the (capture-rewritten) config the run drives from, so a cloud dial points
+    at the `--capture` proxy when capture is on. A reference harness (claude) is special: a
+    single model-independent auth file (it carries its own auth; fails loud without a host
+    token, exactly like the baseline)."""
+    if harnesses.get(opts.harness).kind is harnesses.HarnessKind.REFERENCE:
         auth = baseline._build_claude_auth_env_file()  # fails loud without a host token
         return {v.model_ref: auth for v in variants}
     defaults = sb.harness_env(opts.harness, sb.DEFAULT_OLLAMA_URL)
@@ -258,7 +246,7 @@ def _setup_bench_capture(
     config: DannoConfig, opts: BenchOptions, out_dir: Path
 ) -> tuple[DannoConfig, CaptureBinding | None, tuple[str, ...], int | None]:
     """Stand up the ALWAYS-ON capture for bench: (config to run from, per-permutation
-    binding, sandbox allow-list, occ/claurst relay upstream port).
+    binding, sandbox allow-list, claurst relay upstream port).
 
     Capture is always on because the recording proxy is the runaway-gate sensor. Each
     redirectable backend's base_url is rewritten at a recording proxy (`plan_capture`,
@@ -283,8 +271,8 @@ def _setup_bench_capture(
             "--capture cannot record built-in cloud refs (no danno base_url lever): "
             f"{', '.join(uncap)}"
         )
-    if opts.harness == CLAUDE:
-        log_warn("--capture does not record the claude reference row (api.anthropic.com).")
+    if not harnesses.get(opts.harness).supports_capture:
+        log_warn(f"--capture does not record the {opts.harness} reference row (its own endpoint).")
     binding = CaptureBinding(
         targets=tuple(targets), capture_dir=capture_dir, persist=opts.save_captures
     )
@@ -315,9 +303,10 @@ def _seed_opencode_config(
     `host.docker.internal:11434`, which the sandbox's egress proxy rewrites to
     `localhost`) and the model registry, so a `-m ollama/<tag>` turn resolves. The
     `validate` sweep seeds it via `prepare_workspace`, but bench never did — so
-    every opencode turn failed with "Model not found: ollama/<tag>". claurst/occ/
-    claude don't read opencode.jsonc (they dial Ollama through the in-VM relay or a
-    cloud provider), so this is a no-op for them. `disable_title` matches the sweep:
+    every opencode turn failed with "Model not found: ollama/<tag>". claurst/claude
+    don't read opencode.jsonc (claurst dials host Ollama relay-free through the egress
+    proxy, or a cloud provider), so this is a no-op for them. `disable_title` matches the
+    sweep:
     no throwaway per-session title-gen call against the local model. `run_agent_steps`,
     when set, writes the runaway-gate polite-stop `steps` onto opencode's run-agent (a
     soft cap — the external watchdog is the real bound; DoR §3.4)."""
@@ -347,10 +336,23 @@ def _run_aider(
     if not (ap.enabled and ap.select):
         return []
     name = _sandbox_name(opts.target, "aider")
-    image = resolve_image(opts.harness)
-    log_info(f"[bench] aider — provision {opts.harness} sandbox '{name}'")
-    sb.provision(runner, name, workspace, harness=image, allow_hosts=allow_hosts)
+    languages = languages_in(ap.select)
+    # The exercises' toolchains need their distribution hosts on top of the capture/ollama
+    # egress — added to the allow-list VERBATIM (still explicit hosts, never `"**"`).
+    allow_hosts = allow_hosts + toolchain_egress(languages)
+    log_info(f"[bench] aider — provision {opts.harness} sandbox '{name}' (langs: {languages})")
+    # `provision` takes the harness NAME (it resolves the docker image internally via
+    # `_docker_image`, and installs the harness). Passing the image would break the
+    # registry lookup for harnesses whose image != name (claurst/codex ride `shell`).
+    sb.provision(runner, name, workspace, harness=opts.harness, allow_hosts=allow_hosts)
     install_harness(runner, name, opts.harness, config)
+    install_toolchains(runner, name, languages)
+    present = doctor_toolchains(runner, name, languages)
+    missing = [lang for lang, ok in present.items() if not ok]
+    if missing:
+        # Fail loud per-suite (Working Rule 8): a selected language whose toolchain didn't
+        # install will error every one of its exercises — surface it up front, not per row.
+        log_warn(f"[bench] aider — toolchain(s) NOT present after install: {missing}")
     checkout = clone_polyglot(runner, ap.source, temp_checkout_dir())
     verdicts: list[BenchVerdict] = []
     try:
@@ -371,7 +373,8 @@ def _run_aider(
                     env_files[variant.model_ref],
                     capture_port,
                     model_override=_harness_dial_ref(opts.harness, config, variant),
-                    max_turns=resolved.max_turns,  # occ/claurst native polite-stop
+                    max_turns=resolved.max_turns,  # claurst native polite-stop
+                    codex_provider=_harness_dial_provider(opts.harness, config, variant),
                 ),
                 model=variant.model_ref,
                 capture=capture,
@@ -408,9 +411,7 @@ def _run_swebench(
     for task in tasks:
         name = _sandbox_name(opts.target, f"swe-{task.id}")
         log_info(f"[bench] swebench {task.id} — provision {opts.harness} sandbox '{name}'")
-        sb.provision(
-            runner, name, workspace, harness=resolve_image(opts.harness), allow_hosts=allow_hosts
-        )
+        sb.provision(runner, name, workspace, harness=opts.harness, allow_hosts=allow_hosts)
         install_harness(runner, name, opts.harness, config)
         try:
             try:
@@ -444,7 +445,10 @@ def _run_swebench(
                                 env_files[variant.model_ref],
                                 capture_port,
                                 model_override=_harness_dial_ref(opts.harness, config, variant),
-                                max_turns=resolved.max_turns,  # occ/claurst native polite-stop
+                                max_turns=resolved.max_turns,  # claurst native polite-stop
+                                codex_provider=_harness_dial_provider(
+                                    opts.harness, config, variant
+                                ),
                             ),
                             task.workspace_dir(workspace),
                         ),
@@ -668,19 +672,23 @@ def run_bench(
 ) -> BenchReport:
     """Run the enabled suites across the model matrix against `opts.harness`."""
     now = now or datetime.now(UTC)
-    # claude picks its model by `--model`, not the OpenAI-compatible `-m` matrix. So it
-    # sweeps only its INERT-backend models (each tag → `--model`); the local ollama/cloud
-    # matrix is irrelevant to it. With no inert model declared, it collapses to a single
-    # `claude-code` reference row on the install default (see baseline_variant).
-    if opts.harness == CLAUDE:
-        claude_models = _claude_inert_models(config, opts.only)
-        variants = (
-            model_variants(config, only=claude_models)
-            if claude_models
-            else [baseline.baseline_variant(None)]
-        )
-    else:
-        variants = model_variants(config, only=opts.only)
+    # The harness owns its model matrix (`Harness.model_matrix`): a dialer (opencode/
+    # claurst) sweeps the OpenAI-compatible catalog minus inert models; the claude reference
+    # row sweeps its inert-backend models (each tag → `--model`), or a single install-default
+    # `claude-code` row when none are declared.
+    variants = harnesses.get(opts.harness).model_matrix(config, opts.only)
+    # Codex speaks only the OpenAI Responses API against local Ollama (≥ 0.13.3). Fail loud
+    # up front (Working Rule 8) if the host Ollama doesn't expose `/v1/responses` — else every
+    # codex cell would error mid-run on an unreachable endpoint. None (Ollama unreachable) is
+    # left to provisioning's own reachability handling; only a definitively-too-old Ollama trips.
+    if opts.harness == "codex" and not opts.dry_run:
+        ready = ollama.responses_api_ready()
+        if ready is False:
+            raise CommandFailedError(
+                "--harness codex needs Ollama's Responses API (/v1/responses), which requires "
+                f"Ollama >= {'.'.join(map(str, ollama.MIN_OLLAMA_FOR_RESPONSES))}. Upgrade Ollama "
+                "(brew upgrade ollama) and re-run, or run `danno doctor`."
+            )
     out_dir = opts.out_dir or Path(".danno-bench") / now.strftime("%Y-%m-%dT%H-%M-%S")
     report = BenchReport(out_dir=out_dir, dry_run=opts.dry_run)
 
@@ -725,9 +733,9 @@ def run_bench(
 
     # One chmod-600 env-file PER model variant: shared base lines (the HUT's loop-ceiling
     # knobs, opencode's OLLAMA_BASE_URL, danno.toml [env], --env/--env-file) plus each cloud
-    # variant's provider auth (occ: OPENAI_BASE_URL/OPENAI_API_KEY; claurst/opencode: the raw
-    # {api_key_env}). Built from the capture-rewritten config so occ cloud dials the --capture
-    # proxy, and up front so a missing cloud key / claude token fails loud before provisioning.
+    # variant's provider auth (claurst/opencode: the raw {api_key_env}). Built from the
+    # capture-rewritten config so a cloud dial reaches the --capture proxy, and up front so a
+    # missing cloud key / claude token fails loud before provisioning.
     env_files = _build_bench_env_files(cfg_for_run, opts, variants)
     try:
         report.verdicts += _run_aider(
@@ -829,6 +837,16 @@ def run_bench_harnesses(
     jsons = [r.results_json for r in reports if r.results_json is not None]
     if jsons:
         payloads = load_reports(jsons)
+        # A harness whose whole model matrix was N/A (every model on a backend kind it can't
+        # dial) produces an empty column. The per-model drop was already named loudly by
+        # `dialable_variants`; call out the empty column too so the merged grid's blank is
+        # read as a reasoned N/A, never a silent gap (Working Rule 8).
+        for p in payloads:
+            if not p.get("results"):
+                log_warn(
+                    f"harness '{p.get('harness', '?')}' ran no cells — its entire model matrix "
+                    f"is N/A for it (nothing it can dial); its comparison column is empty."
+                )
         root.mkdir(parents=True, exist_ok=True)
         md = root / "report.md"
         html = root / "report.html"

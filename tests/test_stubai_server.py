@@ -231,7 +231,7 @@ def test_drip_streams_content_over_time(tmp_path: Path) -> None:
 
 
 def test_drip_delays_the_whole_buffered_body_when_not_streaming(tmp_path: Path) -> None:
-    # A non-streaming client (e.g. occ under CLAUDE_CODE_STREAMING=0) waits for the whole
+    # A non-streaming client (e.g. a harness with streaming disabled) waits for the whole
     # body, so the drip cost must land as one late delivery — otherwise the wall-clock gate
     # is silently untestable for non-streaming harnesses.
     with _stub([Drip("one two three four", tokens_per_s=20.0)], tmp_path) as stub:

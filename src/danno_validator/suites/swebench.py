@@ -27,6 +27,7 @@ from typing import Literal
 
 from book_em_danno.core.exec import Runner
 from danno_validator.driver import capture_exec
+from danno_validator.suites.base import GradeResult, grade_report
 
 # HuggingFace datasets-server rows endpoint (host-side; the host has normal egress).
 _ROWS_API = "https://datasets-server.huggingface.co/rows"
@@ -214,15 +215,16 @@ class SwebenchTask:
         script = f"set -e; cd {qd}; git checkout -f {commit}; git clean -fd; git apply {qp}"
         capture_exec(runner, sandbox, script, check=True)
 
-    def grade(self, runner: Runner, sandbox: str, workspace: Path) -> bool:
-        """True iff every FAIL_TO_PASS + PASS_TO_PASS node id passes (exit 0)."""
+    def grade(self, runner: Runner, sandbox: str, workspace: Path) -> GradeResult:
+        """Passed iff every FAIL_TO_PASS + PASS_TO_PASS node id passes (exit 0)."""
         nodes = (*self.fail_to_pass, *self.pass_to_pass)
         if not nodes:
-            return False
+            return GradeResult(passed=False, report="no FAIL_TO_PASS/PASS_TO_PASS node ids")
         q = shlex.quote(str(self.workspace_dir(workspace)))
         ids = " ".join(map(shlex.quote, nodes))
         cmd = f"cd {q} && python3 -m pytest -q -p no:cacheprovider {ids}"
-        return capture_exec(runner, sandbox, cmd, check=False).ok
+        res = capture_exec(runner, sandbox, cmd, check=False)
+        return GradeResult(passed=res.ok, report=grade_report(res.stdout, res.stderr))
 
 
 def task_from_row(row: dict, *, deps: str = "offline-wheel-cache") -> SwebenchTask:
