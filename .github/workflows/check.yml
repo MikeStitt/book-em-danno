@@ -16,10 +16,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Every leg sets `shell` explicitly: steps below reference
+          # ${{ matrix.shell }}, and GitHub validates a step's shell for ALL
+          # matrix legs at compile time (regardless of `if:`), so an undefined
+          # (empty) shell on any leg fails the whole workflow to compile.
           - os: ubuntu-latest
             label: linux
+            shell: bash
           - os: macos-latest
             label: macos
+            shell: bash
           - os: windows-latest
             label: windows-cmd
             shell: cmd
@@ -59,7 +65,7 @@ jobs:
         # so version drift surfaces in CI instead of hiding. On Windows this pulls
         # pywinpty (the pexpect line is POSIX-only via its marker), so drift in the
         # platform-split pty deps also surfaces here.
-        shell: ${{ matrix.shell || 'bash' }}
+        shell: ${{ matrix.shell }}
         run: uv sync --locked --all-extras --dev
 
       - name: ninja check (Unix)
