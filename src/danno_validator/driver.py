@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from book_em_danno.commands import sandbox_cli
+from book_em_danno.commands import sandbox, sandbox_cli
 from book_em_danno.core.exec import CaptureResult, CommandFailedError, Runner
 
 # Dropped into every validator-owned workspace; the gate that lets reset_workspace
@@ -413,7 +413,7 @@ def opencode_run(
     """
     cmd = [*sandbox_cli.base(), "exec"]
     if workspace is not None:
-        cmd += ["-w", str(workspace)]
+        cmd += ["-w", sandbox.container_path(Path(workspace))]
     env_flags, exec_env = sandbox_cli.env_forward_argv(env_file)
     cmd += env_flags
     cmd += [name, "opencode", "run", OPENCODE_FORMAT_FLAG, "json"]
@@ -655,7 +655,7 @@ def claude_run(
     """
     cmd = [*sandbox_cli.base(), "exec"]
     if workspace is not None:
-        cmd += ["-w", str(workspace)]
+        cmd += ["-w", sandbox.container_path(Path(workspace))]
     env_flags, exec_env = sandbox_cli.env_forward_argv(env_file)
     cmd += env_flags
     cmd += [name, "claude", CLAUDE_PRINT_FLAG, CLAUDE_FORMAT_FLAG, CLAUDE_FORMAT_VALUE, "--verbose"]

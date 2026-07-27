@@ -95,7 +95,7 @@ def _teardown_sandbox(name: str) -> None:
 
 
 def _run_opencode(target: Path, prompt: str, *, timeout: int) -> subprocess.CompletedProcess[bytes]:
-    trigger = f"cd {target} && opencode run -m ollama/{MODEL} {prompt!r}"
+    trigger = f"cd {sandbox.container_path(target)} && opencode run -m ollama/{MODEL} {prompt!r}"
     return subprocess.run(
         ["sbx", "exec", NAME, "bash", "-lc", trigger],
         capture_output=True,

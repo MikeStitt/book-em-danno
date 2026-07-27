@@ -154,7 +154,7 @@ def test_npm_plugins_install_in_container(tmp_path: Path) -> None:
         # the VM that `provision` stopped. (`provision` also creates via sbx here — the
         # slow-test conftest clears DANNO_SANDBOX_CLI, so auto-detect picks the installed
         # sbx; a sandbox is invisible to the OTHER backend's exec — "VM not found".)
-        trigger = f"cd {target} && opencode agent list"
+        trigger = f"cd {sandbox.container_path(target)} && opencode agent list"
         subprocess.run(
             ["sbx", "exec", name, "bash", "-lc", trigger],
             capture_output=True,
