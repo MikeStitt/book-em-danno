@@ -3,6 +3,12 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.17.3] - 2026-07-27
+
+### CI
+
+- Rename gate workflows/jobs (fast-gates/fast-checks, slow-sandbox-tui-gates/slow-sandbox-tui-checks) + loud web-GUI skip/run banners
+
 ## [0.17.1] - 2026-07-27
 
 ### CI
