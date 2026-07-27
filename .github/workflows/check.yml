@@ -20,10 +20,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Labels match the contexts the `protect-main` ruleset requires
+          # (`check (ubuntu-latest)` / `check (macos-latest)`) — the job name is
+          # `check (${{ matrix.label }})`, so renaming these would leave the
+          # required checks forever "waiting for status to be reported".
           - os: ubuntu-latest
-            label: linux
+            label: ubuntu-latest
           - os: macos-latest
-            label: macos
+            label: macos-latest
           - os: windows-latest
             label: windows-cmd
             shell: cmd
