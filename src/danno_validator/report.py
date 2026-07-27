@@ -233,7 +233,8 @@ def write_level0_page(
     path.write_text(
         render_level0_page(
             result, opencode_jsonc_excerpt=opencode_jsonc_excerpt, level1=level1, level2=level2
-        )
+        ),
+        encoding="utf-8",
     )
     return path
 
@@ -325,5 +326,5 @@ def write_sweep_report(results: list[SweepResult], out_dir: Path) -> tuple[list[
     ]
     index = render_matrix_index(results, [p.stem for p in page_paths])
     index_path = out_dir / "index.md"
-    index_path.write_text(index)
+    index_path.write_text(index, encoding="utf-8")
     return page_paths, index_path

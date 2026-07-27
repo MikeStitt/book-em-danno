@@ -3,6 +3,97 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.17.3] - 2026-07-27
+
+### CI
+
+- Rename gate workflows/jobs (fast-gates/fast-checks, slow-sandbox-tui-gates/slow-sandbox-tui-checks) + loud web-GUI skip/run banners
+
+## [0.17.1] - 2026-07-27
+
+### Bug Fixes
+
+- *(tests)* Make the non-TUI slow suite pass on Windows
+
+### CI
+
+- Skip the full check matrix on version-only PRs (job-level gate)
+- Fix version-only skip to gate STEPS, not the matrix job (unblocks release PRs)
+
+### Features
+
+- *(ollama)* Add DANNO_OLLAMA_HOST_URL to route danno at a remote/LAN Ollama
+
+## [0.17.0] - 2026-07-27
+
+### Bug Fixes
+
+- *(exec)* Kill the process tree on Windows in the runaway-gate watchdog
+- *(validator)* Write report/menu/results files as UTF-8
+- *(sandbox)* Render container paths for the Linux VM on Windows hosts
+- *(claurst)* Select the release asset by container arch
+
+### CI
+
+- *(check)* Add Windows legs (cmd + PowerShell) to the gate matrix
+- *(check)* Give every matrix leg an explicit shell (fix startup failure)
+- *(check)* Select Windows shell via if:, not matrix in shell: (fix startup)
+- *(check)* Keep required context names (ubuntu-latest/macos-latest)
+
+### Documentation
+
+- *(tui-plan)* Symmetric host-pty design + fix-as-you-find platform policy
+- *(tui-plan)* Add §8.1-8.4 implementation spec; move smoke gate P0.5→P1.5
+- *(tui)* Windows-lane handoff order (P1.5→P2→P3) + Mac-Ollama-on-LAN note
+- *(tui)* Record Windows-native results (opencode+codex green, claurst blocked)
+- *(tui)* Record WSL2 results (opencode+codex green via reused PexpectDriver)
+- *(claurst)* Work order to build+publish claurst-linux-x86_64.tar.gz (Windows lane)
+- *(tui)* Record claurst A/H/C green on all lanes after publishing x86_64 artifact
+
+### Features
+
+- *(bench)* Harness-capability filter — speakable matrix (Layers 0–3)
+- *(harness)* Add compacts capability flag (P0 of TUI-test plan)
+- *(tui)* Implement WinPtyDriver (pywinpty/ConPTY) and pin pywinpty
+
+### Testing
+
+- *(tui)* Interactive @slow @sandbox launch suite + PexpectDriver (P1 [mac])
+
+## [0.16.3] - 2026-07-19
+
+### Bug Fixes
+
+- *(bench)* Exclude inert-backend models from OpenAI-compatible harness matrix
+- *(stubai)* Emit full Responses SSE lifecycle so codex parses the stub
+- *(bench)* Provision by harness NAME, not sandbox image (claurst/codex crash)
+- *(#99,#106)* Forward cloud keys by NAME (sbx env-file no-op) + data-driven claurst provider + surface claurst stderr errors
+- *(bench)* Filter capture targets by model backend
+
+### Documentation
+
+- *(bench)* Aider Polyglot example configs + per-test difficulty research
+- *(bench)* Pin the claude reference row to Claude Opus 4.8
+- DoR for formal Harness API + self-discovering registry
+- *(codex)* Phase-0 live spike findings (relay-free, config/argv/schema pinned)
+
+### Features
+
+- *(bench)* Multi-language Aider Polyglot (go/rust/cpp/java/js) + 2-attempt protocol
+- *(harness)* Add codex as a fourth registered harness (Responses API) + #97 wire parity
+
+### Refactor
+
+- *(harnesses)* Add Harness registry + rewire danno_validator dispatch
+- *(config)* Derive override-harness key set from the registry
+- *(harnesses)* Drive sandbox interactive-launch off the registry
+- *(harness)* Drop the occ harness (Phase 2)
+
+### Testing
+
+- *(slow)* Probe the resolved sandbox runtime, not the standalone docker daemon
+- *(bench)* Guard provision is called by harness NAME, not sandbox image
+
 ## [0.16.1] - 2026-07-16
 
 ### Bug Fixes

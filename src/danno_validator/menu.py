@@ -225,5 +225,5 @@ def write_menu(
     agent assignments and feed it straight back to `danno`.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(render_menu(config, results, verified=verified))
+    out_path.write_text(render_menu(config, results, verified=verified), encoding="utf-8")
     return out_path

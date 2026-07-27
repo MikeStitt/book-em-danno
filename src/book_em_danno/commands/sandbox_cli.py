@@ -7,8 +7,10 @@ sandbox argv is built through here so no other module hardcodes the CLI.
 
 Command mapping (verified against `sbx v0.34.0`, 2026-07-09):
 - create / exec / ls / stop / rm / version: same verbs, different prefix
-  (`base()`). `sbx exec` matches `docker exec` flags (`--env-file`, `-i`, `-t`,
-  `-w`, ...), and the agents `shell`/`claude`/`opencode`/`codex` exist under both.
+  (`base()`). `sbx exec` matches `docker exec` flags (`-e`, `-i`, `-t`, `-w`, ...),
+  and the agents `shell`/`claude`/`opencode`/`codex` exist under both. NOTE: sbx
+  v0.34.0's `exec --env-file` is a SILENT NO-OP (docker's works) — danno forwards env
+  by name instead; see `env_forward_argv`.
 - network egress differs — see `policy_allow_argv`.
 """
 
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from pathlib import Path
 
 _ENV = "DANNO_SANDBOX_CLI"
 
@@ -60,6 +63,46 @@ def base() -> list[str]:
 def label() -> str:
     """Human label for the active backend (doctor / logs), e.g. `sbx`."""
     return " ".join(base())
+
+
+def env_forward_argv(
+    env_file: str | os.PathLike[str] | None,
+) -> tuple[list[str], dict[str, str] | None]:
+    """Expand a danno env-file into `exec -e NAME` flags + the subprocess env carrying
+    the values. Returns `([], None)` for no env-file (inherit the caller's env unchanged).
+
+    WHY NOT `--env-file`: sbx v0.34.0's `exec --env-file` is a SILENT NO-OP — it injects
+    nothing into the sandbox (empirically confirmed: even a fresh var comes back unset) —
+    AND sbx bakes cloud-key placeholders (`OPENAI_API_KEY=proxy-managed`, one per provider)
+    into every sandbox for its own egress-proxy key-swap. danno routes cloud traffic through
+    its OWN capture proxy, so that swap never fires and the placeholder reaches the provider
+    verbatim → 401 (issue #99). A value-less `-e NAME` tells sbx to read NAME from THIS
+    process's environment, which OVERRIDES the baked placeholder — so danno forwards each
+    var by NAME and supplies the values through the exec subprocess's own environment,
+    keeping every secret VALUE off the argv (host `ps`/shell history). Only the var name
+    rides the command line.
+
+    The returned env is the FULL `os.environ` merged with the file's values (never just the
+    overlay), because `subprocess` `env=` REPLACES the environment rather than extending it —
+    the sandbox CLI still needs `PATH` and friends.
+
+    Legacy `docker sandbox exec` honored `--env-file`, but forwarding by name works there
+    too (docker `-e NAME` reads from the caller env identically), so this path is uniform
+    across both backends.
+    """
+    if env_file is None:
+        return [], None
+    values: dict[str, str] = {}
+    for raw in Path(env_file).read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        values[key.strip()] = val
+    if not values:
+        return [], None
+    flags = [tok for key in values for tok in ("-e", key)]
+    return flags, {**os.environ, **values}
 
 
 def availability_argv() -> list[str]:

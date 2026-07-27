@@ -22,7 +22,10 @@ def test_install_claurst_curl_fetches_release() -> None:
     # Resume + retry survives the egress proxy truncating the CDN transfer (curl 18).
     assert "--retry-all-errors" in script
     assert "-C -" in script
-    assert claurst.CLAURST_RELEASE_URL in script
+    # The release base is pinned; the per-arch asset is selected from the container's uname.
+    assert claurst.CLAURST_RELEASE_BASE in script
+    assert 'case "$(uname -m)" in' in script  # arch chosen at install time, not hardcoded
+    assert "claurst-linux-${_arch}.tar.gz" in script
     assert "npm" not in script  # npm's installer bypasses the proxy and fails
     assert "~/.local/bin/claurst" in script
     assert "command -v claurst" in script  # idempotent skip-if-present-and-working
@@ -36,8 +39,9 @@ def test_install_claurst_curl_fetches_release() -> None:
 
 
 def test_install_claurst_release_url_pins_version() -> None:
-    assert claurst.CLAURST_VERSION in claurst.CLAURST_RELEASE_URL
-    assert claurst.CLAURST_RELEASE_URL.endswith("claurst-linux-aarch64.tar.gz")
+    assert claurst.CLAURST_VERSION in claurst.CLAURST_RELEASE_BASE
+    # The base ends at the version tag; the arch-specific tarball name is appended in the shell.
+    assert claurst.CLAURST_RELEASE_BASE.endswith(f"v{claurst.CLAURST_VERSION}")
 
 
 def test_authed_claurst_run_binds_env_file_and_forwards(monkeypatch: pytest.MonkeyPatch) -> None:

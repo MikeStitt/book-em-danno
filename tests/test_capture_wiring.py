@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from book_em_danno.capture.wiring import (
+    CaptureBinding,
     capture_allow_hosts,
     plan_capture,
     uncaptured_cloud_refs,
@@ -91,6 +92,21 @@ def test_capture_allow_hosts_appends_a_hole_per_proxy(tmp_path: Path) -> None:
     hosts = capture_allow_hosts(targets, ("localhost:11434",))
     assert hosts[0] == "localhost:11434"
     assert set(hosts[1:]) == {f"localhost:{t.proxy_port}" for t in targets}
+
+
+def test_bench_capture_targets_match_model_and_keep_local_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ports = iter((9100, 9200))
+    monkeypatch.setattr("book_em_danno.capture.wiring._free_port", lambda: next(ports))
+    _, targets = plan_capture(_cfg(), tmp_path / "caps")
+    binding = CaptureBinding(targets=tuple(targets), capture_dir=tmp_path / "caps")
+
+    local = binding.permutation_targets(suite="aider", task_id="task", model="ollama/gemma3")
+    cloud = binding.permutation_targets(suite="aider", task_id="task", model="nv/nvidia/x")
+
+    assert [target.backend_name for target in local] == ["ollama"]
+    assert {target.backend_name for target in cloud} == {"ollama", "nv"}
 
 
 def test_uncaptured_cloud_refs_flags_raw_refs() -> None:

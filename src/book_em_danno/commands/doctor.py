@@ -115,6 +115,23 @@ def run_doctor(*, ollama_host_url: str = ollama.DEFAULT_HOST_URL) -> int:
         ok=exposure is None,
     )
 
+    # The codex harness dials Ollama's experimental Responses endpoint (/v1/responses),
+    # which needs Ollama >= 0.13.3. A WARN, not a hard failure: it only matters if you run
+    # `danno bench --harness codex`; the other harnesses are unaffected. None (Ollama
+    # unreachable) is already covered by the required reachability check above.
+    responses_ready = ollama.responses_api_ready(ollama_host_url)
+    if responses_ready is not None:
+        _report(
+            tally,
+            required=False,
+            label="Ollama exposes the Responses API (needed by --harness codex)",
+            fix=(
+                f"upgrade Ollama to >= {'.'.join(map(str, ollama.MIN_OLLAMA_FOR_RESPONSES))} "
+                "(brew upgrade ollama) — only needed for the codex harness"
+            ),
+            ok=responses_ready,
+        )
+
     console.print()
     if tally.failed:
         console.print(

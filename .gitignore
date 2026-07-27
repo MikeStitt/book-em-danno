@@ -324,3 +324,9 @@ temp/
 
 # danno --capture wire-traffic recordings (sandbox start/shell default dir)
 .danno/
+
+# Interactive-TUI spike workspaces (scratch)
+.spike-*-ws/
+
+# local screenshot shared in-session, not part of the repo
+picture.png

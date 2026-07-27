@@ -154,9 +154,9 @@ def test_load_benchmarks_parses_both_suites(tmp_path: Path) -> None:
 
 def test_load_benchmarks_parses_harnesses_list(tmp_path: Path) -> None:
     p = tmp_path / "benchmarks.toml"
-    p.write_text("harnesses = ['occ', 'claurst', 'claude']\n[swebench]\nenabled = true\n")
+    p.write_text("harnesses = ['opencode', 'claurst', 'claude']\n[swebench]\nenabled = true\n")
     cfg = load_benchmarks(p)
-    assert cfg.harnesses == ["occ", "claurst", "claude"]
+    assert cfg.harnesses == ["opencode", "claurst", "claude"]
 
 
 def test_load_benchmarks_default_harnesses_is_empty(tmp_path: Path) -> None:
@@ -166,7 +166,7 @@ def test_load_benchmarks_default_harnesses_is_empty(tmp_path: Path) -> None:
 
 def test_load_benchmarks_unknown_harness_fails_loud(tmp_path: Path) -> None:
     p = tmp_path / "benchmarks.toml"
-    p.write_text("harnesses = ['occ', 'gpt5']\n")
+    p.write_text("harnesses = ['opencode', 'gpt5']\n")
     with pytest.raises(ValueError, match="invalid benchmarks config"):
         load_benchmarks(p)
 
@@ -217,12 +217,12 @@ def test_gates_resolution_precedence_is_per_field_model_over_harness_over_global
     r2 = resolve_gates(gates, harness="opencode", model="qwen")
     assert r2.max_turns == 40  # harness layer
     # a different harness + no model override: global floor.
-    r3 = resolve_gates(gates, harness="occ", model="qwen")
+    r3 = resolve_gates(gates, harness="claurst", model="qwen")
     assert r3.max_turns == 50  # global
 
 
 def test_gates_resolution_none_disables_a_gate() -> None:
-    r = resolve_gates(GatesConfig(timeout_s=None), harness="occ", model=None)
+    r = resolve_gates(GatesConfig(timeout_s=None), harness="claurst", model=None)
     assert r.timeout_s is None  # disabled → watchdog skips it
     assert r.max_turns == 50
 

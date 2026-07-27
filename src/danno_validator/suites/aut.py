@@ -2,8 +2,10 @@
 
 Maps a `--harness` name to (1) the prebuilt sandbox image to provision, (2) the
 post-provision install step (claurst is not a prebuilt image), and (3) the `TurnFn`
-that drives a turn. Keeps the opencode/claurst split in one place so `danno bench`
-and `danno validate` resolve the HUT identically.
+that drives a turn. These are now thin lookups into the harness registry
+(`danno_validator.harnesses`), so `danno bench` and `danno validate` resolve the
+HUT identically and adding a harness needs no edit here — the registry owns the
+per-harness behavior (see `.docs/plan-harness-api.md`).
 """
 
 from __future__ import annotations
@@ -12,39 +14,25 @@ from pathlib import Path
 
 from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import Runner
-from danno_validator import baseline, claurst, occ
-from danno_validator.driver import Turn, TurnFn, opencode_run
-from danno_validator.sweep import DEFAULT_RUN_AGENT
-
-CLAURST = "claurst"
-OCC = "occ"
-CLAUDE = "claude"
+from danno_validator import harnesses
+from danno_validator.driver import CodexProvider, TurnFn
 
 
 def resolve_image(harness: str) -> str:
     """The prebuilt sandbox image to `docker sandbox create` for this HUT."""
-    if harness == CLAURST:
-        return claurst.CLAURST_SANDBOX_IMAGE
-    if harness == OCC:
-        return occ.OCC_SANDBOX_IMAGE
-    if harness == CLAUDE:
-        return CLAUDE  # prebuilt `docker sandbox create claude` image
-    return harness
+    return harnesses.get(harness).sandbox_image
 
 
 def install_harness(
     runner: Runner, sandbox: str, harness: str, config: DannoConfig | None = None
 ) -> None:
-    """Post-provision install for HUTs that aren't a prebuilt image (claurst, occ).
+    """Post-provision install for HUTs that aren't a prebuilt image (claurst).
 
-    `config` carries the `[env]` pins (occ's OCC_REPO/OCC_REF) through to the
-    installer; claurst has a fixed install-time version and ignores it. opencode and
-    claude are prebuilt images with nothing to install post-provision (no-op).
+    `config` carries the `[env]` pins through to the installer; harnesses with a
+    fixed install-time version (claurst) or nothing to install (opencode/claude,
+    prebuilt images) ignore it / no-op.
     """
-    if harness == CLAURST:
-        claurst.install_claurst(runner, sandbox)
-    elif harness == OCC:
-        occ.install_occ(runner, sandbox, config)
+    harnesses.get(harness).install(runner, sandbox, config)
 
 
 def run_turn_for(
@@ -53,57 +41,29 @@ def run_turn_for(
     capture_port: int | None = None,
     model_override: str | None = None,
     max_turns: int | None = None,
+    codex_provider: CodexProvider | None = None,
 ) -> TurnFn:
     """The `TurnFn` driving one turn for this HUT, with `env_file` bound.
 
     claurst sets up its Ollama relay per turn; opencode is pinned to its read-write
-    run-agent (`DEFAULT_RUN_AGENT`, "build") so benchmark edits actually land. claude is
-    the cloud *reference* HUT — its `env_file` carries auth (never None; built loud
-    from a host token) and it selects its model via `--model` (see `model_override`).
-    `capture_port` (from `--capture`) points occ/claurst's in-VM Ollama relay at the
-    recording proxy so their local wire traffic is captured; opencode captures via its
-    rewritten backend `base_url` instead and ignores it, as does the cloud claude row.
-    `model_override` is the harness's own model selector, set by `_harness_dial_ref`:
-    for occ/claurst the normalized ref they dial (when the reported matrix ref's backend
-    segment isn't the literal `ollama` their locality check expects); for claude the
-    `--model` value (an inert-backend model's tag); None → the harness default.
+    run-agent ("build") so benchmark edits land. claude is the cloud *reference* HUT —
+    its `env_file` carries auth (never None; built loud from a host token) and it
+    selects its model via `--model` (`model_override`). `capture_port` (from
+    `--capture`) points a dialer's in-VM Ollama relay at the recording proxy;
+    `model_override` is the harness's own model selector (`Harness.dial_ref`): for a
+    dialer the normalized ref it dials, for claude the `--model` value; None → the
+    harness default. Harnesses that don't use a given argument ignore it.
+
+    `codex_provider` is the CLOUD dial target for a cloud codex row (`Harness.dial_provider`);
+    it is passed to the `TurnFn` factory ONLY when non-None, so the other harnesses' factories
+    (which don't accept the kwarg) are never handed it — a local codex row and every non-codex
+    harness resolve to None and take the ordinary path.
     """
-    if harness == CLAURST:
-        return claurst.authed_claurst_run(
-            env_file, capture_port=capture_port, model_override=model_override, max_turns=max_turns
-        )
-    if harness == OCC:
-        return occ.authed_occ_run(
-            env_file, capture_port=capture_port, model_override=model_override, max_turns=max_turns
-        )
-    if harness == CLAUDE:
-        if env_file is None:  # defensive: bench builds the auth file before dispatch
-            raise ValueError("claude HUT requires an auth env-file (host token)")
-        # `model_override` carries the per-variant claude `--model` value (an inert
-        # model's tag, resolved by `_harness_dial_ref`); None → claude's install default.
-        return baseline._authed_claude_run(env_file, model_override)
-
-    def run(
-        runner: Runner,
-        name: str,
-        prompt: str,
-        *,
-        session: str | None = None,
-        agent: str | None = None,
-        model: str | None = None,
-        skip_permissions: bool = False,
-        workspace: str | Path | None = None,
-    ) -> Turn:
-        return opencode_run(
-            runner,
-            name,
-            prompt,
-            session=session,
-            agent=DEFAULT_RUN_AGENT,
-            model=model,
-            skip_permissions=skip_permissions,
-            workspace=workspace,
-            env_file=env_file,
-        )
-
-    return run
+    kwargs: dict[str, object] = {
+        "capture_port": capture_port,
+        "model_override": model_override,
+        "max_turns": max_turns,
+    }
+    if codex_provider is not None:
+        kwargs["codex_provider"] = codex_provider
+    return harnesses.get(harness).turn_fn(env_file, **kwargs)

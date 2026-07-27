@@ -20,7 +20,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-UPSTREAM = "http://127.0.0.1:11434"
+from book_em_danno.commands import ollama
+
+# Forward to the same Ollama danno targets, so DANNO_OLLAMA_HOST_URL (a remote/LAN host)
+# routes the proxy too; defaults to local Ollama when unset.
+UPSTREAM = ollama.resolve_host_url()
 
 
 def _read_captures(path: Path) -> list[dict[str, Any]]:
