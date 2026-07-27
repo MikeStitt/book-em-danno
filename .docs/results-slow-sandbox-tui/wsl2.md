@@ -12,7 +12,7 @@ native **ext4** (`~/book-em-danno`, cloned from the Windows working tree), not `
 |----------|---|---|---|----------------|---------------|--------------------|
 | opencode | ✅ | ✅ | ✅ | works          | —             | A/H/C green via PexpectDriver (`1 passed in 211s`). |
 | codex    | ✅ | ✅ | ✅ | works          | —             | Green; compaction request on the wire. |
-| claurst  | ❌ | — | — | breaks         | danno-product → **blocked on release artifact** | Same root cause as Windows-native: the WSL2 sandbox VM is **x86_64**, and the `MikeStitt/claurst` `v0.1.6-danno1` release ships only `claurst-linux-aarch64.tar.gz`. danno is arch-aware (fixed in-lane) and fails **loud (404)** on the missing x86_64 asset. See [windows-powershell.md](windows-powershell.md). Re-run once a `claurst-linux-x86_64.tar.gz` build is published. |
+| claurst  | ✅ | ✅ | `0` | works          | —             | A/H/`0` green via PexpectDriver (`1 passed in 301s`, 2026-07-27), once the x86_64 release artifact was published (see [windows-powershell.md](windows-powershell.md) → "claurst x86_64 release artifact"). WSL2 is x86_64, so the arch-aware installer selects `x86_64` and fetches `claurst-linux-x86_64.tar.gz` with no 404. `0` = compacts=False change-detector asserting `summarization_requests == 0`. |
 
 ## Runtime / environment notes (P3 prerequisites, plan §10.3)
 
