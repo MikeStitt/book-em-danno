@@ -1,4 +1,4 @@
-name: check
+name: fast-gates
 
 on:
   push:
@@ -6,22 +6,22 @@ on:
   pull_request:
 
 jobs:
-  # A cheap pre-gate that decides whether the expensive `check` matrix needs to run for
-  # THIS pull request. Its whole purpose: a release PR that changes ONLY the version
+  # A cheap pre-gate that decides whether the expensive `fast-checks` matrix needs to run
+  # for THIS pull request. Its whole purpose: a release PR that changes ONLY the version
   # number should merge fast, without paying the full multi-OS gate — the full suite
   # re-runs post-merge via the `push: main` trigger below.
   #
-  # WHY A JOB-LEVEL SKIP (not `on: paths-ignore`): `check (ubuntu-latest)` /
-  # `check (macos-latest)` are REQUIRED by the `protect-main` ruleset. A required check
-  # whose workflow is filtered out by `paths-ignore` never reports a status, so the PR
-  # sits "Expected — waiting for status" FOREVER (blocked). But a required job SKIPPED
+  # WHY A JOB-LEVEL SKIP (not `on: paths-ignore`): `fast-checks (ubuntu-latest)` /
+  # `fast-checks (macos-latest)` are REQUIRED by the `protect-main` ruleset. A required
+  # check whose workflow is filtered out by `paths-ignore` never reports a status, so the
+  # PR sits "Expected — waiting for status" FOREVER (blocked). But a required job SKIPPED
   # via `if:` posts a neutral/skipped conclusion that SATISFIES the required check. So we
   # always let the workflow trigger, and skip the heavy matrix conditionally instead.
   changes:
     name: changes (version-only detector)
     runs-on: ubuntu-latest
     outputs:
-      # 'true'  -> run the full check matrix (any real code/deps change, OR any doubt).
+      # 'true'  -> run the full fast-checks matrix (any real code/deps change, OR any doubt).
       # 'false' -> version-only PR; the matrix is skipped (and its required contexts
       #            report skipped == satisfied).
       code_touched: ${{ steps.decide.outputs.code_touched }}
@@ -74,19 +74,41 @@ jobs:
           fi
 
           echo "code_touched=${code_touched}" >> "$GITHUB_OUTPUT"
-          echo "::notice::code_touched=${code_touched} (true = run full check matrix; false = version-only skip)"
 
-  check:
+          # LOUD verdict — render a banner on the run-summary page AND drop an annotation,
+          # in BOTH cases, so a human reading the run page never has to guess whether the
+          # gate ran or was skipped.
+          if [ "$code_touched" = "false" ]; then
+            {
+              echo "## ⏭️ fast-gates SKIPPED — version-only change"
+              echo ""
+              echo "This PR changes only the \`version\` line in \`pyproject.toml\` (plus the derived"
+              echo "\`uv.lock\` / \`CHANGELOG.md\`). The \`fast-checks\` gate is **skipped** so the release"
+              echo "merges fast; it re-runs in full post-merge on \`main\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=fast-gates SKIPPED (version-only)::Only the version bump changed — skipping lint/format/typecheck/tests on all legs; they re-run post-merge on main."
+          else
+            {
+              echo "## ▶️ fast-gates RUNNING — real change"
+              echo ""
+              echo "This PR changes more than the version bump, so the full \`fast-checks\` gate"
+              echo "(lint + format + typecheck + fast tests) runs on **all four OS legs**."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=fast-gates RUNNING (real change)::Changes beyond the version bump detected — running the full gate on all four OS legs."
+          fi
+
+  fast-checks:
     # This job ALWAYS runs (its heavy STEPS are what get skipped on a version-only PR
     # — see the per-step `if:`s below). It must NOT be skipped at the job level: a
-    # skipped MATRIX job never expands, so GitHub reports one `check (${{ matrix.label
-    # }})` = skipped under the UNEXPANDED name and the per-leg contexts
-    # `check (ubuntu-latest)` / `check (macos-latest)` that `protect-main` REQUIRES are
-    # never posted — the PR then waits on them forever (BLOCKED). Keeping the job
-    # running expands the matrix, so all four required contexts are reported; on a
-    # version-only PR they go green in seconds because every install/gate step is
-    # skipped. (The "skip a required job -> satisfied" trick works only for a NON-matrix
-    # job whose own name IS the required context.)
+    # skipped MATRIX job never expands, so GitHub reports one
+    # `fast-checks (${{ matrix.label }})` = skipped under the UNEXPANDED name and the
+    # per-leg contexts `fast-checks (ubuntu-latest)` / `fast-checks (macos-latest)` that
+    # `protect-main` REQUIRES are never posted — the PR then waits on them forever
+    # (BLOCKED). Keeping the job running expands the matrix, so all four required contexts
+    # are reported; on a version-only PR they go green in seconds because every
+    # install/gate step is skipped. (The "skip a required job -> satisfied" trick works
+    # only for a NON-matrix job whose own name IS the required context — see
+    # slow-sandbox-tui-gates.yml, which IS a single job and so skips at the job level.)
     #
     # `!cancelled()` (instead of the implicit `success()`) forces this `if:` to be
     # evaluated even when `changes` failed, so a detector-job failure still runs the
@@ -96,7 +118,7 @@ jobs:
     if: ${{ !cancelled() }}
     # One leg per OS, plus BOTH Windows shells (cmd + Windows PowerShell) so the
     # gate is exercised through each shell's quoting/PATH surface — the same two
-    # shells the slow-sandbox-tui Windows lane runs under. The runners have no
+    # shells the slow-sandbox-tui-gates Windows lane runs under. The runners have no
     # Docker sandbox or Ollama, so only the fast gate (`-m "not slow"`) runs here;
     # the live @slow/@sandbox tiers are validated in the Windows lane, not in CI.
     #
@@ -108,9 +130,9 @@ jobs:
       matrix:
         include:
           # Labels match the contexts the `protect-main` ruleset requires
-          # (`check (ubuntu-latest)` / `check (macos-latest)`) — the job name is
-          # `check (${{ matrix.label }})`, so renaming these would leave the
-          # required checks forever "waiting for status to be reported".
+          # (`fast-checks (ubuntu-latest)` / `fast-checks (macos-latest)`) — the job
+          # name is `fast-checks (${{ matrix.label }})`, so renaming these would leave
+          # the required checks forever "waiting for status to be reported".
           - os: ubuntu-latest
             label: ubuntu-latest
           - os: macos-latest
@@ -121,14 +143,26 @@ jobs:
           - os: windows-latest
             label: windows-powershell
             shell: powershell
-    name: check (${{ matrix.label }})
+    name: fast-checks (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     # Every heavy step below is gated on `needs.changes.outputs.code_touched != 'false'`
     # — it runs unless the detector POSITIVELY reported version-only ('false'). An empty
     # value (detector job failed) is `!= 'false'`, so the gate still runs: fail-safe.
-    # `checkout` stays ungated so the job always has a first step and reports cleanly.
+    # `checkout` and the announce step stay ungated so the job always has a first step and
+    # reports cleanly.
     steps:
       - uses: actions/checkout@v4
+
+      # LOUD per-leg verdict — annotate every leg with whether it actually gates this PR
+      # or was skipped, so the reason is visible on the leg itself (not only the detector).
+      - name: Announce
+        shell: bash
+        run: |
+          if [ "${{ needs.changes.outputs.code_touched }}" = "false" ]; then
+            echo "::notice title=fast-checks (${{ matrix.label }}) SKIPPED::version-only change — no lint/format/typecheck/tests run on this leg."
+          else
+            echo "::notice title=fast-checks (${{ matrix.label }}) RUNNING::running lint + format + typecheck + fast tests."
+          fi
 
       - name: Install uv
         if: ${{ needs.changes.outputs.code_touched != 'false' }}

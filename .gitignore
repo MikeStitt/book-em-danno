@@ -327,3 +327,6 @@ temp/
 
 # Interactive-TUI spike workspaces (scratch)
 .spike-*-ws/
+
+# local screenshot shared in-session, not part of the repo
+picture.png
