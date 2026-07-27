@@ -107,6 +107,65 @@ def _parse_model_show(body: dict) -> dict:
     return out
 
 
+# Minimum Ollama version exposing the experimental OpenAI Responses endpoint
+# (`/v1/responses`), which codex requires (Phase-0 spike — `.docs/codex-integration.md`).
+MIN_OLLAMA_FOR_RESPONSES = (0, 13, 3)
+
+
+def ollama_version(host_url: str = DEFAULT_HOST_URL, *, timeout: float = 2.0) -> str | None:
+    """The running Ollama server's version string from `/api/version` (e.g. "0.30.6"), or
+    None if unreachable/unparseable — best-effort."""
+    try:
+        with urllib.request.urlopen(f"{host_url}/api/version", timeout=timeout) as resp:
+            body = json.loads(resp.read())
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        return None
+    v = body.get("version")
+    return str(v) if v else None
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    """Parse a dotted version ("0.30.6") to an int tuple for comparison; non-numeric
+    trailing parts (e.g. "-rc1") are dropped."""
+    parts: list[int] = []
+    for chunk in version.split("."):
+        num = ""
+        for ch in chunk:
+            if ch.isdigit():
+                num += ch
+            else:
+                break
+        if not num:
+            break
+        parts.append(int(num))
+    return tuple(parts)
+
+
+def responses_api_ready(host_url: str = DEFAULT_HOST_URL, *, timeout: float = 2.0) -> bool | None:
+    """True iff this Ollama exposes the OpenAI Responses endpoint codex needs.
+
+    Prefers the direct endpoint probe (a POST `/v1/responses` with an empty body returns
+    400 — endpoint exists, body rejected — not 404, per the Phase-0 spike), and falls back
+    to the `/api/version` gate (≥ 0.13.3). Returns None only when Ollama is unreachable, so
+    the caller can distinguish "no Ollama" from "Ollama too old"."""
+    if not reachable(host_url, timeout=timeout):
+        return None
+    try:
+        req = urllib.request.Request(
+            f"{host_url}/v1/responses", data=b"{}", headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status != 404
+    except urllib.error.HTTPError as exc:
+        return exc.code != 404  # 400 (bad body) means the endpoint exists
+    except (urllib.error.URLError, OSError):
+        pass
+    version = ollama_version(host_url, timeout=timeout)
+    if version is None:
+        return None
+    return _version_tuple(version) >= MIN_OLLAMA_FOR_RESPONSES
+
+
 def ensure_model(runner: Runner, tag: str, *, host_url: str = DEFAULT_HOST_URL) -> list[str]:
     """Advise (and under --apply, run) `ollama pull <tag>`. `ollama pull` is itself
     idempotent — an already-present model is a fast no-op."""

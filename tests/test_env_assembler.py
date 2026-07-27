@@ -39,13 +39,13 @@ def test_harness_default_is_the_base_layer() -> None:
 def test_env_literal_overrides_harness_default() -> None:
     out = _as_dict(
         sandbox.assemble_harness_env(
-            _cfg({"OCC_REF": "v1.2.3"}),
-            harness_defaults=["OCC_REF=main"],
+            _cfg({"CLAURST_REF": "v1.2.3"}),
+            harness_defaults=["CLAURST_REF=main"],
             env_pairs=[],
             env_files=[],
         )
     )
-    assert out["OCC_REF"] == "v1.2.3"
+    assert out["CLAURST_REF"] == "v1.2.3"
 
 
 def test_host_env_overrides_env_literal_for_declared_key(
@@ -53,26 +53,26 @@ def test_host_env_overrides_env_literal_for_declared_key(
 ) -> None:
     # An exported host var beats the committed [env] value — but ONLY because the key
     # is declared in [env] (the operator opted into managing it).
-    monkeypatch.setenv("OCC_REF", "abc123")
+    monkeypatch.setenv("CLAURST_REF", "abc123")
     out = _as_dict(
         sandbox.assemble_harness_env(
-            _cfg({"OCC_REF": "v1.2.3"}), harness_defaults=[], env_pairs=[], env_files=[]
+            _cfg({"CLAURST_REF": "v1.2.3"}), harness_defaults=[], env_pairs=[], env_files=[]
         )
     )
-    assert out["OCC_REF"] == "abc123"
+    assert out["CLAURST_REF"] == "abc123"
 
 
 def test_cli_pair_overrides_everything(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OCC_REF", "host-value")
+    monkeypatch.setenv("CLAURST_REF", "host-value")
     out = _as_dict(
         sandbox.assemble_harness_env(
-            _cfg({"OCC_REF": "toml-value"}),
-            harness_defaults=["OCC_REF=default-value"],
-            env_pairs=["OCC_REF=cli-value"],
+            _cfg({"CLAURST_REF": "toml-value"}),
+            harness_defaults=["CLAURST_REF=default-value"],
+            env_pairs=["CLAURST_REF=cli-value"],
             env_files=[],
         )
     )
-    assert out["OCC_REF"] == "cli-value"
+    assert out["CLAURST_REF"] == "cli-value"
 
 
 def test_bare_host_var_does_not_clobber_harness_default(

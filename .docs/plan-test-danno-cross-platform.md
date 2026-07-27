@@ -120,6 +120,37 @@ Native = cmd/PowerShell; WSL2/Linux = POSIX baseline (expected OK unless noted).
 hard breaks = **H1, H4, H10**; pure-Python surfaces (import, `--help`, config-gen) likely
 work even there.
 
+### Windows-native live-lane findings + fixes (2026-07-22, Windows 11 x86_64, sbx v0.34.0)
+
+Empirical run of the `@slow @sandbox` TUI suite + `ninja check` on Windows-native. Each break
+was **fixed in-lane** (not backlogged); the fast gate is green (683 passed) and opencode+codex
+pass A/H/C on both cmd and PowerShell. Records:
+[`results-slow-sandbox-tui/windows-powershell.md`](results-slow-sandbox-tui/windows-powershell.md),
+[`windows-cmd.md`](results-slow-sandbox-tui/windows-cmd.md).
+
+- **H3/H6 confirmed — container paths rendered host-native.** `-w`, the relocated
+  `HOME`/`XDG_CONFIG_HOME`/`CLAUDE_CONFIG_DIR`/`CLAURST_MODELS_PATH` env vars, and Claude's
+  trust key were built with `str(Path)` → backslashes/drive into the **Linux** VM. Verified:
+  `sbx exec -w C:/…` fails the OCI `chdir`; the direct-mount is MSYS-style (`C:\a` → `/c/a`).
+  **Fixed:** `commands/sandbox.py` `container_path()` (`fix(sandbox): render container paths…`).
+  The sbx *mount source* (create) correctly stays the host path.
+- **New — arch hardcode (extends the inventory).** `danno_validator/claurst.py` fetched
+  `claurst-linux-aarch64.tar.gz`; the Windows VM is **x86_64** → exec-format crash. **Fixed:**
+  arch chosen from container `uname -m` (`fix(claurst): select the release asset by container
+  arch`). **Residual (NOT danno code):** no `claurst-linux-x86_64.tar.gz` in the `MikeStitt/
+  claurst` `v0.1.6-danno1` release → x86_64 install fails **loud (404)** until it is published.
+- **New — non-UTF-8 file writes (H6-adjacent).** Validator report/menu/`results.json` used
+  `write_text()` w/o encoding → cp1252 `UnicodeEncodeError` on `✓`/`✗` (~22 failures).
+  **Fixed:** explicit `encoding="utf-8"` (`fix(validator): write … as UTF-8`).
+- **New — runaway-gate watchdog (H1-adjacent process hazard).** `core/exec.py` killed via
+  POSIX `killpg`/`SIGKILL` (absent on Windows; mypy-red + a runaway grandchild survived).
+  **Fixed:** `sys.platform`-guarded `taskkill /F /T` tree-kill (`fix(exec): kill the process
+  tree on Windows…`).
+- **H10 confirmed — no `ninja`.** The gate was run as its four underlying `uv run` commands
+  (ruff / ruff format --check / mypy / pytest); mypy on win32 also surfaced the `killpg` break.
+- **Not-a-hazard (verified OK):** `-e NAME` env-forward (issue #99), `host.docker.internal:
+  11455` egress from the VM, and the sbx direct-mount all work Windows-native.
+
 ## Prerequisites
 
 **Model server (Mac, or local on Linux/mac):** `OLLAMA_HOST=0.0.0.0:11434 ollama serve`;

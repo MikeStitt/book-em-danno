@@ -93,7 +93,7 @@ workflow       = "plan-agent"
 planningAgents = ["plan"]
 
 # --- Agent-general environment: KEY=value injected into the env-file of every
-#     config-driven harness (opencode/claurst/occ — NOT claude). Values MAY embed
+#     config-driven harness (opencode/claurst — NOT claude). Values MAY embed
 #     {env:VAR} host indirection, resolved at launch (see assemble_harness_env). ---
 [env]
 CLAUDE_CODE_API_TIMEOUT = "3600000"

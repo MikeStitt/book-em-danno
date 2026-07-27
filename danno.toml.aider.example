@@ -1,0 +1,107 @@
+# danno.toml — the MODEL matrix for the Aider Polyglot sweep.
+#
+# `danno bench` sweeps every [models.*] entry below against every harness in the
+# adjacent benchmarks.toml (claude / occ / opencode / claurst), for every selected
+# exercise. `danno install` also derives .opencode/opencode.jsonc from this file.
+#
+# Five models: three local (Ollama) + one paid cloud (OpenAI o4-mini) + Claude Opus
+# 4.8 (the claude reference harness's own model, on an inert backend). The OpenAI-
+# compatible harnesses sweep the first four; `claude` sweeps only the inert opus row.
+# Filter to a subset with `danno bench --only <model-name>` (repeatable).
+
+[project]
+target = "."
+
+[defaults]
+default_agent = "build"
+profile       = "hybrid"
+
+[sandbox]
+agent_home = "per-project"
+
+# --- Backends -------------------------------------------------------------------
+
+# Local Ollama on the host. occ/claurst dial it via the relay; opencode via the
+# proxy rewrite. Use http://localhost:11434/v1 for host-only (unsandboxed) runs.
+[backends.danno-ollama]
+kind     = "ollama"
+base_url = "http://host.docker.internal:11434/v1"
+
+# OpenAI cloud (o4-mini). The key is NEVER written here — inject it at launch:
+#   danno bench -C . --env OPENAI_API_KEY=sk-...
+[backends.danno-openai]
+kind        = "openai"
+base_url    = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+# Native @ai-sdk/openai (Responses API) beats the hardcoded openai-compatible SDK.
+[backends.danno-openai.overrides.opencode]
+npm = "@ai-sdk/openai"
+
+# Inert backend for the `claude` reference harness: Claude Code talks straight to
+# api.anthropic.com with its own OAuth token and picks the model via `--model`, so
+# danno emits no base_url/api_key here. A model on this backend is swept ONLY by the
+# `claude` harness (its `tag` becomes `--model`); the OpenAI-compatible harnesses
+# (occ/opencode/claurst) never dial it.
+[backends.anthropic]
+kind = "inert"
+
+# --- Models ---------------------------------------------------------------------
+# Local models MUST support tool-calling. context_budget = OpenCode's client-side
+# window belief; output_limit = tokens reserved for the reply (required on
+# ollama/openai models). The two qwen tags carry a 65k context in their modelfile.
+
+# Stock Qwen3-Coder-Next weights — NO Unsloth tool-call fixes (blob 30e51a7c).
+# Baseline for measuring what the tool-call fixes buy on the same architecture.
+[models.qwen3-coder-next-65k]
+backend          = "danno-ollama"
+tag              = "qwen3-coder-next-65k"
+context_budget   = 65536
+output_limit     = 8192
+reasoning_effort = "none"          # qwen3-coder is non-thinking; skip the trace for speed
+
+# Unsloth UD-Q4_K_M build — carries the tool-calling fixes (blob 3a47167a).
+# Expect cleaner tool calls than the stock build above on the same tasks.
+[models.qwen3-coder-next-ud-q4-65k]
+backend          = "danno-ollama"
+tag              = "qwen3-coder-next-ud-q4-65k"
+context_budget   = 65536
+output_limit     = 8192
+reasoning_effort = "none"
+
+# Google Gemma 4 26B (MLX quant). reasoning_effort omitted — gemma4 surfaces a
+# reasoning field and does not take a "none" toggle; forward nothing.
+[models.gemma4-26b-mlx]
+backend        = "danno-ollama"
+tag            = "gemma4:26b-mlx"
+context_budget = 32000
+output_limit   = 8192
+
+# OpenAI o4-mini (paid cloud reasoning model). max_completion_tokens must be large
+# enough to hold the reasoning tokens + reply, or the completion truncates before
+# the answer. gates.model."o4-mini" in benchmarks.toml keeps its cost bounded.
+[models.o4-mini]
+backend          = "danno-openai"
+tag              = "o4-mini"
+context_budget   = 200000
+output_limit     = 8192
+reasoning_effort = "high"
+
+  [models.o4-mini.overrides.opencode.options]
+  max_completion_tokens = 200000
+
+# Claude Opus 4.8 — the `claude` reference harness's model. On the inert backend so
+# `tag` is passed verbatim to Claude Code's `--model`; this pins the reference row to
+# opus 4.8 instead of Claude Code's install default. No context_budget/output_limit/
+# overrides (forbidden on an inert backend — danno emits no config block for it).
+[models.claude-opus-4-8]
+backend = "anthropic"
+tag     = "claude-opus-4-8"
+
+# --- Agent -> model. bench sweeps all [models] above regardless; these set the
+#     interactive/default routing. build+plan default to the Unsloth qwen (best
+#     local tool-caller); leave o4-mini out of the default so an interactive
+#     session never spends cloud tokens by accident. ---
+[agents]
+build = "qwen3-coder-next-ud-q4-65k"
+plan  = "qwen3-coder-next-ud-q4-65k"

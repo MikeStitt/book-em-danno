@@ -5,9 +5,9 @@ coding tool — a **harness** — **inside a Docker Sandbox**. It supports **fou
 harnesses**:
 
 - [OpenCode](https://opencode.ai) — the local/cloud multi-agent coding tool,
-- [Claude Code](https://github.com/anthropics/claude-code) — Anthropic's official CLI,
+- [Claude Code](https://github.com/anthropics/claude-code) — Anthropic's official CLI (the cloud reference harness),
 - [claurst](https://github.com/Kuberwastaken/claurst) — a pure-Rust Claude-Code clone, and
-- [occ](https://github.com/MikeStitt/open-claude-code) (open-claude-code) — a Node/ESM Claude-Code clone.
+- [Codex](https://github.com/openai/codex) — OpenAI's Codex CLI, driven over the Responses API against local Ollama (needs Ollama ≥ 0.13.3).
 
 danno serves **two purposes** with these harnesses:
 
@@ -310,6 +310,23 @@ battery / benchmark suites opencode runs (local Ollama, and NVIDIA NIM for valid
 cloud matrix). `danno benchmark` compares opencode config trees and stays opencode-only —
 use `danno bench --harness claurst` to benchmark claurst across models instead.
 
+**codex** — `--harness codex` runs [OpenAI's Codex CLI](https://github.com/openai/codex) as
+a first-class danno harness on **local Ollama**. Codex speaks **only** the OpenAI **Responses
+API** (`/v1/responses`), which Ollama exposes from **0.13.3** onward — so `danno doctor` WARNs
+and `danno bench --harness codex` **fails loud** up front on an older Ollama rather than
+erroring mid-sweep. Like claurst, codex is **relay-free**: it honors the sandbox egress proxy
+and dials the host Ollama at `host.docker.internal` directly. codex isn't a prebuilt image, so
+danno hosts it in the `shell` sandbox and `npm install`s the pinned CLI on first provision.
+danno writes codex's `config.toml` **inline** at launch (a VM-local `CODEX_HOME`) rather than
+persisting one, so the interactive and headless paths are identically self-contained. Pick the
+model with `-m <name>` (a danno.toml Ollama `[models]` entry — codex is local-Ollama only so
+far; a cloud ref is rejected loudly).
+
+```bash
+danno sandbox start --apply --harness codex -m gpt-oss   # interactive, a local [models] entry
+danno bench --harness codex                              # benchmark codex across your models
+```
+
 `danno bench` **pre-warms** each local Ollama model right before its cells run (one `/v1`
 call, so it loads the exact runner the harness reuses) so the first cell's latency reflects
 the harness loop, not a one-off cold model load. Warming is **just-in-time per model block,
@@ -476,9 +493,10 @@ max_completion_tokens = 1000000                 # reasoningEffort (if any) is pr
 
 The element ↔ generated-region map: `[backends.<n>]` → the provider block; `[models.<n>]`
 → the model entry; `[agents.<n>]` → the agent block; `[defaults]` → opencode.jsonc's
-top-level keys. Harnesses: **`opencode`** and **`claurst`** (occ has no config file;
-`claude` has no generated config). The harness sub-key is a **closed set** — a typo or an
-out-of-scope harness (e.g. `occ`) **fails loud**; the payload below it is open. danno prints
+top-level keys. Harnesses: **`opencode`** and **`claurst`** (codex writes an inline
+`config.toml` at launch, not a persisted config; `claude` has no generated config). The
+harness sub-key is a **closed set** — a typo or an out-of-scope harness **fails loud**;
+the payload below it is open. danno prints
 a **loud notice** for every override in effect (naming which of its own values you
 superseded) and an extra warning if an override touches an egress/auth-sensitive key
 (`baseURL`/`apiKey`) — overriding those can weaken the sandbox contract.
@@ -486,8 +504,9 @@ superseded) and an extra warning if an override touches an egress/auth-sensitive
 ### Agent-general environment (`[env]`)
 
 The top-level `[env]` table injects `KEY = "value"` into the chmod-600 env-file of every
-**config-driven** harness (opencode/claurst/occ — **not** claude, whose auth is injected
-separately). Values may embed `{env:VAR}` host indirection, resolved at launch; precedence
+**config-driven** harness (opencode/claurst — **not** claude, whose auth is injected
+separately; codex reads its config from an inline `config.toml`, not the env-file). Values
+may embed `{env:VAR}` host indirection, resolved at launch; precedence
 is `--env (CLI) > exported host var > [env] literal > harness default`.
 
 ```toml
@@ -937,8 +956,8 @@ edit `danno.toml`, not the generated file (see
     or target a suite:
     - `tests/slow/test_gates_termination_matrix.py` — the runaway-gate
       termination matrix: clean-finish / runaway / token-budget / wall-clock /
-      post-kill recovery × opencode / occ / claurst. Narrow to one harness with
-      `-k occ` (each cell provisions its own sandbox, so run one at a time).
+      post-kill recovery × opencode / claurst / codex. Narrow to one harness with
+      `-k codex` (each cell provisions its own sandbox, so run one at a time).
     - `tests/slow/test_gates_lifecycle.py` + `tests/slow/test_gates_drift.py` —
       the `danno bench` CLI end-to-end: `--no-save-captures` writes no capture bytes,
       provenance + the per-row gate fields (`termination` / `rounds` / `gate` /

@@ -157,7 +157,7 @@ def test_provision_clones_checks_out_applies_patch_installs(
 def test_grade_runs_fail_and_pass_node_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     seen = _stub_capture(monkeypatch, grade_ok=True)
     t = task_from_row(_ROW)
-    assert t.grade(Runner(), "box", tmp_path) is True
+    assert t.grade(Runner(), "box", tmp_path).passed is True
     cmd = seen[-1]
     assert "pytest" in cmd
     assert "t_test.py::test_a" in cmd and "t_test.py::test_c" in cmd
@@ -165,7 +165,7 @@ def test_grade_runs_fail_and_pass_node_ids(tmp_path: Path, monkeypatch: pytest.M
 
 def test_grade_fail_when_tests_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_capture(monkeypatch, grade_ok=False)
-    assert task_from_row(_ROW).grade(Runner(), "box", tmp_path) is False
+    assert task_from_row(_ROW).grade(Runner(), "box", tmp_path).passed is False
 
 
 def test_reset_restores_base_and_reapplies_patch(

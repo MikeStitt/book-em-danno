@@ -242,9 +242,9 @@ class CaptureBinding:
         return self.capture_dir.parent / "transcripts" / seg.with_suffix(".md")
 
     def ollama_port(self, config: DannoConfig) -> int | None:
-        """The proxy port for the first Ollama backend, or None — this is the relay
-        upstream (`capture_port`) for occ/claurst local turns, which forward their
-        in-VM Ollama traffic through the capture proxy instead of straight to the host."""
+        """The proxy port for the first Ollama backend, or None — this is the
+        upstream (`capture_port`) for claurst local turns, which forward their
+        Ollama traffic through the capture proxy instead of straight to the host."""
         for target in self.targets:
             backend = config.backends.get(target.backend_name)
             if isinstance(backend, OllamaBackend):

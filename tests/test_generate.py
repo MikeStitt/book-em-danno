@@ -6,16 +6,22 @@ from pathlib import Path
 import pytest
 
 from book_em_danno.config.generate import (
+    CODEX_CLOUD_PROVIDER_ID,
+    CODEX_PROVIDER_ID,
     Action,
     agent_markdown_collisions,
     claurst_agent_ref,
     claurst_agent_unmapped_warnings,
     claurst_model_ref,
     claurst_provider_id,
+    codex_config_toml,
+    codex_model_ref,
+    codex_provider_id,
     generate,
     generate_claurst,
     generate_claurst_agents,
     generate_claurst_models,
+    generate_codex_config,
     generate_md,
     model_ref,
     render_config,
@@ -327,7 +333,9 @@ def test_claurst_model_ref_uses_claurst_provider() -> None:
     assert claurst_provider_id(cfg, "glm") == "nvidia"
 
 
-def test_claurst_models_unmapped_openai_host_raises() -> None:
+def test_claurst_models_unmapped_openai_host_is_config_error() -> None:
+    # An undeclared generic openai host is a CONFIG error (declare claurst_provider),
+    # not an unbuilt-feature NotImplementedError (#106).
     cfg = DannoConfig(
         defaults=Defaults(default_agent="build"),
         backends={
@@ -340,8 +348,52 @@ def test_claurst_models_unmapped_openai_host_raises() -> None:
         },
         agents={"build": "m"},
     )
-    with pytest.raises(NotImplementedError, match="no claurst provider mapping"):
+    with pytest.raises(ValueError, match="claurst_provider"):
         generate_claurst_models(cfg)
+
+
+def test_claurst_declared_provider_makes_openai_self_describing() -> None:
+    # A DECLARED claurst_provider (#106): the provider id comes from the field (no host
+    # inference), and the overlay entry is self-describing — carrying the endpoint
+    # (`api`) and the key's env-var NAME (`env`), but never the secret VALUE.
+    cfg = DannoConfig(
+        defaults=Defaults(default_agent="build"),
+        backends={
+            "danno-openai": OpenAIBackend(
+                kind="openai",
+                base_url="https://api.openai.com/v1",
+                api_key_env="OPENAI_API_KEY",
+                claurst_provider="openai",
+            )
+        },
+        models={
+            "o4-mini": Model(
+                backend="danno-openai", tag="o4-mini", context_budget=200000, output_limit=8192
+            )
+        },
+        agents={"build": "o4-mini"},
+    )
+    assert claurst_provider_id(cfg, "o4-mini") == "openai"
+    assert claurst_model_ref(cfg, "o4-mini") == "openai/o4-mini"
+    overlay = generate_claurst_models(cfg)
+    prov = overlay["openai"]
+    assert prov["api"] == "https://api.openai.com/v1"
+    assert prov["env"] == ["OPENAI_API_KEY"]  # the var NAME danno both injects and reads
+    assert "o4-mini" in prov["models"]
+    # Security invariant: the secret value is never serialized into the overlay.
+    assert "sk-" not in json.dumps(overlay)
+
+
+def test_claurst_inferred_providers_overlay_unchanged() -> None:
+    # Inferred ollama/nvidia keep their catalog-driven entry (env: [], no `api`) — the
+    # #106 self-describing block only fires for a DECLARED provider, so existing configs
+    # are byte-identical.
+    cfg = _claurst_cfg()
+    overlay = generate_claurst_models(cfg)
+    assert overlay["ollama"]["env"] == []
+    assert "api" not in overlay["ollama"]
+    assert overlay["nvidia"]["env"] == []
+    assert "api" not in overlay["nvidia"]
 
 
 def test_claurst_models_llamacpp_is_stubbed() -> None:
@@ -762,15 +814,6 @@ def _strip_comments(text: str) -> str:
     return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("//"))
 
 
-def test_no_occ_config_generation_exists() -> None:
-    # occ takes its model via `-m` and, after danno's detectProvider patch, routes purely
-    # on OPENAI_BASE_URL presence — no models.dev-shaped registry or settings.json like
-    # claurst needs. This asserts that design of record: no occ config-gen was added.
-    import book_em_danno.config.generate as gen
-
-    assert not [name for name in dir(gen) if name.startswith("generate_occ")]
-
-
 def test_render_config_agent_steps_sets_run_agent_steps() -> None:
     # Runaway-gate polite-stop: `agent_steps` writes opencode's `steps` onto the named agent.
     doc = json.loads(_strip_comments(render_config(_example(), agent_steps={"build": 40})))
@@ -780,3 +823,125 @@ def test_render_config_agent_steps_sets_run_agent_steps() -> None:
 def test_render_config_omits_agent_steps_by_default() -> None:
     doc = json.loads(_strip_comments(render_config(_example())))
     assert "steps" not in doc.get("agent", {}).get("build", {})
+
+
+# --- codex config.toml (Phase 3) -----------------------------------------------------
+
+
+def _codex_local_cfg() -> DannoConfig:
+    """A minimal config with one local Ollama model, for codex config tests."""
+    return DannoConfig(
+        defaults=Defaults(default_agent="build"),
+        backends={
+            "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1")
+        },
+        models={
+            "coder": Model(
+                backend="ollama",
+                tag="gpt-oss:20b",
+                context_budget=32000,
+                output_limit=8192,
+            )
+        },
+        agents={"build": "coder"},
+    )
+
+
+def _codex_cloud_cfg() -> DannoConfig:
+    """A config whose model sits on an OpenAI-compatible cloud backend (codex not wired)."""
+    return DannoConfig(
+        defaults=Defaults(default_agent="build"),
+        backends={
+            "nvidia": OpenAIBackend(
+                kind="openai",
+                base_url="https://integrate.api.nvidia.com/v1",
+                api_key_env="NVIDIA_API_KEY",
+            )
+        },
+        models={
+            "big": Model(
+                backend="nvidia",
+                tag="nvidia/some-model",
+                context_budget=128000,
+                output_limit=8192,
+            )
+        },
+        agents={"build": "big"},
+    )
+
+
+def test_codex_provider_id_local_is_custom_not_reserved() -> None:
+    # `ollama` is a RESERVED codex built-in provider id — danno must name its own.
+    assert codex_provider_id(_codex_local_cfg(), "coder") == CODEX_PROVIDER_ID
+    assert CODEX_PROVIDER_ID != "ollama"
+
+
+def test_codex_provider_id_cloud_is_custom_not_reserved() -> None:
+    # Layer 3: an OpenAI-compatible cloud backend → the custom `openai-danno` provider id
+    # (never the reserved built-in `openai`), so danno can attach base_url + env_key.
+    assert codex_provider_id(_codex_cloud_cfg(), "big") == CODEX_CLOUD_PROVIDER_ID
+    assert CODEX_CLOUD_PROVIDER_ID != "openai"
+
+
+def test_codex_config_toml_cloud_provider() -> None:
+    # Layer 3: a cloud row writes the `openai-danno` provider block with base_url, env_key
+    # (the NAME only — key value is injected via env-file), and a mapped reasoning knob.
+    toml = codex_config_toml(
+        "https://api.openai.com/v1",
+        env_key="OPENAI_API_KEY",
+        provider_id=CODEX_CLOUD_PROVIDER_ID,
+        provider_name="OpenAI",
+        reasoning_effort="high",
+    )
+    assert f'model_provider = "{CODEX_CLOUD_PROVIDER_ID}"' in toml
+    assert f"[model_providers.{CODEX_CLOUD_PROVIDER_ID}]" in toml
+    assert 'base_url = "https://api.openai.com/v1"' in toml
+    assert 'wire_api = "responses"' in toml
+    assert 'env_key = "OPENAI_API_KEY"' in toml
+    assert 'model_reasoning_effort = "high"' in toml
+
+
+def test_codex_model_ref_is_bare_tag() -> None:
+    # codex selects the model WITHIN its provider, so the ref is the bare tag (no prefix).
+    assert codex_model_ref(_codex_local_cfg(), "coder") == "gpt-oss:20b"
+
+
+def test_codex_model_ref_requires_tag() -> None:
+    cfg = _codex_local_cfg()
+    cfg.models["coder"].tag = ""
+    with pytest.raises(ValueError):
+        codex_model_ref(cfg, "coder")
+
+
+def test_codex_config_toml_minimal() -> None:
+    toml = codex_config_toml("http://host.docker.internal:11434/v1")
+    assert f'model_provider = "{CODEX_PROVIDER_ID}"' in toml
+    assert f"[model_providers.{CODEX_PROVIDER_ID}]" in toml
+    assert 'base_url = "http://host.docker.internal:11434/v1"' in toml
+    assert 'wire_api = "responses"' in toml
+    # `ollama` is reserved — the custom provider id must not be the bare reserved name.
+    assert "[model_providers.ollama]" not in toml
+    # No model/env_key pinned in the minimal (headless) form.
+    assert "model = " not in toml
+    assert "env_key" not in toml
+
+
+def test_codex_config_toml_with_model_and_env_key() -> None:
+    toml = codex_config_toml(
+        "http://host.docker.internal:11434/v1", model="gpt-oss:20b", env_key="NVIDIA_API_KEY"
+    )
+    assert 'model = "gpt-oss:20b"' in toml
+    assert 'env_key = "NVIDIA_API_KEY"' in toml
+
+
+def test_generate_codex_config_writes_then_unchanged(tmp_path: Path) -> None:
+    home = tmp_path / "codex-home"
+    base = "http://host.docker.internal:11434/v1"
+    first = generate_codex_config(_codex_local_cfg(), home, base_url=base, apply=True)
+    assert first[0].action is Action.WROTE
+    dest = home / "config.toml"
+    assert dest.is_file()
+    assert 'wire_api = "responses"' in dest.read_text(encoding="utf-8")
+    # A second identical generate is UNCHANGED (danno owns the file wholesale).
+    second = generate_codex_config(_codex_local_cfg(), home, base_url=base, apply=True)
+    assert second[0].action is Action.UNCHANGED

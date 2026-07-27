@@ -9,11 +9,11 @@ asserted via `sbx exec`.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+from sandbox_runtime import sandbox_runtime_down
 
 from book_em_danno.commands import ollama, sandbox, tools
 from book_em_danno.config.generate import generate
@@ -27,11 +27,10 @@ TOOL_CAPABLE_MODEL = "gemma4:26b"
 
 ollama_down = not ollama.reachable()
 # The end-to-end tests below drive the sandbox directly (not via the danno CLI) and
-# speak only `sbx`, so they need `sbx` on PATH with its Docker runtime up; otherwise
-# they skip cleanly on a cold host.
-sbx_down = shutil.which("sbx") is None or (
-    subprocess.run(["docker", "info"], capture_output=True, check=False).returncode != 0
-)
+# speak only `sbx`, so they need `sbx` on PATH with its runtime up. The probe resolves
+# the backend as danno does and checks that runtime (`sbx ls`), NOT the standalone
+# `docker` daemon — which can be down on an sbx host while sbx itself is up.
+sbx_down = sandbox_runtime_down()
 
 # An ADOS checkout is needed for the opencode+ados permutation; skip if absent.
 try:

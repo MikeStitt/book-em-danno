@@ -50,10 +50,13 @@ CLAURST_SANDBOX_IMAGE = "shell"
 # `-danno<N>` suffix lives only in this pin and the release tag, never in `--version`;
 # the install skip is therefore gated on a danno-written stamp file, not `--version`.
 CLAURST_VERSION = "0.1.6-danno1"
-CLAURST_RELEASE_URL = (
-    f"https://github.com/MikeStitt/claurst/releases/download/"
-    f"v{CLAURST_VERSION}/claurst-linux-aarch64.tar.gz"
-)
+# Per-tag release asset base; the Linux target arch is chosen at install time from the
+# CONTAINER's `uname -m`, NOT hardcoded — the Docker Desktop microVM is aarch64 on Apple
+# Silicon but x86_64 on an Intel/AMD host (e.g. a Windows or Linux x86_64 machine). The wrong
+# arch would download fine but fail `exec format error` at runtime, so the asset name is built
+# in the shell from `uname -m` (see `install_claurst`). NOTE: the release must publish a tarball
+# for each arch danno runs on — a missing `claurst-linux-<arch>.tar.gz` fails loud with a 404.
+CLAURST_RELEASE_BASE = f"https://github.com/MikeStitt/claurst/releases/download/v{CLAURST_VERSION}"
 # Records which danno pin is installed, so the skip can distinguish the fork build
 # (and future `-danno<N>` bumps) from upstream / an older binary that all report the
 # same bare `--version`. Lives under the per-user data dir inside the sandbox HOME.
@@ -92,6 +95,14 @@ def install_claurst(runner: Runner, sandbox: str) -> list[str]:
         "&& claurst --version >/dev/null 2>&1 "
         "&& { claurst --version; exit 0; }; "
         "set -e; "
+        # Pick the release asset for the CONTAINER's arch (aarch64 on Apple Silicon, x86_64 on
+        # an Intel/AMD host such as Windows/Linux x86_64). Fail loud on an arch we don't publish
+        # rather than downloading a binary that only fails exec-format at first run.
+        'case "$(uname -m)" in '
+        "x86_64|amd64) _arch=x86_64 ;; "
+        "aarch64|arm64) _arch=aarch64 ;; "
+        '*) echo "claurst: unsupported container arch $(uname -m)" >&2; exit 1 ;; '
+        "esac; "
         # claurst links libasound.so.2; install the ALSA runtime (t64 on Ubuntu 24.04+,
         # plain libasound2 on older) ONLY if it's missing. Skipping apt when the lib is
         # already present keeps an upgrade from re-running `apt-get update`, whose index
@@ -114,7 +125,7 @@ def install_claurst(runner: Runner, sandbox: str) -> list[str]:
         'd=$(mktemp -d); cd "$d"; '
         # Resume + retry: the egress proxy truncates the CDN transfer intermittently.
         "curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 -C - "
-        f"-o claurst.tgz {CLAURST_RELEASE_URL}; "
+        f'-o claurst.tgz "{CLAURST_RELEASE_BASE}/claurst-linux-${{_arch}}.tar.gz"; '
         "tar xzf claurst.tgz; mkdir -p ~/.local/bin; "
         'install -m 0755 "$(find . -name claurst -type f | head -1)" ~/.local/bin/claurst; '
         # Stamp the danno pin so the next launch's skip recognises this exact fork build.

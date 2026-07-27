@@ -145,7 +145,7 @@ def test_merge_grid_across_harnesses() -> None:
     a = _payload(_row())
     a["harness"] = "opencode"
     b = _payload(_row(passed=False, verdict="FailureClass.STALL"))
-    b["harness"] = "occ"
+    b["harness"] = "claurst"
     md = report.merge_markdown([a, b])
     assert "aider/python/grade-school" in md
     assert "✓" in md and "✗" in md

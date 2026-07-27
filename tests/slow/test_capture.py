@@ -15,7 +15,6 @@ on the host — only via `sbx exec`.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -24,6 +23,7 @@ import pytest
 # tests/slow has no __init__.py, so under pytest's prepend import mode this dir is
 # on sys.path and a plain import resolves the sibling helper.
 from capture_proxy import capture_proxy, read_captures
+from sandbox_runtime import sandbox_runtime_down
 
 from book_em_danno.commands import ollama, sandbox
 from book_em_danno.config.generate import generate
@@ -53,10 +53,10 @@ def _model_present(tag: str) -> bool:
 ollama_down = not ollama.reachable()
 model_absent = not _model_present(MODEL)
 # This test drives the sandbox directly (not via the danno CLI) and speaks only `sbx`,
-# so it needs `sbx` on PATH with its Docker runtime up; it skips cleanly otherwise.
-sbx_down = shutil.which("sbx") is None or (
-    subprocess.run(["docker", "info"], capture_output=True, check=False).returncode != 0
-)
+# so it needs `sbx` on PATH with its runtime up. The probe resolves the backend as danno
+# does and checks that runtime (`sbx ls`), NOT the standalone `docker` daemon — which can
+# be down on an sbx host while sbx itself is up.
+sbx_down = sandbox_runtime_down()
 
 
 def _config(*, reasoning: bool) -> DannoConfig:

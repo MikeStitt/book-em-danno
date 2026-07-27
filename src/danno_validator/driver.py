@@ -94,10 +94,6 @@ CLAURST_MAX_TURNS_FLAG = "--max-turns"
 # was outdated for the fork build.)
 CLAURST_RELAY_FREE_OLLAMA_HOST = "http://host.docker.internal:11434"
 
-# The in-VM relay (listens on 127.0.0.1:11434, re-issues THROUGH the egress proxy) is now
-# used ONLY by occ-on-legacy / occ-under-capture (see `occ_run` + `OCC_LOCAL_OPENAI_ENV`);
-# claurst is fully relay-free (W3 + W6). See `_claurst_script`.
-
 
 def _claurst_ollama_host(capture_port: int | None) -> str:
     """The relay-free `OLLAMA_HOST` for a LOCAL claurst turn (W3 + W6). Normally host
@@ -109,139 +105,73 @@ def _claurst_ollama_host(capture_port: int | None) -> str:
     return f"http://host.docker.internal:{capture_port}"
 
 
-# Under `--capture` the relay forwards to a host-side recording proxy (capture/proxy.py)
-# instead of host Ollama directly, so claurst's wire traffic is recorded with the same
-# machinery as opencode's. The launcher sets this env var to the proxy's host port; the
-# relay reads it and defaults to the real Ollama port when absent (the non-capture case).
-CLAURST_RELAY_UPSTREAM_ENV = "DANNO_RELAY_UPSTREAM_PORT"
+# The host Ollama port a claurst `--capture` session records through: the capture proxy
+# re-originates to `host.docker.internal:11434` (host-side `127.0.0.1:11434`). Named for
+# historical parity with the (now-removed) in-VM relay; consumed by
+# `sandbox._claurst_relay_capture_port`.
 CLAURST_RELAY_DEFAULT_UPSTREAM_PORT = 11434
 
-# How long the relay waits on a single upstream read before giving up (seconds). Slow
-# local models (large context, tiny batch → minutes-long prefill on a non-streaming POST)
-# can exceed the old hardcoded 600s, so the relay reads `DANNO_RELAY_TIMEOUT` (default
-# 3600 = 60 min; <= 0 disables the timeout). `_claurst_script` sets it on the launch line
-# but honors an inherited value first, so `danno.toml [env]`/an exported var can override.
-# Shared by claurst + occ (both ride `_claurst_script`); only ever raises a ceiling.
-CLAURST_RELAY_TIMEOUT_ENV = "DANNO_RELAY_TIMEOUT"
-CLAURST_RELAY_DEFAULT_TIMEOUT = 3600
+# Codex headless flags (Phase-0 spike, codex-cli 0.144.5, 2026-07-18 — `.docs/codex-
+# integration.md`). Codex speaks ONLY the OpenAI Responses API and is RELAY-FREE like
+# claurst (honors HTTPS_PROXY + host.docker.internal). `exec` runs one non-interactive
+# turn; `--json` emits NDJSON on stdout; `-s danger-full-access` auto-approves tools (the
+# outer Docker sandbox is the isolation boundary — the plan's `-a never` is STALE, `exec`
+# has no approval flag); `--skip-git-repo-check` lets it run in a non-git workspace; `-C
+# <dir>` sets the cwd; `-m <tag>` selects the model within the configured `model_provider`.
+# stdin is redirected from /dev/null (else codex prints "Reading additional input from
+# stdin…" and can block — the driver must close it).
+CODEX_EXEC_SUBCMD = "exec"
+CODEX_JSON_FLAG = "--json"
+CODEX_SANDBOX_FLAG = "-s"
+CODEX_SANDBOX_VALUE = "danger-full-access"
+CODEX_SKIP_GIT_FLAG = "--skip-git-repo-check"
+CODEX_CWD_FLAG = "-C"
+CODEX_MODEL_FLAG = "-m"
 
-# occ (open-claude-code) headless flags — pinned against danno's fork
-# (`MikeStitt/open-claude-code`, branch `danno-integration`; see `occ.OCC_REF_DEFAULT`).
-# occ is a Node/ESM Claude-Code clone run headless as `node <clone>/v2/src/index.mjs`. Its
-# CLI mirrors claude's: `-p` prompt, `-m` model, `--output-format stream-json` JSONL,
-# `--permission-mode bypassPermissions` auto-approves tools (safe ONLY because the Docker
-# sandbox is the isolation boundary — occ's Bash tool has no isolation of its own),
-# `--max-turns N` bounds the agent loop. The fork's `detectProvider` natively routes to the
-# OpenAI-compatible path whenever OPENAI_BASE_URL is set (no source patch), and its global
-# undici dispatcher honors HTTPS_PROXY (no NODE_OPTIONS shim) — so both local Ollama (via
-# the relay) and cloud (OpenAI-compatible) work. occ is installed VM-local at a FIXED
-# absolute path (not $HOME-relative) so a relocated HOME (agent-home) cannot move the
-# entrypoint out from under the driver — mirrors how claurst's binary stays VM-local.
-OCC_ENTRY = "/home/agent/.local/share/danno/occ/v2/src/index.mjs"
-OCC_PRINT_FLAG = "-p"
-OCC_FORMAT_FLAG = "--output-format"
-OCC_FORMAT_VALUE = "stream-json"
-OCC_MODEL_FLAG = "-m"
-OCC_PERMISSION_FLAG = "--permission-mode"
-OCC_PERMISSION_VALUE = "bypassPermissions"
-OCC_MAX_TURNS_FLAG = "--max-turns"
-OCC_DEFAULT_MAX_TURNS = 30
-# occ's OpenAI/Ollama path is non-streaming; its default streaming path crashes
-# (`Symbol.asyncIterator` on undefined), so every occ invocation forces it off.
-OCC_STREAMING_ENV = "CLAUDE_CODE_STREAMING=0"
-# On the LOCAL path occ talks to the in-VM relay as an OpenAI-compatible endpoint and
-# requires the Bearer header even though Ollama ignores it — a dummy key satisfies it.
-OCC_LOCAL_OPENAI_ENV = "OPENAI_BASE_URL=http://127.0.0.1:11434/v1 OPENAI_API_KEY=dummy"
-_OLLAMA_RELAY_SOURCE = r"""
-import os, sys, threading, time, urllib.error, urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+# Where the driver writes codex's per-turn config.toml inside the VM. Codex warns (non-fatal)
+# if CODEX_HOME is under /tmp (it refuses to create PATH-alias helper binaries there), so it
+# lives under $HOME. Sessions/rollouts persist under `$CODEX_HOME/sessions/YYYY/MM/DD/`.
+CODEX_HOME_DIR = "$HOME/.codex-danno"
 
-UPSTREAM = "http://host.docker.internal:" + os.environ.get("DANNO_RELAY_UPSTREAM_PORT", "11434")
-# Single-upstream-read timeout (seconds). Default 3600 (60 min) so a slow local model's
-# minutes-long prefill on a non-streaming POST is not cut off; <= 0 means no timeout.
-_TIMEOUT = int(os.environ.get("DANNO_RELAY_TIMEOUT", "3600"))
-TIMEOUT = _TIMEOUT if _TIMEOUT > 0 else None
-PROXY = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
-_opener = urllib.request.build_opener(
-    urllib.request.ProxyHandler({"http": PROXY} if PROXY else {})
-)
-
-# Opt-in flushed trace of BOTH ends (claurst<->relay<->upstream), off unless
-# DANNO_RELAY_LOG names a writable path. Each line is timestamped + per-connection
-# thread-tagged and FLUSHED immediately, so a hang shows up as the last line written
-# (a buffered log would swallow it): no "<- upstream" after "-> upstream" => stuck on
-# the upstream read; "RESP done"/"CONN close" with no following "REQ" => claurst never
-# sent the next request (claurst-side). Diagnostic only; default behaviour unchanged.
-_LOG_PATH = os.environ.get("DANNO_RELAY_LOG")
-_LOG_LOCK = threading.Lock()
+# Codex dials host Ollama's experimental Responses endpoint (`/v1`) relay-free through the
+# egress proxy, exactly like claurst — base_url MUST be host.docker.internal (localhost is
+# in `no_proxy` → bypasses the proxy → hits the container). Under --capture the host-side
+# recording proxy at host.docker.internal:<capture_port> stands in (allowed in egress by
+# `capture_allow_hosts`). The `/v1` suffix is codex's OpenAI-compatible base.
+CODEX_RELAY_FREE_OLLAMA_BASE = "http://host.docker.internal:11434/v1"
 
 
-def _log(msg):
-    if not _LOG_PATH:
-        return
-    with _LOG_LOCK, open(_LOG_PATH, "a") as fh:
-        fh.write("%.3f c%d %s\n" % (time.time(), threading.get_ident() % 100000, msg))
-        fh.flush()
+def _codex_base_url(capture_port: int | None) -> str:
+    """The relay-free Responses `base_url` for a LOCAL Ollama codex turn: host Ollama `/v1`,
+    or under --capture the host-side recording proxy `/v1` (reached through the egress
+    proxy). The `host.docker.internal` host is mandatory — a localhost base_url would be
+    bypassed by `no_proxy` and hit the empty container. A CLOUD codex turn instead carries
+    its own dial target in `CodexProvider` (below)."""
+    if capture_port is None:
+        return CODEX_RELAY_FREE_OLLAMA_BASE
+    return f"http://host.docker.internal:{capture_port}/v1"
 
 
-class H(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
+@dataclass(frozen=True)
+class CodexProvider:
+    """The CLOUD dial target for a codex turn, resolved from a model's OpenAI-compatible
+    backend (Layer 3). None-valued for a LOCAL Ollama row (the driver uses the relay-free
+    `_codex_base_url` path instead).
 
-    def setup(self):
-        super().setup()
-        _log("CONN open %s:%s" % self.client_address)
+    codex writes its `config.toml` INLINE in the VM per turn (bench can't seed a file
+    pre-provision), so — unlike opencode, whose rewritten config is generated on the host —
+    the cloud base_url must be threaded to the driver at turn time. `base_url` is the model's
+    backend base_url AS THE DRIVER SHOULD DIAL IT: under bench that is already the
+    `host.docker.internal:<port>/v1` recording-proxy URL `plan_capture` rewrote it to (so
+    cloud codex captures through the same proxy as opencode, TLS re-originated to the cloud);
+    interactively it is the original `https://…/v1`, dialed through the egress proxy. `env_key`
+    is the NAME of the env var holding the provider key (referenced as `env_key` in the
+    provider block; the key value is injected via the chmod-600 env-file, never written here).
+    `reasoning_effort` maps a danno o-series knob to codex's `model_reasoning_effort`."""
 
-    def finish(self):
-        _log("CONN close")
-        super().finish()
-
-    def _f(self):
-        n = int(self.headers.get("Content-Length", 0) or 0)
-        body = self.rfile.read(n) if n else None
-        _log("REQ %s %s clen=%d keepalive=%s"
-             % (self.command, self.path, n, not self.close_connection))
-        req = urllib.request.Request(UPSTREAM + self.path, data=body, method=self.command)
-        for k, v in self.headers.items():
-            if k.lower() not in ("host", "proxy-connection", "connection"):
-                req.add_header(k, v)
-        _log("-> upstream %s%s" % (UPSTREAM, self.path))
-        try:
-            r = _opener.open(req, timeout=TIMEOUT)
-        except urllib.error.HTTPError as e:
-            r = e
-        except Exception as e:
-            _log("ERR upstream %r" % e)
-            self.send_response(502)
-            self.end_headers()
-            self.wfile.write(str(e).encode())
-            return
-        _log("<- upstream status=%s ct=%s" % (r.status, r.getheader("Content-Type")))
-        self.send_response(r.status)
-        for k, v in r.getheaders():
-            if k.lower() not in ("transfer-encoding", "content-length", "connection"):
-                self.send_header(k, v)
-        self.send_header("Transfer-Encoding", "chunked")
-        self.end_headers()
-        total = 0
-        while True:
-            c = r.read(4096)
-            if not c:
-                break
-            total += len(c)
-            self.wfile.write(b"%X\r\n" % len(c) + c + b"\r\n")
-        self.wfile.write(b"0\r\n\r\n")
-        _log("RESP done %dB" % total)
-
-    do_GET = do_POST = do_PUT = do_DELETE = _f
-
-    def log_message(self, *a):
-        pass
-
-
-if __name__ == "__main__":
-    p = int(sys.argv[1]) if len(sys.argv) > 1 else 11434
-    ThreadingHTTPServer(("127.0.0.1", p), H).serve_forever()
-"""
+    base_url: str
+    env_key: str | None = None
+    reasoning_effort: str | None = None
 
 
 @runtime_checkable
@@ -467,12 +397,15 @@ def opencode_run(
     - `workspace` sets the in-VM exec cwd (`-w`). Note opencode resolves file paths
       against its discovered project root (git/`.opencode` dir), **not** this cwd —
       true workspace isolation comes from mounting the sandbox at the workspace.
-    - `env_file` is passed to `docker sandbox exec` as `--env-file` — how cloud
-      configs in a sweep get their credentials: a bare exec inherits no host
+    - `env_file` supplies a sweep's cloud credentials: a bare exec inherits no host
       environment, so a model whose provider needs e.g. `ANTHROPIC_API_KEY` /
-      `NVIDIA_API_KEY` errors at L0 without it. Local Ollama models need none (the
-      base URL is baked into `opencode.jsonc`). The sweep builds this chmod-600
-      file from `--env`/host-exported keys (see `sweep._authed_opencode_run`).
+      `NVIDIA_API_KEY` errors at L0 without it. It is expanded via
+      `sandbox_cli.env_forward_argv` into value-less `-e NAME` flags plus the exec
+      subprocess env (sbx's `--env-file` is a silent no-op and would be shadowed by
+      sbx's baked `proxy-managed` placeholders — see that helper; issue #99). Local
+      Ollama models need none (the base URL is baked into `opencode.jsonc`). The sweep
+      builds this chmod-600 file from `--env`/host-exported keys (see
+      `sweep._authed_opencode_run`).
 
     Returns the parsed events alongside the raw capture — never raises on a
     non-zero HUT exit, since a stalled/errored agent turn is the signal the battery
@@ -481,8 +414,8 @@ def opencode_run(
     cmd = [*sandbox_cli.base(), "exec"]
     if workspace is not None:
         cmd += ["-w", str(workspace)]
-    if env_file is not None:
-        cmd += ["--env-file", str(env_file)]
+    env_flags, exec_env = sandbox_cli.env_forward_argv(env_file)
+    cmd += env_flags
     cmd += [name, "opencode", "run", OPENCODE_FORMAT_FLAG, "json"]
     if agent is not None:
         cmd += ["--agent", agent]
@@ -493,7 +426,7 @@ def opencode_run(
     if session is not None:
         cmd += [OPENCODE_SESSION_FLAG, session]
     cmd.append(prompt)
-    result = runner.capture(cmd)
+    result = runner.capture(cmd, env=exec_env)
     return OpencodeTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)
 
 
@@ -708,13 +641,13 @@ def claude_run(
     actual resolved model is still tracked via `ClaudeTurn.model`. `agent` is
     accepted for interface parity but ignored (claude has no opencode `--agent`).
 
-    `env_file` is passed to `docker sandbox exec` as `--env-file` — REQUIRED for
-    auth: unlike opencode (which reads Ollama from `opencode.jsonc`), claude needs
-    `CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY` in its exec environment, and a
-    bare `docker sandbox exec` inherits none. danno injects this only on
-    interactive `launch`, so the baseline builds the file itself (see
-    `baseline._build_claude_auth_env_file`). The secret stays in the chmod-600
-    file, never on the command line.
+    `env_file` is REQUIRED for auth: unlike opencode (which reads Ollama from
+    `opencode.jsonc`), claude needs `CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY` in
+    its exec environment, and a bare exec inherits none. It is forwarded via
+    `sandbox_cli.env_forward_argv` (value-less `-e NAME` + the exec subprocess env;
+    sbx's `--env-file` is a no-op — issue #99). The baseline builds the file itself
+    (see `baseline._build_claude_auth_env_file`). The secret stays in the chmod-600
+    file / the exec env, never on the command line.
 
     Returns the parsed events alongside the raw capture — never raises on a
     non-zero exit, since a stalled/errored turn is the signal the battery
@@ -723,8 +656,8 @@ def claude_run(
     cmd = [*sandbox_cli.base(), "exec"]
     if workspace is not None:
         cmd += ["-w", str(workspace)]
-    if env_file is not None:
-        cmd += ["--env-file", str(env_file)]
+    env_flags, exec_env = sandbox_cli.env_forward_argv(env_file)
+    cmd += env_flags
     cmd += [name, "claude", CLAUDE_PRINT_FLAG, CLAUDE_FORMAT_FLAG, CLAUDE_FORMAT_VALUE, "--verbose"]
     if model is not None:
         cmd += [CLAUDE_MODEL_FLAG, model]
@@ -733,7 +666,7 @@ def claude_run(
     if session is not None:
         cmd += [CLAUDE_RESUME_FLAG, session]
     cmd.append(prompt)
-    result = runner.capture(cmd)
+    result = runner.capture(cmd, env=exec_env)
     return ClaudeTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)
 
 
@@ -842,44 +775,6 @@ class ClaurstTurn:
         return str(self.errors[0].get("error", "error event"))
 
 
-def _claurst_script(
-    claurst_cmd: str, *, upstream_port: int = CLAURST_RELAY_DEFAULT_UPSTREAM_PORT
-) -> str:
-    """Wrap a claurst invocation with the in-VM Ollama relay (see relay constants).
-
-    Returns a `bash -lc` script that writes the relay to a temp file, starts it on
-    127.0.0.1:11434, waits for readiness, runs `claurst_cmd` (with `OLLAMA_HOST`
-    pointed at the relay), and kills the relay on exit. The relay is co-located in
-    this one exec because execs reap their children — it cannot outlive the turn.
-    Only claurst's stdout reaches the capture (relay log + readiness probe are
-    redirected away), so the JSONL parser sees a clean stream.
-
-    `upstream_port` is the host port the relay re-issues to (via the egress proxy):
-    the real Ollama port by default, or a `--capture` recording proxy's port — the
-    relay reads it from `DANNO_RELAY_UPSTREAM_PORT`. The relay's own LISTEN port stays
-    11434 (claurst's `OLLAMA_HOST`); only the upstream changes.
-    """
-    heredoc = f"cat > \"$RELAY_PY\" <<'DANNO_RELAY_EOF'\n{_OLLAMA_RELAY_SOURCE}\nDANNO_RELAY_EOF"
-    # The upstream port is computed (capture proxy vs real Ollama) so it is set inline. The
-    # relay-read timeout defaults to CLAURST_RELAY_DEFAULT_TIMEOUT but honors an inherited
-    # value first (`${VAR:-default}`), so a [env]/host `DANNO_RELAY_TIMEOUT` can override it.
-    _t = CLAURST_RELAY_TIMEOUT_ENV
-    timeout_env = f'{_t}="${{{_t}:-{CLAURST_RELAY_DEFAULT_TIMEOUT}}}"'
-    return (
-        "RELAY_PY=$(mktemp /tmp/danno-relay-XXXXXX.py)\n"
-        f"{heredoc}\n"
-        f"{CLAURST_RELAY_UPSTREAM_ENV}={upstream_port} "
-        f"{timeout_env} "
-        'python3 "$RELAY_PY" 11434 >/tmp/danno-ollama-relay.log 2>&1 &\n'
-        "DANNO_RELAY_PID=$!\n"
-        "trap 'kill $DANNO_RELAY_PID 2>/dev/null' EXIT\n"
-        "for _ in $(seq 1 40); do "
-        "curl -fsS --noproxy 127.0.0.1 http://127.0.0.1:11434/api/tags >/dev/null 2>&1 "
-        "&& break; sleep 0.25; done\n"
-        f"{claurst_cmd}\n"
-    )
-
-
 def claurst_run(
     runner: Runner,
     name: str,
@@ -929,8 +824,8 @@ def claurst_run(
         argv += [CLAURST_MAX_TURNS_FLAG, str(max_turns)]
     argv.append(prompt)
     cmd = [*sandbox_cli.base(), "exec"]
-    if env_file is not None:
-        cmd += ["--env-file", str(env_file)]
+    env_flags, exec_env = sandbox_cli.env_forward_argv(env_file)
+    cmd += env_flags
     # A LOCAL Ollama model (`ollama/…`, or claurst's default when `model` is None) is now
     # fully RELAY-FREE (plan W3 + W6): claurst honors the egress proxy, so it dials host
     # Ollama at host.docker.internal directly — and under `--capture` it dials the host-side
@@ -944,36 +839,45 @@ def claurst_run(
         cmd += [name, "bash", "-lc", f"OLLAMA_HOST={ollama_host} {shlex.join(argv)}"]
     else:
         cmd += [name, *argv]
-    result = runner.capture(cmd)
-    return ClaurstTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)
+    result = runner.capture(cmd, env=exec_env)
+    events = parse_events(result.stdout)
+    # Some fatal provider rejections claurst writes to STDERR, not the stream-json stdout
+    # (e.g. an unsupported-model error under `--max-turns`, which exits 1 with an EMPTY
+    # stdout). Parsing stdout alone would leave `events` empty → the oracle reads a silent
+    # `early-stop` and drops the real, actionable message. Fold any error event from stderr
+    # onto the read surface (only when stdout carried none, so the normal stdout-error path
+    # is byte-identical); the lenient parser drops sbx's non-JSON stderr noise.
+    if result.stderr and not any(e.get("type") == "error" for e in events):
+        events += [e for e in parse_events(result.stderr) if e.get("type") == "error"]
+    return ClaurstTurn(result=result, events=events, raw=result.stdout)
 
 
 @dataclass
-class OccTurn:
-    """One captured `node <occ>/v2/src/index.mjs -p --output-format stream-json` turn.
+class CodexTurn:
+    """One captured `codex exec --json` turn, with the NDJSON events parsed.
 
-    occ's stream-json is JSONL (one `console.log(JSON.stringify(event))` per event) with
-    its OWN schema (pinned against the ruvnet/open-claude-code v2 snapshot, 2026-07-02),
-    normalised here onto the shared `Turn` read surface:
+    Codex's `--json` stream is NDJSON like the others but its OWN schema (Phase-0 spike,
+    codex-cli 0.144.5 — `.docs/codex-integration.md`). Each line is an *event* wrapping an
+    *item*; this normalises it onto the shared `Turn` read surface:
 
-    - an **assistant** event (`type == "assistant"`) carries a chunk of assistant text
-      at `content` (concatenated across events — NOT sub-word deltas like claurst);
-    - a **tool_progress** event (`type == "tool_progress"`) carries `tool` (name) and
-      `status` (`"running"` when the tool starts) — occ emits one per tool invocation;
-    - a **result** event (`type == "result"`) carries `tool` + `result` (the tool's
-      output) — a per-tool terminal, NOT a turn-level usage block (stream-json emits no
-      usage summary; only occ's `json` mode does, which danno does not use);
-    - a **stop** event (`type == "stop"`) carries `reason` (`"end_turn"`, `"max_turns"`,
-      `"max_recursion"`); an error-ish reason marks a degraded turn;
-    - an **error** event (`type == "error"`) carries the failure string at `message`
-      (NB: `message`, not claurst's `error`).
+    - a **thread.started** event carries `thread_id` (codex's session id, for `--resume`);
+    - an **item.completed** event carries `item` — the terminal state of one item, whose
+      `item.type` is:
+        - `agent_message` → `{id, text}` — the **assistant final text**;
+        - `command_execution` → `{id, command, aggregated_output, exit_code, status}` —
+          codex's abstraction over the executed shell (its tool call);
+        - `reasoning` → `{id, text}` (chain-of-thought; dropped from the read surface);
+        - `error` → `{message}` — **NON-FATAL** (e.g. "Model metadata for `…` not found.
+          Defaulting to fallback metadata…"); a turn is only *failed* by a `turn.failed`
+          event or a non-zero exit, NEVER by an `error` item;
+    - a **turn.completed** event carries `usage`
+      `{input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens}`;
+    - a **turn.failed** event marks a genuinely failed turn.
 
-    occ exposes no session id in this mode (`session_id` is always None → each scripted
-    turn is independent) and stream-json carries no token/cost totals, so `tokens`/`cost`
-    are 0. Tool calls are re-shaped to ``{"tool": name, "callID": None, "state":
-    {"status": …}}`` so the shared oracle/reporter branches work; the status is
-    `"completed"` unless the tool's terminal signalled an error.
-    """
+    Codex reports no per-call cost (local Responses); tool calls are re-shaped to the
+    shared ``{"tool": name, "callID": id, "state": {"status": …}}`` dict so the same oracle
+    branch and reporter work across harnesses. `command_execution.status` maps `completed`
+    (with a zero `exit_code`) → `completed`, otherwise `error`."""
 
     result: CaptureResult
     events: list[dict] = field(default_factory=list)
@@ -981,97 +885,95 @@ class OccTurn:
 
     @property
     def ok(self) -> bool:
-        """True iff the turn ran cleanly: zero exit, ≥1 parsed event, no error event."""
+        """True iff the turn ran cleanly: zero exit, ≥1 parsed event, no failure (an
+        `error` item is a non-fatal warning, so it does NOT flip `ok`)."""
         return self.result.ok and bool(self.events) and not self.errors
+
+    def _completed_items(self) -> list[dict]:
+        """The `item` payload of every `item.completed` event, in order."""
+        return [
+            item
+            for event in self.events
+            if event.get("type") == "item.completed" and isinstance(item := event.get("item"), dict)
+        ]
 
     @property
     def session_id(self) -> str | None:
-        """None — occ exposes no session id in headless stream-json mode."""
+        """Codex's thread id (from `thread.started`), for `--resume`."""
+        for event in self.events:
+            if event.get("type") == "thread.started" and (tid := event.get("thread_id")):
+                return str(tid)
         return None
 
     @property
     def assistant_text(self) -> str:
-        """Concatenated `assistant` event `content` (joined by newlines), stripped."""
-        return "\n".join(
-            str(event.get("content", ""))
-            for event in self.events
-            if event.get("type") == "assistant" and event.get("content")
-        ).strip()
+        """The last `agent_message` item's text (codex's final assistant reply)."""
+        text = ""
+        for item in self._completed_items():
+            if item.get("type") == "agent_message" and (t := str(item.get("text", "")).strip()):
+                text = t
+        return text
 
     @property
     def tool_calls(self) -> list[dict]:
-        """Each `tool_progress` event, re-shaped to the shared tool-call dict shape.
+        """Each `command_execution` item, re-shaped to the shared tool-call dict shape.
 
-        occ emits no callID; a tool is marked `error` only if a later `result`/`error`
-        event names it as failed, else `completed`. The real signal for occ (like
-        claurst) is the workspace side effect, which the oracle composes with this count.
-        """
-        return [
-            {"tool": event.get("tool"), "callID": None, "state": {"status": "completed"}}
-            for event in self.events
-            if event.get("type") == "tool_progress"
-        ]
+        Status is `completed` when codex reported `status == "completed"` with a zero
+        `exit_code`, else `error` — so the shared oracle's tool-error branch works."""
+        calls: list[dict] = []
+        for item in self._completed_items():
+            if item.get("type") != "command_execution":
+                continue
+            ok = item.get("status") == "completed" and int(item.get("exit_code", 0) or 0) == 0
+            calls.append(
+                {
+                    "tool": "exec_command",
+                    "callID": str(item.get("id", "")),
+                    "state": {"status": "completed" if ok else "error"},
+                }
+            )
+        return calls
 
     @property
     def tool_call_count(self) -> int:
         return len(self.tool_calls)
 
     @property
+    def _usage(self) -> dict:
+        for event in reversed(self.events):
+            if event.get("type") == "turn.completed":
+                usage = event.get("usage")
+                return usage if isinstance(usage, dict) else {}
+        return {}
+
+    @property
     def tokens(self) -> int:
-        """0 — occ's stream-json emits no token totals (only its `json` mode does)."""
-        return 0
+        """Total tokens (input + output) from the `turn.completed` usage."""
+        usage = self._usage
+        return int(usage.get("input_tokens", 0) or 0) + int(usage.get("output_tokens", 0) or 0)
 
     @property
     def cost(self) -> float:
-        """0.0 — occ's stream-json emits no cost totals."""
+        """Codex reports no cost for the local Responses endpoint (0.0)."""
         return 0.0
 
     @property
     def errors(self) -> list[dict]:
-        """Every `error` event, plus a `stop` whose `reason` is an error condition."""
-        errs = [event for event in self.events if event.get("type") == "error"]
-        errs += [
-            event
-            for event in self.events
-            if event.get("type") == "stop"
-            and str(event.get("reason", "")) in ("max_turns", "max_recursion")
-        ]
-        return errs
+        """Genuinely-failed-turn signals: `turn.failed` events (an `error` *item* is a
+        non-fatal warning and is intentionally excluded)."""
+        return [event for event in self.events if event.get("type") == "turn.failed"]
 
     @property
     def error_summary(self) -> str | None:
-        """A human-readable summary of the first error, or None."""
-        for event in self.errors:
-            if event.get("type") == "error":
-                return str(event.get("message", "error event"))
-            return f"stopped: {event.get('reason')}"
-        return None
+        """A human-readable summary of the first failed-turn event, or None."""
+        if not self.errors:
+            return None
+        err = self.errors[0]
+        detail = err.get("error") or err.get("message") or err.get("reason")
+        return str(detail) if detail is not None else "turn.failed"
 
 
-def occ_model_target(model_ref: str | None) -> tuple[str | None, bool]:
-    """Translate a sweep/interactive model ref into occ's `-m` value + locality.
-
-    The sweep passes opencode-format `<backend>/<tag>` refs for EVERY agent (e.g.
-    `ollama/gemma3:27b`), but occ's `-m` wants the provider's bare model id and routes on
-    OPENAI_BASE_URL (the fork's native detectProvider). This is the ONE place that knows
-    the `<backend>/<tag>` ↔ occ mapping, so drift is contained. Returns `(m_value, is_local)`:
-
-    - `None` → `(None, True)`: interactive with no `-m`; occ falls back to its own default
-      (treated as local — the relay path).
-    - `ollama/<tag>` → `(<tag>, True)`: strip the `ollama/` prefix; the relay supplies
-      OPENAI_BASE_URL so the bare Ollama tag routes correctly (no `gpt-` alias needed).
-    - any other `<backend>/<tag>` (or a bare ref) → `(part after the first '/', or the ref
-      itself, False)`: cloud; the config-aware caller supplies the provider's
-      OPENAI_BASE_URL + OPENAI_API_KEY via the env-file (see `sandbox.occ_cloud_env_lines`).
-    """
-    if model_ref is None:
-        return None, True
-    is_local = model_ref.startswith("ollama/")
-    m_value = model_ref.split("/", 1)[1] if "/" in model_ref else model_ref
-    return m_value, is_local
-
-
-def occ_run(
+def codex_run(
     runner: Runner,
     name: str,
     prompt: str,
@@ -1084,61 +986,72 @@ def occ_run(
     env_file: str | Path | None = None,
     capture_port: int | None = None,
     max_turns: int | None = None,
-) -> OccTurn:
-    """Drive one headless occ turn in sandbox `name` (the occ counterpart of `claurst_run`).
+    codex_provider: CodexProvider | None = None,
+) -> CodexTurn:
+    """Drive one headless `codex exec --json` turn in sandbox `name`.
 
-    `TurnFn`-compatible so the level runners drive it unchanged. `model` is a
-    `<backend>/<tag>` ref (as the sweep passes every agent); `occ_model_target` translates
-    it to occ's `-m` value + locality. `skip_permissions` is a no-op for interface parity
-    (occ always runs `--permission-mode bypassPermissions` headless — the sandbox is the
-    isolation boundary); `session` is accepted but unused (occ exposes no session id);
-    `workspace` becomes the exec cwd (`-w`) so writes land where the oracle probes.
+    The in-sandbox Codex counterpart of `opencode_run`, with a `TurnFn`-compatible
+    signature so the level runners drive it unchanged. `model` is the bare model tag codex
+    dials within its configured provider (`-m <tag>`); `workspace` becomes codex's `-C`
+    exec cwd so writes land in the mounted workspace the oracle probes. `session`/`agent`/
+    `skip_permissions` are accepted for interface parity: codex `exec` is non-interactive
+    (always auto-approves via `-s danger-full-access`) and has no opencode `--agent`;
+    `max_turns` has no codex flag and is ignored (the external watchdog is the real bound).
 
-    LOCAL Ollama: wrapped in the shared `_claurst_script` relay bracket (reused verbatim),
-    with `OPENAI_BASE_URL`→the relay + a dummy `OPENAI_API_KEY` + `CLAUDE_CODE_STREAMING=0`
-    set inline. `capture_port` redirects the relay's upstream at a `--capture` proxy.
-    CLOUD: no relay; only `CLAUDE_CODE_STREAMING=0` is set inline. The fork's global undici
-    dispatcher honors HTTPS_PROXY (read from `env_file`), so no shim is needed; the
-    provider's `OPENAI_BASE_URL` + `OPENAI_API_KEY` also come from `env_file` (built
-    config-side, see `occ_cloud_env_lines`).
+    Codex is RELAY-FREE like claurst: it honors the sandbox egress proxy and dials its
+    Responses endpoint directly. A LOCAL Ollama row (`codex_provider=None`) dials host
+    Ollama at `host.docker.internal:11434/v1`, or under `--capture` the host-side recording
+    proxy the same way (`host.docker.internal:<capture_port>/v1`). A CLOUD row carries its
+    dial target in `codex_provider` (the model's OpenAI-compatible backend base_url — under
+    bench already the recording-proxy URL `plan_capture` rewrote it to, so cloud codex
+    captures through the same proxy; plus the key-env NAME + reasoning knob). Either way the
+    per-turn `config.toml` (a custom provider → that base_url, `wire_api = "responses"`) is
+    written INLINE into a VM-local CODEX_HOME here, because bench's flow can't seed a VM file
+    pre-provision. `env_file` is forwarded to the exec (a cloud row carries its provider key
+    there under `codex_provider.env_key`) and is harmless when None (local Ollama needs no auth).
 
-    Returns the parsed events alongside the raw capture — never raises on a non-zero exit.
+    Returns the parsed NDJSON events alongside the raw capture — never raises on a non-zero
+    exit, since a stalled/errored turn is the signal the battery measures.
     """
-    m_value, is_local = occ_model_target(model)
-    node_argv = [
-        "node",
-        OCC_ENTRY,
-        OCC_FORMAT_FLAG,
-        OCC_FORMAT_VALUE,
-        OCC_PERMISSION_FLAG,
-        OCC_PERMISSION_VALUE,
-    ]
-    if m_value is not None:
-        node_argv += [OCC_MODEL_FLAG, m_value]
-    mt = max_turns if max_turns is not None else OCC_DEFAULT_MAX_TURNS
-    node_argv += [OCC_MAX_TURNS_FLAG, str(mt), OCC_PRINT_FLAG, prompt]
+    from book_em_danno.config.generate import (
+        CODEX_CLOUD_PROVIDER_ID,
+        CODEX_CLOUD_PROVIDER_NAME,
+        codex_config_toml,
+    )
 
-    cmd = [*sandbox_cli.base(), "exec"]
-    if workspace is not None:
-        cmd += ["-w", str(workspace)]
-    if env_file is not None:
-        cmd += ["--env-file", str(env_file)]
-    if is_local:
-        # Local: the relay bracket (reused verbatim from claurst) + occ's OpenAI env set
-        # inline; occ reaches the relay at 127.0.0.1:11434 as an OpenAI-compatible endpoint.
-        occ_cmd = f"{OCC_LOCAL_OPENAI_ENV} {OCC_STREAMING_ENV} {shlex.join(node_argv)}"
-        upstream_port = (
-            CLAURST_RELAY_DEFAULT_UPSTREAM_PORT if capture_port is None else capture_port
-        )
-        cmd += [name, "bash", "-lc", _claurst_script(occ_cmd, upstream_port=upstream_port)]
+    if codex_provider is None:
+        config_toml = codex_config_toml(_codex_base_url(capture_port))
     else:
-        # Cloud: no relay. The fork's global undici dispatcher reads HTTPS_PROXY from the
-        # env-file (no NODE_OPTIONS shim). The provider base URL + key also ride the
-        # env-file (OPENAI_BASE_URL / OPENAI_API_KEY, see `occ_cloud_env_lines`).
-        occ_cmd = f"{OCC_STREAMING_ENV} {shlex.join(node_argv)}"
-        cmd += [name, "bash", "-lc", occ_cmd]
-    result = runner.capture(cmd)
-    return OccTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)
+        config_toml = codex_config_toml(
+            codex_provider.base_url,
+            env_key=codex_provider.env_key,
+            provider_id=CODEX_CLOUD_PROVIDER_ID,
+            provider_name=CODEX_CLOUD_PROVIDER_NAME,
+            reasoning_effort=codex_provider.reasoning_effort,
+        )
+    argv = ["codex", CODEX_EXEC_SUBCMD, CODEX_JSON_FLAG, CODEX_SANDBOX_FLAG, CODEX_SANDBOX_VALUE]
+    argv.append(CODEX_SKIP_GIT_FLAG)
+    if workspace is not None:
+        argv += [CODEX_CWD_FLAG, str(workspace)]
+    if model is not None:
+        argv += [CODEX_MODEL_FLAG, model]
+    argv.append(prompt)
+    # Write config.toml into a VM-local CODEX_HOME, then run codex with stdin closed
+    # (</dev/null) so it never blocks reading additional input. A heredoc keeps the TOML
+    # off the argv; `set -e` fails loud if the config write fails.
+    script = (
+        f'set -e; export CODEX_HOME={CODEX_HOME_DIR}; mkdir -p "$CODEX_HOME"; '
+        f"cat > \"$CODEX_HOME/config.toml\" <<'DANNO_CODEX_EOF'\n"
+        f"{config_toml}\n"
+        f"DANNO_CODEX_EOF\n"
+        f"{shlex.join(argv)} </dev/null"
+    )
+    cmd = [*sandbox_cli.base(), "exec"]
+    env_flags, exec_env = sandbox_cli.env_forward_argv(env_file)
+    cmd += env_flags
+    cmd += [name, "bash", "-lc", script]
+    result = runner.capture(cmd, env=exec_env)
+    return CodexTurn(result=result, events=parse_events(result.stdout), raw=result.stdout)
 
 
 def parse_events(text: str) -> list[dict]:

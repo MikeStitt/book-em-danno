@@ -324,3 +324,6 @@ temp/
 
 # danno --capture wire-traffic recordings (sandbox start/shell default dir)
 .danno/
+
+# Interactive-TUI spike workspaces (scratch)
+.spike-*-ws/
