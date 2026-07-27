@@ -20,7 +20,7 @@ import subprocess
 import tempfile
 import tomllib
 import urllib.parse
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,7 +49,22 @@ from ..core import registry
 from ..core.exec import CommandFailedError, Runner, log_info, log_warn
 from . import ollama, sandbox_cli
 
-DEFAULT_OLLAMA_URL = "http://host.docker.internal:11434/v1"
+
+def resolve_ollama_url(env: Mapping[str, str] | None = None) -> str:
+    """The base URL the sandbox VM dials for Ollama.
+
+    Defaults to the same-host alias `http://host.docker.internal:11434/v1` (the egress proxy
+    rewrites it to localhost). `DANNO_OLLAMA_HOST_URL` overrides it with a concrete endpoint —
+    e.g. a LAN host `http://10.0.1.27:11434` — which `configure_proxy` then allow-lists
+    literally by its routable host:port. `/v1` is appended when absent."""
+    raw = (os.environ if env is None else env).get(ollama.HOST_URL_ENV, "").strip()
+    if not raw:
+        return "http://host.docker.internal:11434/v1"
+    base = raw.rstrip("/")
+    return base if base.endswith("/v1") else f"{base}/v1"
+
+
+DEFAULT_OLLAMA_URL = resolve_ollama_url()
 DEFAULT_ALLOW_HOSTS = ("localhost:11434",)
 DEFAULT_HARNESS = "opencode"
 # Auth env vars Claude Code accepts, in preference order (subscription token first).

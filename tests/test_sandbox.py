@@ -101,6 +101,32 @@ def test_configure_proxy_opens_ollama_hole() -> None:
     ]
 
 
+def test_resolve_ollama_url_defaults_to_same_host_alias() -> None:
+    # Env unset → the same-host alias (egress proxy rewrites it to localhost).
+    assert sandbox.resolve_ollama_url({}) == "http://host.docker.internal:11434/v1"
+
+
+def test_resolve_ollama_url_env_override_appends_v1() -> None:
+    # A LAN endpoint without /v1 gets it appended so the OpenAI-compatible path is set.
+    env = {ollama.HOST_URL_ENV: "http://10.0.1.27:11434"}
+    assert sandbox.resolve_ollama_url(env) == "http://10.0.1.27:11434/v1"
+
+
+def test_resolve_ollama_url_env_override_keeps_v1_and_trims_slash() -> None:
+    env = {ollama.HOST_URL_ENV: "http://10.0.1.27:11434/v1/"}
+    assert sandbox.resolve_ollama_url(env) == "http://10.0.1.27:11434/v1"
+
+
+def test_configure_proxy_allows_remote_ollama_literally() -> None:
+    # A concrete (non-alias) Ollama host is allow-listed by its routable host:port,
+    # replacing the default localhost token — never a wildcard.
+    r = RecordingRunner()
+    sandbox.configure_proxy(r, "probe", ollama_url="http://10.0.1.27:11434/v1")
+    assert r.joined() == [
+        "docker sandbox network proxy probe --policy allow --allow-host 10.0.1.27:11434"
+    ]
+
+
 def test_provision_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ollama, "lan_exposure_warning", lambda **kw: None)
     r = RecordingRunner()

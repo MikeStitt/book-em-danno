@@ -114,7 +114,9 @@ def _npm_demo_config() -> DannoConfig:
     commented block in danno.toml.example. Its `setup` path is covered by unit tests."""
     return DannoConfig(
         backends={
-            "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1")
+            # Honors DANNO_OLLAMA_HOST_URL (LAN Ollama) via sandbox.DEFAULT_OLLAMA_URL; falls
+            # back to the same-host alias. This test never runs the model (only `agent list`).
+            "ollama": OllamaBackend(kind="ollama", base_url=sandbox.DEFAULT_OLLAMA_URL)
         },
         models={
             "gemma": Model(

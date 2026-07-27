@@ -16,6 +16,26 @@ import pytest
 from book_em_danno.commands import ollama
 
 
+def test_resolve_host_url_defaults_to_local() -> None:
+    assert ollama.resolve_host_url({}) == "http://localhost:11434"
+
+
+def test_resolve_host_url_env_override() -> None:
+    # DANNO_OLLAMA_HOST_URL routes danno at a remote (e.g. LAN) Ollama.
+    assert (
+        ollama.resolve_host_url({ollama.HOST_URL_ENV: "http://10.0.1.27:11434"})
+        == "http://10.0.1.27:11434"
+    )
+
+
+def test_resolve_host_url_trims_trailing_slash_and_blank() -> None:
+    assert ollama.resolve_host_url({ollama.HOST_URL_ENV: "http://10.0.1.27:11434/"}) == (
+        "http://10.0.1.27:11434"
+    )
+    # Blank/whitespace value falls back to local (not an empty host).
+    assert ollama.resolve_host_url({ollama.HOST_URL_ENV: "   "}) == "http://localhost:11434"
+
+
 def test_version_tuple_parses_and_drops_suffix() -> None:
     assert ollama._version_tuple("0.13.3") == (0, 13, 3)
     assert ollama._version_tuple("0.30.6-rc1") == (0, 30, 6)  # non-numeric tail dropped
