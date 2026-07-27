@@ -77,14 +77,23 @@ jobs:
           echo "::notice::code_touched=${code_touched} (true = run full check matrix; false = version-only skip)"
 
   check:
-    # Gated on the version-only detector. `!cancelled()` forces this `if:` to be
-    # evaluated even when `changes` failed (a bare `needs:` would otherwise SKIP this
-    # job on an upstream failure — and a skipped required check reads as satisfied,
-    # letting a PR merge with NO tests). So: run unless the detector positively said
-    # "version-only" — i.e. run when the detector didn't succeed (fail-safe) OR it
-    # reported a real change.
+    # This job ALWAYS runs (its heavy STEPS are what get skipped on a version-only PR
+    # — see the per-step `if:`s below). It must NOT be skipped at the job level: a
+    # skipped MATRIX job never expands, so GitHub reports one `check (${{ matrix.label
+    # }})` = skipped under the UNEXPANDED name and the per-leg contexts
+    # `check (ubuntu-latest)` / `check (macos-latest)` that `protect-main` REQUIRES are
+    # never posted — the PR then waits on them forever (BLOCKED). Keeping the job
+    # running expands the matrix, so all four required contexts are reported; on a
+    # version-only PR they go green in seconds because every install/gate step is
+    # skipped. (The "skip a required job -> satisfied" trick works only for a NON-matrix
+    # job whose own name IS the required context.)
+    #
+    # `!cancelled()` (instead of the implicit `success()`) forces this `if:` to be
+    # evaluated even when `changes` failed, so a detector-job failure still runs the
+    # matrix (fail-safe) rather than skipping it — the heavy steps then also run because
+    # their gate is `!= 'false'` and a failed detector yields an empty output.
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code_touched == 'true') }}
+    if: ${{ !cancelled() }}
     # One leg per OS, plus BOTH Windows shells (cmd + Windows PowerShell) so the
     # gate is exercised through each shell's quoting/PATH surface — the same two
     # shells the slow-sandbox-tui Windows lane runs under. The runners have no
@@ -114,14 +123,19 @@ jobs:
             shell: powershell
     name: check (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
+    # Every heavy step below is gated on `needs.changes.outputs.code_touched != 'false'`
+    # — it runs unless the detector POSITIVELY reported version-only ('false'). An empty
+    # value (detector job failed) is `!= 'false'`, so the gate still runs: fail-safe.
+    # `checkout` stays ungated so the job always has a first step and reports cleanly.
     steps:
       - uses: actions/checkout@v4
 
       - name: Install uv
+        if: ${{ needs.changes.outputs.code_touched != 'false' }}
         uses: astral-sh/setup-uv@v5
 
       - name: Install ninja (Unix)
-        if: runner.os != 'Windows'
+        if: ${{ needs.changes.outputs.code_touched != 'false' && runner.os != 'Windows' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -134,13 +148,14 @@ jobs:
           ninja --version
 
       - name: Install ninja (Windows)
-        if: runner.os == 'Windows'
+        if: ${{ needs.changes.outputs.code_touched != 'false' && runner.os == 'Windows' }}
         shell: pwsh
         run: |
           choco install ninja -y
           ninja --version
 
       - name: Sync dependencies
+        if: ${{ needs.changes.outputs.code_touched != 'false' }}
         # --locked fails the run if uv.lock is out of date with pyproject.toml,
         # so version drift surfaces in CI instead of hiding. On Windows this pulls
         # pywinpty (the pexpect line is POSIX-only via its marker), so drift in the
@@ -148,7 +163,7 @@ jobs:
         run: uv sync --locked --all-extras --dev
 
       - name: ninja check (Unix)
-        if: runner.os != 'Windows'
+        if: ${{ needs.changes.outputs.code_touched != 'false' && runner.os != 'Windows' }}
         run: ninja check
 
       # Ninja on Windows runs each rule command directly via CreateProcess (no
@@ -156,11 +171,11 @@ jobs:
       # Invoke the four single-command targets instead — same gate, no shell
       # operator. (build.ninja: lint | fmt | typecheck | test.)
       - name: ninja check (Windows cmd)
-        if: matrix.shell == 'cmd'
+        if: ${{ needs.changes.outputs.code_touched != 'false' && matrix.shell == 'cmd' }}
         shell: cmd
         run: ninja lint fmt typecheck test
 
       - name: ninja check (Windows PowerShell)
-        if: matrix.shell == 'powershell'
+        if: ${{ needs.changes.outputs.code_touched != 'false' && matrix.shell == 'powershell' }}
         shell: powershell
         run: ninja lint fmt typecheck test
