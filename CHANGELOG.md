@@ -11,10 +11,18 @@ commits by [git-cliff](https://git-cliff.org).
 
 ## [0.17.1] - 2026-07-27
 
+### Bug Fixes
+
+- *(tests)* Make the non-TUI slow suite pass on Windows
+
 ### CI
 
 - Skip the full check matrix on version-only PRs (job-level gate)
 - Fix version-only skip to gate STEPS, not the matrix job (unblocks release PRs)
+
+### Features
+
+- *(ollama)* Add DANNO_OLLAMA_HOST_URL to route danno at a remote/LAN Ollama
 
 ## [0.17.0] - 2026-07-27
 
