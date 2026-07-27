@@ -3,6 +3,12 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.17.1] - 2026-07-27
+
+### CI
+
+- Skip the full check matrix on version-only PRs (job-level gate)
+
 ## [0.17.0] - 2026-07-27
 
 ### Bug Fixes
