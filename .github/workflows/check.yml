@@ -6,7 +6,85 @@ on:
   pull_request:
 
 jobs:
+  # A cheap pre-gate that decides whether the expensive `check` matrix needs to run for
+  # THIS pull request. Its whole purpose: a release PR that changes ONLY the version
+  # number should merge fast, without paying the full multi-OS gate — the full suite
+  # re-runs post-merge via the `push: main` trigger below.
+  #
+  # WHY A JOB-LEVEL SKIP (not `on: paths-ignore`): `check (ubuntu-latest)` /
+  # `check (macos-latest)` are REQUIRED by the `protect-main` ruleset. A required check
+  # whose workflow is filtered out by `paths-ignore` never reports a status, so the PR
+  # sits "Expected — waiting for status" FOREVER (blocked). But a required job SKIPPED
+  # via `if:` posts a neutral/skipped conclusion that SATISFIES the required check. So we
+  # always let the workflow trigger, and skip the heavy matrix conditionally instead.
+  changes:
+    name: changes (version-only detector)
+    runs-on: ubuntu-latest
+    outputs:
+      # 'true'  -> run the full check matrix (any real code/deps change, OR any doubt).
+      # 'false' -> version-only PR; the matrix is skipped (and its required contexts
+      #            report skipped == satisfied).
+      code_touched: ${{ steps.decide.outputs.code_touched }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need the base-branch history to diff the PR against it
+      - id: decide
+        shell: bash
+        run: |
+          # FAIL-SAFE: default to running the full gate. Only a positively-detected
+          # version-only PR turns it off; every uncertain path leaves it ON.
+          set -uo pipefail
+          code_touched=true
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+            if changed=$(git diff --name-only "$base"...HEAD 2>/dev/null); then
+              printf '::group::changed files\n%s\n::endgroup::\n' "$changed"
+
+              # (1) PATH allow-list: the only paths a pure version bump may touch.
+              #     A bump edits pyproject.toml AND re-pins the package in uv.lock; the
+              #     release flow may also touch CHANGELOG.md. Any path outside this set
+              #     is a real change -> full gate.
+              extra=$(printf '%s\n' "$changed" \
+                | grep -vE '^(pyproject\.toml|uv\.lock|CHANGELOG\.md)$' || true)
+
+              if [ -z "$extra" ]; then
+                # (2) CONTENT check on pyproject.toml: its ONLY changed line must be the
+                #     `version = ` line. Without this, a dependency edit (which touches
+                #     the SAME two paths — pyproject.toml + uv.lock — as a version bump)
+                #     would masquerade as version-only and wrongly skip the gate. uv.lock
+                #     needs no content check: it is a derived artifact that can only
+                #     change because pyproject.toml changed, which this check guards.
+                version_only=true
+                if printf '%s\n' "$changed" | grep -qxF 'pyproject.toml'; then
+                  delta=$(git diff -U0 "$base"...HEAD -- pyproject.toml \
+                    | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' || true)
+                  if [ -z "$delta" ] || printf '%s\n' "$delta" | grep -qvE '^[+-]version = '; then
+                    version_only=false  # empty/odd delta or a non-version line -> not version-only
+                  fi
+                fi
+                [ "$version_only" = true ] && code_touched=false
+              fi
+            else
+              echo "::warning::could not diff against ${base} — running the full gate (fail-safe)"
+            fi
+          else
+            echo "::notice::event=${{ github.event_name }} is not a pull_request — running the full gate"
+          fi
+
+          echo "code_touched=${code_touched}" >> "$GITHUB_OUTPUT"
+          echo "::notice::code_touched=${code_touched} (true = run full check matrix; false = version-only skip)"
+
   check:
+    # Gated on the version-only detector. `!cancelled()` forces this `if:` to be
+    # evaluated even when `changes` failed (a bare `needs:` would otherwise SKIP this
+    # job on an upstream failure — and a skipped required check reads as satisfied,
+    # letting a PR merge with NO tests). So: run unless the detector positively said
+    # "version-only" — i.e. run when the detector didn't succeed (fail-safe) OR it
+    # reported a real change.
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code_touched == 'true') }}
     # One leg per OS, plus BOTH Windows shells (cmd + Windows PowerShell) so the
     # gate is exercised through each shell's quoting/PATH surface — the same two
     # shells the slow-sandbox-tui Windows lane runs under. The runners have no
