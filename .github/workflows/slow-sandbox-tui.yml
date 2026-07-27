@@ -1,0 +1,215 @@
+name: slow-sandbox-tui
+
+# The REAL `@slow @sandbox` tier, running in GitHub-hosted CI on ubuntu-latest — a
+# SEPARATE workflow from the fast `check.yml` gate. It proves danno's interactive
+# `danno sandbox start` launch path for all three harnesses (opencode / codex / claurst):
+# it boots a real `sbx` microVM per harness, drives that harness's TUI through a host-pty,
+# and asserts the H (a turn hit the wire) and C (compaction, branched on `Harness.compacts`)
+# signals — the same suite that runs green on macOS (`tests/slow/tui/test_tui_launch.py`).
+#
+# REQUIRED ON PRs INTO main. The job below is a required status check
+# (`slow @sandbox TUI (ubuntu-latest)` in the `protect-main` ruleset) — every PR into main
+# must pass it, EXCEPT a version-only release PR, which skips it (see the version-only
+# detector). The full suite also re-runs post-merge via the `push: main` trigger.
+#
+# WHY THIS TIER IS VIABLE IN HOSTED CI (the other @slow files are NOT):
+#   1. `sbx` boots a real sandbox microVM on ubuntu-latest — empirically PROVEN by the
+#      probe workflow (`.github/workflows/probe-sbx-ubuntu.yml`, run 30284831873:
+#      VERDICT=PASS, kernel 7.0.12 guest, hostname=sandbox name = real isolation).
+#   2. This tier drives a STUB AI (`book_em_danno.stubai`) on a fixed host port, NOT a
+#      real Ollama — so it needs no model server, no GPU, no ADOS repo. The other @slow
+#      files (test_live / test_capture / test_ollama_v1 / test_gates_*) all require real
+#      Ollama and/or ADOS_REPO and therefore stay OUT of hosted CI.
+#
+# FAIL-LOUD (constitution Working Rule 8 — a silent skip is a defect): by the time the
+# suite runs, sbx is installed, signed in, and its policy is initialized, so the sandbox
+# runtime IS up. A test that SKIPS here is therefore a real failure masquerading as a
+# green, not a legitimate environment gap. The final gate parses the JUnit XML and fails
+# the job if ANY sandbox test skipped, or if fewer than the 3 expected legs
+# (opencode/codex/claurst) actually ran.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # Cheap pre-gate: decide whether the expensive sandbox job needs to run for THIS PR.
+  # A release PR that changes ONLY the version number should merge fast without paying
+  # the ~12-min sandbox suite; the full suite re-runs post-merge via `push: main`.
+  # (Identical logic to check.yml's `changes` job — separate workflows can't share a job,
+  # so the detector is duplicated. Keep the two in sync.)
+  changes:
+    name: changes (version-only detector)
+    runs-on: ubuntu-latest
+    outputs:
+      # 'true'  -> run the sandbox suite (any real code/deps change, OR any doubt).
+      # 'false' -> version-only PR; the sandbox job is skipped (and its required context
+      #            reports skipped == satisfied).
+      code_touched: ${{ steps.decide.outputs.code_touched }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need the base-branch history to diff the PR against it
+      - id: decide
+        shell: bash
+        run: |
+          # FAIL-SAFE: default to running the suite. Only a positively-detected
+          # version-only PR turns it off; every uncertain path leaves it ON.
+          set -uo pipefail
+          code_touched=true
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+            if changed=$(git diff --name-only "$base"...HEAD 2>/dev/null); then
+              printf '::group::changed files\n%s\n::endgroup::\n' "$changed"
+
+              # (1) PATH allow-list: the only paths a pure version bump may touch.
+              #     A bump edits pyproject.toml AND re-pins the package in uv.lock; the
+              #     release flow may also touch CHANGELOG.md. Any path outside this set
+              #     is a real change -> run the suite.
+              extra=$(printf '%s\n' "$changed" \
+                | grep -vE '^(pyproject\.toml|uv\.lock|CHANGELOG\.md)$' || true)
+
+              if [ -z "$extra" ]; then
+                # (2) CONTENT check on pyproject.toml: its ONLY changed line must be the
+                #     `version = ` line. Without this, a dependency edit (which touches
+                #     the SAME two paths — pyproject.toml + uv.lock — as a version bump)
+                #     would masquerade as version-only and wrongly skip the suite. uv.lock
+                #     needs no content check: it is a derived artifact that can only
+                #     change because pyproject.toml changed, which this check guards.
+                version_only=true
+                if printf '%s\n' "$changed" | grep -qxF 'pyproject.toml'; then
+                  delta=$(git diff -U0 "$base"...HEAD -- pyproject.toml \
+                    | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' || true)
+                  if [ -z "$delta" ] || printf '%s\n' "$delta" | grep -qvE '^[+-]version = '; then
+                    version_only=false  # empty/odd delta or a non-version line -> not version-only
+                  fi
+                fi
+                [ "$version_only" = true ] && code_touched=false
+              fi
+            else
+              echo "::warning::could not diff against ${base} — running the suite (fail-safe)"
+            fi
+          else
+            echo "::notice::event=${{ github.event_name }} is not a pull_request — running the suite"
+          fi
+
+          echo "code_touched=${code_touched}" >> "$GITHUB_OUTPUT"
+          echo "::notice::code_touched=${code_touched} (true = run sandbox suite; false = version-only skip)"
+
+  slow-sandbox-tui:
+    name: slow @sandbox TUI (ubuntu-latest)
+    # SKIP THE WHOLE JOB on a version-only PR. This is safe HERE (but NOT in check.yml):
+    # this is a SINGLE (non-matrix) job whose own name IS the required context, so a
+    # job-level `if:` skip posts `slow @sandbox TUI (ubuntu-latest)` = skipped, which
+    # SATISFIES the required check. (check.yml's `check` job is a MATRIX, so skipping it
+    # at the job level never expands the matrix and the per-leg required contexts are
+    # never posted -> PR blocked; there we gate the STEPS instead. The difference is
+    # matrix vs non-matrix.)
+    #
+    # `!cancelled()` (instead of the implicit `success()`) forces this `if:` to evaluate
+    # even when `changes` failed, and `!= 'false'` treats a failed detector's empty
+    # output as "run" -> fail-safe: doubt always runs the suite.
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code_touched != 'false' }}
+    runs-on: ubuntu-latest
+    env:
+      # `sbx create` gates on a Docker ACCOUNT sign-in session (NOT a registry
+      # `docker login` — empirically: plain docker login PASSes but create still 401s
+      # "no default account profile set"). The non-interactive path is `sbx login
+      # --password-stdin` with a Docker PAT (proven working on sbx 0.37.0). Repo Actions
+      # secrets: DOCKERHUB_USER (docker id) + DOCKERHUB_TOKEN (a Docker PAT).
+      DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USER }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync dependencies
+        # --all-extras pulls the host-pty stack this tier needs (pexpect on POSIX, pyte
+        # for VT emulation); --locked fails on uv.lock drift. Same invocation as check.yml.
+        run: uv sync --locked --all-extras --dev
+
+      - name: Install + sign in + initialize sbx (proven headless recipe)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # /dev/kvm is present on standard ubuntu runners (since 2024-04-02) with nested
+          # virt enabled, but owned by the `kvm` group; `usermod -aG` would need a re-login
+          # this job can't perform, so widen the device node directly (safe on a one-shot
+          # ephemeral runner only).
+          if [ ! -e /dev/kvm ]; then
+            echo '::error::/dev/kvm absent on this runner — sbx microVM cannot boot' >&2
+            exit 1
+          fi
+          sudo chmod 0666 /dev/kvm
+
+          # Official Linux install path for the standalone sbx binary.
+          curl -fsSL https://get.docker.com | sudo REPO_ONLY=1 sh
+          sudo apt-get install -y docker-sbx
+          sbx version
+
+          if [ -z "${DOCKERHUB_TOKEN:-}" ] || [ -z "${DOCKERHUB_USER:-}" ]; then
+            echo '::error::DOCKERHUB_USER/DOCKERHUB_TOKEN secrets missing — sbx create will 401 on the account gate' >&2
+            exit 1
+          fi
+          printf '%s' "$DOCKERHUB_TOKEN" | sbx login --username "$DOCKERHUB_USER" --password-stdin
+
+          # The global network policy is a one-time, NON-idempotent step; gate on
+          # `policy ls` first (mirrors danno's ensure_policy_initialized). `balanced` =
+          # default-deny base + curated dev/AI hosts; danno's per-sandbox allow-list then
+          # opens only the capture proxy.
+          sbx policy ls >/dev/null 2>&1 || sbx policy init balanced
+
+      - name: Run the @slow @sandbox TUI suite (opencode / codex / claurst, stub AI)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A real test failure fails this step; the fail-loud gate below is `if: always()`,
+          # so it still runs to attribute skips / under-collection even when this step is red.
+          uv run pytest tests/slow/tui/ -m sandbox -v \
+            --junitxml=sandbox-results.xml
+
+      - name: Fail loud on skipped or under-collected sandbox tests
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          p = Path("sandbox-results.xml")
+          if not p.is_file():
+              sys.exit("::error::no JUnit XML produced — the pytest step failed before/at collection")
+
+          root = ET.parse(p).getroot()
+          total = skipped = failed = 0
+          for case in root.iter("testcase"):
+              total += 1
+              tags = {child.tag for child in case}
+              if "skipped" in tags:
+                  skipped += 1
+              if {"failure", "error"} & tags:
+                  failed += 1
+          ran = total - skipped
+          print(f"::notice::sandbox suite: testcases={total} ran={ran} skipped={skipped} failed={failed}")
+
+          # sbx is installed, signed in, and policy-initialized by the prior step, so the
+          # sandbox runtime is UP — a skip here is a real failure, not an environment gap.
+          if skipped:
+              sys.exit(f"::error::{skipped} sandbox test(s) SKIPPED — sbx is up in this job, so a skip is a masked failure (fail-loud, Working Rule 8)")
+          if ran < 3:
+              sys.exit(f"::error::only {ran} sandbox test(s) ran; expected 3 legs (opencode/codex/claurst) — suite under-collected")
+          if failed:
+              sys.exit(f"::error::{failed} sandbox test(s) FAILED — see the pytest step log")
+          print("::notice::all 3 A/H/C sandbox legs ran and passed")
+          PY
