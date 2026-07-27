@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -32,6 +33,25 @@ from book_em_danno.stubai import Finish, StubConfig, ToolLoop, stub_ai
 pytestmark = [pytest.mark.slow, requires_docker]
 
 _CAP_PREFIX = "danno-bench-cap-"
+
+# Start the child in its OWN process group so a Ctrl-C reaches the whole `danno bench` tree,
+# not just the shell. POSIX: a new session + `killpg(SIGINT)`. Windows has no process groups /
+# SIGINT-to-group; the equivalent is CREATE_NEW_PROCESS_GROUP + a Ctrl-Break to that group.
+# Both Popen kwargs exist on every platform (the unused one is a harmless no-op), so pass both.
+if sys.platform == "win32":
+    _CREATIONFLAGS = subprocess.CREATE_NEW_PROCESS_GROUP
+    _START_NEW_SESSION = False
+else:
+    _CREATIONFLAGS = 0
+    _START_NEW_SESSION = True
+
+
+def _interrupt_process_group(proc: subprocess.Popen[bytes]) -> None:
+    """Ctrl-C the child's whole process group (POSIX SIGINT / Windows Ctrl-Break)."""
+    if sys.platform == "win32":
+        proc.send_signal(signal.CTRL_BREAK_EVENT)
+    else:
+        os.killpg(os.getpgid(proc.pid), signal.SIGINT)
 
 
 def _temp_residue() -> list[Path]:
@@ -124,10 +144,11 @@ def test_no_save_captures_writes_no_capture_dir_on_sigint_abort(tmp_path: Path) 
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            start_new_session=True,
+            creationflags=_CREATIONFLAGS,
+            start_new_session=_START_NEW_SESSION,
         )
         _wait_for_cell_start(stub_transcript, deadline_s=180)
-        os.killpg(os.getpgid(proc.pid), signal.SIGINT)  # Ctrl-C the whole run mid-cell
+        _interrupt_process_group(proc)  # Ctrl-C the whole run mid-cell
         proc.wait(timeout=300)
     # Aborted mid-cell, the proxy still wrote nothing: no temp root, no <out>/captures.
     assert not (set(_temp_residue()) - before), "aborted --no-save-captures run stranded captures"

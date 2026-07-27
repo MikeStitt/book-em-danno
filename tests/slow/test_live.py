@@ -114,7 +114,9 @@ def _npm_demo_config() -> DannoConfig:
     commented block in danno.toml.example. Its `setup` path is covered by unit tests."""
     return DannoConfig(
         backends={
-            "ollama": OllamaBackend(kind="ollama", base_url="http://host.docker.internal:11434/v1")
+            # Honors DANNO_OLLAMA_HOST_URL (LAN Ollama) via sandbox.DEFAULT_OLLAMA_URL; falls
+            # back to the same-host alias. This test never runs the model (only `agent list`).
+            "ollama": OllamaBackend(kind="ollama", base_url=sandbox.DEFAULT_OLLAMA_URL)
         },
         models={
             "gemma": Model(
@@ -152,7 +154,7 @@ def test_npm_plugins_install_in_container(tmp_path: Path) -> None:
         # the VM that `provision` stopped. (`provision` also creates via sbx here — the
         # slow-test conftest clears DANNO_SANDBOX_CLI, so auto-detect picks the installed
         # sbx; a sandbox is invisible to the OTHER backend's exec — "VM not found".)
-        trigger = f"cd {target} && opencode agent list"
+        trigger = f"cd {sandbox.container_path(target)} && opencode agent list"
         subprocess.run(
             ["sbx", "exec", name, "bash", "-lc", trigger],
             capture_output=True,

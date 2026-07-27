@@ -8,14 +8,34 @@ slow tests and by `--apply` runs. Uses stdlib `urllib` — no new dependency.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 
 from ..core.exec import Runner, log_info, log_warn
 
-DEFAULT_HOST_URL = "http://localhost:11434"
+# Env override for the Ollama endpoint danno probes. Set it to route danno at a remote
+# server, e.g. a LAN host: `DANNO_OLLAMA_HOST_URL=http://10.0.1.27:11434`. The slow Ollama
+# tests and `--apply` reachability probes honor it; unset it and danno uses local Ollama.
+HOST_URL_ENV = "DANNO_OLLAMA_HOST_URL"
+_LOCAL_HOST_URL = "http://localhost:11434"
+
+
+def resolve_host_url(env: Mapping[str, str] | None = None) -> str:
+    """The Ollama base URL danno probes: `DANNO_OLLAMA_HOST_URL` if set, else local Ollama.
+
+    A trailing slash is trimmed so `f"{url}/api/tags"` stays well-formed. `env` defaults to
+    the process environment; pass a mapping to resolve deterministically in tests."""
+    raw = (os.environ if env is None else env).get(HOST_URL_ENV, "").strip()
+    return raw.rstrip("/") if raw else _LOCAL_HOST_URL
+
+
+# Resolved once at import: the module-level default every probe below falls back to. Setting
+# the env var before the process starts (the slow-test invocation) redirects them all.
+DEFAULT_HOST_URL = resolve_host_url()
 
 
 def reachable(host_url: str = DEFAULT_HOST_URL, *, timeout: float = 2.0) -> bool:
