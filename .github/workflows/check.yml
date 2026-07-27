@@ -7,10 +7,26 @@ on:
 
 jobs:
   check:
+    # One leg per OS, plus BOTH Windows shells (cmd + Windows PowerShell) so the
+    # gate is exercised through each shell's quoting/PATH surface — the same two
+    # shells the slow-sandbox-tui Windows lane runs under. The runners have no
+    # Docker sandbox or Ollama, so only the fast gate (`-m "not slow"`) runs here;
+    # the live @slow/@sandbox tiers are validated in the Windows lane, not in CI.
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            label: linux
+          - os: macos-latest
+            label: macos
+          - os: windows-latest
+            label: windows-cmd
+            shell: cmd
+          - os: windows-latest
+            label: windows-powershell
+            shell: powershell
+    name: check (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -18,7 +34,8 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
-      - name: Install ninja
+      - name: Install ninja (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -30,10 +47,30 @@ jobs:
           fi
           ninja --version
 
+      - name: Install ninja (Windows)
+        if: runner.os == 'Windows'
+        shell: ${{ matrix.shell }}
+        run: |
+          choco install ninja -y
+          ninja --version
+
       - name: Sync dependencies
         # --locked fails the run if uv.lock is out of date with pyproject.toml,
-        # so version drift surfaces in CI instead of hiding.
+        # so version drift surfaces in CI instead of hiding. On Windows this pulls
+        # pywinpty (the pexpect line is POSIX-only via its marker), so drift in the
+        # platform-split pty deps also surfaces here.
+        shell: ${{ matrix.shell || 'bash' }}
         run: uv sync --locked --all-extras --dev
 
-      - name: ninja check
+      - name: ninja check (Unix)
+        if: runner.os != 'Windows'
         run: ninja check
+
+      - name: ninja check (Windows)
+        if: runner.os == 'Windows'
+        shell: ${{ matrix.shell }}
+        # Ninja on Windows runs each rule command directly via CreateProcess (no
+        # shell), so the `check` rule's `&&`-chained compound would not parse.
+        # Invoke the four single-command targets instead — same gate, no shell
+        # operator. (build.ninja: lint | fmt | typecheck | test.)
+        run: ninja lint fmt typecheck test
