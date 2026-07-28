@@ -15,8 +15,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from book_em_danno.commands import sandbox as sb
+from book_em_danno.config.generate import claurst_provider_id
 from book_em_danno.config.schema import DannoConfig
 from book_em_danno.core.exec import Runner
 from danno_validator import claurst as _impl
@@ -57,9 +59,34 @@ def _launch_argv(model: str | None, harness_args: list[str], capture_port: int |
     return _impl.interactive_launch_script(model, harness_args, capture_port=capture_port)
 
 
+def _reachable(config: DannoConfig, variant: ConfigVariant) -> str | None:
+    """None if claurst can resolve a provider for this model's backend, else a one-line reason
+    it can't (#107). claurst dials `-m <provider>/<tag>` against its OWN provider registry, so a
+    speakable OpenAI-compatible model whose host it can't map (no inferred/declared provider,
+    e.g. `o4-mini` on `host.docker.internal`) is unreachable — this filters it to a skipped cell
+    instead of aborting the whole sweep at dial time. Reuses the `claurst_provider_id` predicate
+    (#106); the reason is kept bracket-free because `log_warn` renders via rich (`[…]` = markup)."""
+    try:
+        claurst_provider_id(config, variant.model_name)
+    except (ValueError, NotImplementedError):
+        backend = config.backends[config.models[variant.model_name].backend]
+        base_url = getattr(backend, "base_url", "") or ""  # inert has none; union-safe
+        host = urlsplit(base_url).hostname or base_url or "its backend"
+        return (
+            f"{variant.model_name}: claurst has no provider mapping for backend host '{host}' "
+            f"(declare claurst_provider on the backend, or run it with --harness opencode)"
+        )
+    return None
+
+
 def _model_matrix(config: DannoConfig, only: Sequence[str] | None) -> list[ConfigVariant]:
     return dialable_variants(
-        config, only, speaks=_CLAURST_SPEAKS, dials=_CLAURST_DIALS, harness="claurst"
+        config,
+        only,
+        speaks=_CLAURST_SPEAKS,
+        dials=_CLAURST_DIALS,
+        harness="claurst",
+        reachable=lambda v: _reachable(config, v),
     )
 
 
