@@ -527,6 +527,59 @@ def test_run_aider_provisions_by_harness_name_not_sandbox_image(
     assert seen["harness"] in harnesses.all_names()  # never the "shell" image
 
 
+class _FakeSweTask:
+    """Minimal swebench task: `_run_swebench` provisions + installs the harness BEFORE any
+    per-task work, so a no-op task + zero variants reaches the `sb.provision` call site
+    (b1fcfea's crash site) and nothing heavier."""
+
+    id = "stub-108"
+
+    def provision(self, runner: object, name: str, workspace: object) -> None:
+        pass
+
+
+@pytest.mark.parametrize("harness", ["claurst", "codex"])
+def test_run_swebench_provisions_by_harness_name_not_sandbox_image(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, harness: str
+) -> None:
+    # #108: the same b1fcfea guard, extended to `_run_swebench` (bench.py:414) — the second
+    # uncovered `sb.provision` caller, where the name!=image bug could re-enter. The value
+    # handed to provision must be a registered harness NAME, never the "shell" image.
+    seen: dict[str, object] = {}
+
+    class _StopEarly(Exception):
+        pass
+
+    def fake_provision(runner, name, workspace, *, harness, **kw):  # type: ignore[no-untyped-def]
+        seen["harness"] = harness
+        raise _StopEarly
+
+    monkeypatch.setattr(bench, "load_swebench_tasks", lambda *a, **k: [_FakeSweTask()])
+    monkeypatch.setattr(bench.sb, "provision", fake_provision)
+    cfg = BenchmarksConfig()
+    cfg.swebench.enabled = True
+    cfg.swebench.select = ["stub-108"]
+    opts = bench.BenchOptions(target=tmp_path, harness=harness, out_dir=tmp_path / "out")
+    with pytest.raises(_StopEarly):
+        bench._run_swebench(
+            Runner(),
+            cfg,
+            opts,
+            workspace=tmp_path / "ws",
+            variants=[],
+            config=_config(),
+            env_files={},
+            capture=None,
+            sampler=None,
+            allow_hosts=("localhost:11434",),
+            capture_port=None,
+            warm=False,
+            warmup=[],
+        )
+    assert seen["harness"] == harness
+    assert seen["harness"] in harnesses.all_names()  # never the "shell" image
+
+
 def test_run_turn_for_opencode_pins_build_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, object] = {}
 
