@@ -19,11 +19,18 @@ Chat-only cloud endpoint even once its `dials` includes `"openai"`.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from book_em_danno.config.schema import DannoConfig, backend_wire_offers
 from book_em_danno.core.exec import log_warn
 from danno_validator.matrix import ConfigVariant, model_variants
+
+# A per-variant reachability check: None if the harness can actually reach this model's backend,
+# else a one-line reason it can't. Distinct from the speakable predicate below — a model can be
+# fully speakable (dialable kind + shared wire) yet unreachable because the harness has no
+# provider mapping for its backend host (claurst's case, #107). Harnesses that reach any backend
+# they can dial (opencode/codex) pass no predicate.
+ReachablePredicate = Callable[[ConfigVariant], str | None]
 
 
 def dialable_variants(
@@ -33,6 +40,7 @@ def dialable_variants(
     speaks: frozenset[str],
     dials: frozenset[str],
     harness: str,
+    reachable: ReachablePredicate | None = None,
 ) -> list[ConfigVariant]:
     """The dialer matrix restricted to the cells `harness` can speak (the predicate above).
 
@@ -48,6 +56,14 @@ def dialable_variants(
     Every dialer binds this with its own `speaks`/`dials` (opencode speaks {chat,responses}
     dials {ollama,openai}; claurst speaks {chat}; codex speaks {responses} dials {ollama})
     instead of branching on the harness name.
+
+    `reachable` (claurst only, #107) is a SECOND, separately-worded filter applied to the
+    speakable survivors: a model claurst can speak but whose backend it can't reach (no
+    provider mapping — e.g. an OpenAI host it hasn't been told how to route) is dropped from an
+    implicit sweep (loud) / fails loud on `--only`, exactly like the speakable case, so one
+    unreachable model degrades to a skipped cell instead of aborting the whole sweep. Harnesses
+    that reach any dialable backend (opencode/codex) pass no predicate and keep every speakable
+    cell.
     """
     speaks = frozenset(str(s) for s in speaks)
     variants = model_variants(config, only=only)
@@ -85,4 +101,27 @@ def dialable_variants(
             f"(a harness-capability boundary, not a danno error): {detail}."
         )
     na_names = {v.model_name for v, _ in na}
-    return [v for v in variants if v.model_name not in na_names]
+    speakable = [v for v in variants if v.model_name not in na_names]
+
+    if reachable is None:
+        return speakable
+
+    # Reachability pass (#107): a model this harness can SPEAK but whose backend it can't
+    # REACH (no provider mapping). Same graceful posture as the speakable filter — drop it from
+    # an implicit sweep (loudly, so the grid shows the gap) rather than let a later dial-time
+    # resolve abort the whole sweep; fail loud only when `--only` names it explicitly.
+    unreachable = [(v, r) for v in speakable if (r := reachable(v)) is not None]
+    if unreachable:
+        detail = "; ".join(r for _, r in unreachable)
+        if only is not None:
+            raise ValueError(
+                f"harness '{harness}' can't reach these models: {detail}. Drop them from --only, "
+                f"declare the backend's provider so danno can route it, or run them with a harness "
+                f"that can reach the backend (e.g. --harness opencode)."
+            )
+        log_warn(
+            f"harness '{harness}' can't reach these models and skips them "
+            f"(unreachable backend, not a danno error): {detail}."
+        )
+    unreachable_names = {v.model_name for v, _ in unreachable}
+    return [v for v in speakable if v.model_name not in unreachable_names]
