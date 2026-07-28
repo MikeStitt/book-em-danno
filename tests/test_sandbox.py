@@ -217,6 +217,46 @@ def test_provision_opencode_does_not_install_claurst(
     assert not any("claurst" in c for c in r.joined())
 
 
+# --- harness-arg validation at the provision/create boundary (issue #109) ---
+
+
+@pytest.mark.parametrize(
+    ("harness", "image"),
+    [("opencode", "opencode"), ("claude", "claude"), ("claurst", "shell"), ("codex", "shell")],
+)
+def test_docker_image_resolves_harness_name_to_its_image(harness: str, image: str) -> None:
+    # Name==image for the prebuilt harnesses; the binary-installed ones (claurst/codex) ride the
+    # `shell` image. Locked so a name≠image harness can't silently regress its image mapping.
+    assert sandbox._docker_image(harness) == image
+
+
+def test_docker_image_rejects_non_harness_arg_naming_the_set() -> None:
+    # Passing a resolved IMAGE string (e.g. "shell") where a harness NAME is expected must fail
+    # loud with the registered-name set, not a cryptic KeyError deep in the stack (issue #109).
+    with pytest.raises(ValueError, match="unknown harness 'shell'. Valid harnesses:"):
+        sandbox._docker_image("shell")
+
+
+def test_create_rejects_non_harness_arg_before_side_effects(tmp_path: Path) -> None:
+    # The boundary validates up front: a bad `harness` fails loud before `create` records any
+    # command on the runner.
+    r = RecordingRunner()
+    with pytest.raises(ValueError, match="unknown harness 'shell'. Valid harnesses:"):
+        sandbox.create(r, "danno-x", tmp_path, "shell")
+    assert r.joined() == []
+
+
+def test_provision_rejects_non_harness_arg_before_side_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Same up-front rejection through `provision`: no LAN warning, no create, no runner command.
+    monkeypatch.setattr(ollama, "lan_exposure_warning", lambda **kw: None)
+    r = RecordingRunner()
+    with pytest.raises(ValueError, match="unknown harness 'shell'. Valid harnesses:"):
+        sandbox.provision(r, "probe", tmp_path, harness="shell")
+    assert r.joined() == []
+
+
 def test_launch_claurst_relay_free_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
     r = RecordingRunner()
     sandbox.launch(r, "probe", Path("/repo"), harness="claurst", model="ollama/gemma4:26b")
