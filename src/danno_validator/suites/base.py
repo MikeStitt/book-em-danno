@@ -130,8 +130,25 @@ class BenchVerdict:
     #   `tool_calls`; excludes grading (the tally stops before `task.grade`). None if ungated.
     gate: GateBreach | None = None  # the breach that killed the cell (gate/observed/limit)
     survivors: tuple[int, ...] | None = None  # harness PIDs alive after the turn; () = clean
-    termination: str = "completed"  # "gate_kill" if a gate killed the cell, else "completed"
-    #   (orthogonal to `passed`: a killed cell is a gate event regardless of grading)
+    termination: str = "completed"  # how the cell ended: "gate_kill" | "error" | "completed"
+    #   (a faithful enum, not a gate_kill/else binary — an errored cell must never read as
+    #   `completed`; see `_termination`. Orthogonal to `passed`.)
+
+
+def _termination(*, gate_killed: bool, failure_class: FailureClass) -> str:
+    """How a bench cell ended, as a faithful enum: ``gate_kill`` | ``error`` | ``completed``.
+
+    An errored cell (harness/transport failure, no real attempt) must never read as
+    ``completed`` — the field is named for *how* the cell terminated, so a health check
+    keyed off it alone would otherwise wave a hard failure through (issue #104). Gate kills
+    take precedence; a gate-breach verdict is never ``ERROR`` (its class is the breach slug,
+    e.g. runaway/timeout), so the two are mutually exclusive.
+    """
+    if gate_killed:
+        return "gate_kill"
+    if failure_class is FailureClass.ERROR:
+        return "error"
+    return "completed"
 
 
 def error_verdict(task_id: str, suite: str, detail: str) -> BenchVerdict:
@@ -155,6 +172,7 @@ def error_verdict(task_id: str, suite: str, detail: str) -> BenchVerdict:
         cost=0.0,
         latency_s=0.0,
         error_summary=detail,
+        termination=_termination(gate_killed=False, failure_class=FailureClass.ERROR),
     )
 
 
@@ -379,7 +397,9 @@ def run_bench_task(
         rounds=rounds,
         gate=breach,
         survivors=survivors,
-        termination="gate_kill" if breach is not None else "completed",
+        termination=_termination(
+            gate_killed=breach is not None, failure_class=verdict.failure_class
+        ),
     )
 
 
