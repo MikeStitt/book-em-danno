@@ -62,6 +62,10 @@ class CaptureProxyConfig:
     capture_file: Path
     port: int
     pass_headers: bool = True
+    # The capture target's `backend_name`, so a POST this proxy sees is attributed to its
+    # backend in the shared `tally` (`observe_post(backend_name)`) — lets the runaway path tell
+    # whether the cell's ACTIVE backend was ever dialed vs only an idle sidecar backend (#105).
+    backend_name: str | None = None
     # When set (`danno bench`'s runaway gates), each usage-bearing response feeds this live
     # tally so the exec watchdog can trip Gate 1 (round count) / Gate 2 (tokens) mid-cell.
     tally: GateTally | None = None
@@ -224,7 +228,7 @@ class _Handler(BaseHTTPRequestHandler):
             # stream without `include_usage` — still advances the tally (F1). Tokens are
             # recorded when extractable, else `None` (a round with no token spend).
             if self.command == "POST":
-                cfg.tally.observe_post()
+                cfg.tally.observe_post(cfg.backend_name)
             if is_inference:
                 cfg.tally.record(tokens=total_tokens(usage) if usage is not None else None)
 

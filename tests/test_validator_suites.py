@@ -459,3 +459,107 @@ def test_run_bench_task_survivor_probe_failure_records_unknown(
     assert v.reap == "exec-failed:OSError"  # the failed reap is recorded on the row
     out = capsys.readouterr().out
     assert "[WARN]" in out and "survivor probe could not run" in out
+
+
+# --- #105: a 0-request active backend must fail loud, never grade to a silent pass ------------
+
+
+def _zero_request_binding(tmp_path: Path, *, backend_name: str = "ollama"):  # type: ignore[no-untyped-def]
+    """A real single-backend CaptureBinding on a free port. The proxy stands up but the fake
+    turn never dials it, so the tally records 0 POSTs for `backend_name` (the #105 signal)."""
+    import socket
+
+    from book_em_danno.capture.wiring import CaptureBinding, CaptureTarget
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("0.0.0.0", 0))
+        port = sock.getsockname()[1]
+    return CaptureBinding(
+        targets=(
+            CaptureTarget(
+                backend_name=backend_name,
+                real_base_url="http://h:11434/v1",
+                upstream="http://127.0.0.1:1",  # never dialed by the fake turn
+                proxy_port=port,
+                capture_file=tmp_path / f"{backend_name}.jsonl",
+                is_local=True,
+            ),
+        ),
+        capture_dir=tmp_path / "captures",
+    )
+
+
+def test_run_bench_task_zero_request_active_backend_fails_loud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # #105: the model's own backend saw ZERO inference requests — it was never dialed. Even though
+    # grading passed (workspace-only), the cell must NOT be reported as a clean pass: it is marked
+    # `no_requests` with an ERROR verdict and a loud warning, distinct from a genuine pass/fail.
+    monkeypatch.setattr(
+        base, "_surviving_harness_pids", lambda runner, sandbox: base.SurvivorProbe(True, ())
+    )
+    v = base.run_bench_task(
+        Runner(),
+        "box",
+        task=_FakeTask(_passed=True),  # workspace already satisfies the tests
+        suite="aider",
+        workspace=tmp_path,
+        model="ollama/x",
+        run_turn=_run_turn_returning(_FakeTurn()),  # returns without dialing the proxy
+        capture=_zero_request_binding(tmp_path),
+        gates=ResolvedGates(max_turns=10, max_tokens=None, timeout_s=30.0),
+    )
+    assert v.termination == "no_requests"  # marked, not "completed"
+    assert v.verdict.failure_class is FailureClass.ERROR  # not a clean-pass verdict
+    assert v.passed is True  # ground truth preserved, but the row is not a silent green
+    out = capsys.readouterr().out
+    assert "[WARN]" in out and "0 inference requests" in out and "ollama" in out
+
+
+def test_run_bench_task_active_backend_with_traffic_is_not_flagged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The guard fires ONLY on a truly-dark active backend: a cell whose active backend DID see
+    # traffic (here pre-seeded, as a real dial would) grades normally — no false no_requests.
+    tally = base.GateTally()
+    tally.observe_post("ollama")  # the active backend was dialed this cell
+    monkeypatch.setattr(base, "GateTally", lambda: tally)
+    monkeypatch.setattr(
+        base, "_surviving_harness_pids", lambda runner, sandbox: base.SurvivorProbe(True, ())
+    )
+    v = base.run_bench_task(
+        Runner(),
+        "box",
+        task=_FakeTask(_passed=True),
+        suite="aider",
+        workspace=tmp_path,
+        model="ollama/x",
+        run_turn=_run_turn_returning(_FakeTurn()),
+        capture=_zero_request_binding(tmp_path),
+        gates=ResolvedGates(max_turns=10, max_tokens=None, timeout_s=30.0),
+    )
+    assert v.termination == "completed"
+    assert v.verdict.passed is True
+
+
+def test_run_bench_task_uncaptured_active_backend_not_falsely_flagged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An uncaptured cloud ref (its backend has no proxy this cell) has NO 0-request sensor, so the
+    # guard must not fire — `uncaptured_cloud_refs` warns about those separately. Only the local
+    # `ollama` backend is proxied; the active backend `anthropic` is not in the target set.
+    monkeypatch.setattr(
+        base, "_surviving_harness_pids", lambda runner, sandbox: base.SurvivorProbe(True, ())
+    )
+    v = base.run_bench_task(
+        Runner(),
+        "box",
+        task=_FakeTask(_passed=True),
+        suite="aider",
+        workspace=tmp_path,
+        model="anthropic/claude-x",  # backend 'anthropic' is not among the captured targets
+        run_turn=_run_turn_returning(_FakeTurn()),
+        capture=_zero_request_binding(tmp_path, backend_name="ollama"),
+        gates=ResolvedGates(max_turns=10, max_tokens=None, timeout_s=30.0),
+    )
+    assert v.termination == "completed"  # not flagged: no sensor for the active backend

@@ -135,8 +135,9 @@ class BenchVerdict:
     reap: str | None = None  # post-kill reap outcome tag ("killed"/"no-match"/"error:…"/
     #   "exec-failed:…"); None when the cell was not gate-killed. The error tags already emitted
     #   a loud warning (#103) — this surfaces the failed cleanup in the row, not just in stderr.
-    termination: str = "completed"  # "gate_kill" if a gate killed the cell, else "completed"
-    #   (orthogonal to `passed`: a killed cell is a gate event regardless of grading)
+    termination: str = "completed"  # "gate_kill" if a gate killed the cell, "no_requests" if its
+    #   active backend saw 0 inference requests (#105 — the model never ran; grade is workspace-
+    #   only), else "completed" (orthogonal to `passed`: both are events regardless of grading)
 
 
 def error_verdict(task_id: str, suite: str, detail: str) -> BenchVerdict:
@@ -431,10 +432,46 @@ def run_bench_task(
                     f"{suite}/{task.id} {model}: a runaway leaked past the kill/reap and will "
                     "burn VM CPU (and, in a shared sandbox, bleed into the next cell)."
                 )
+    # A cell whose ACTIVE backend (the model's own, `model.split("/")[0]`) saw zero POSTs was
+    # never dialed: the model never ran, so grading measured only whatever was in the workspace
+    # (#105). That is an infrastructure/triple failure — it must never grade to a silent pass or
+    # masquerade as an ordinary model failure. Distinct from `blind()` (traffic seen but none
+    # counted): here NO traffic reached the active backend. Only checked under an active capture
+    # proxy (the tally's only feed) and a real model row, and only for a backend we actually proxy
+    # (an uncaptured cloud ref has no sensor — `uncaptured_cloud_refs` warns about those); a gate
+    # kill already fails loud, so it takes precedence.
+    active_backend = model.split("/", 1)[0] if model is not None else None
+    active_backend_dark = (
+        breach is None
+        and tally is not None
+        and capture is not None
+        and active_backend is not None
+        and active_backend in {t.backend_name for t in capture.targets}
+        and tally.posts(active_backend) == 0
+    )
+    termination = "completed"
     if breach is not None:
         # A killed cell is a gate event regardless of what grading finds in the workspace.
         verdict = gate_verdict(breach, tool_call_count=turn.tool_call_count)
         error_summary: str | None = verdict.rationale
+        termination = "gate_kill"
+    elif active_backend_dark:
+        reason = (
+            f"active backend '{active_backend}' saw 0 inference requests for {suite}/{task.id} "
+            f"{model}: the model was never dialed (harness/sandbox/wiring/egress failure) — the "
+            "grade reflects only the workspace, not the model. Recorded as no_requests, not a "
+            "clean pass/fail."
+        )
+        log_warn(reason)
+        verdict = TurnVerdict(
+            failure_class=FailureClass.ERROR,
+            promised_action=True,
+            tool_call_count=turn.tool_call_count,
+            side_effect=passed,
+            rationale=reason,
+        )
+        error_summary = reason
+        termination = "no_requests"
     else:
         verdict = classify_turn(turn, side_effect=passed, expects_action=True)
         error_summary = turn.error_summary
@@ -456,7 +493,7 @@ def run_bench_task(
         survivors=survivors,
         survivors_unknown=survivors_unknown,
         reap=reap,
-        termination="gate_kill" if breach is not None else "completed",
+        termination=termination,
     )
 
 
