@@ -139,6 +139,7 @@ def captures_running(
                         port=target.proxy_port,
                         tally=tally,
                         persist=persist,
+                        backend_name=target.backend_name,
                     )
                 )
             )
