@@ -540,7 +540,7 @@ def _result_row(
         "model": v.model,
         "passed": v.passed,
         "verdict": str(v.verdict.failure_class),
-        "termination": v.termination,  # gate_kill vs completed — orthogonal to `passed`
+        "termination": v.termination,  # how it ended: gate_kill|error|completed (not `passed`)
         "tool_calls": v.tool_calls,
         "tokens": v.tokens,
         "cost": v.cost,
