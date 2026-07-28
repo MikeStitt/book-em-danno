@@ -74,6 +74,8 @@ commits by [git-cliff](https://git-cliff.org).
 
 - *(bench)* Aider Polyglot example configs + per-test difficulty research
 - *(bench)* Pin the claude reference row to Claude Opus 4.8
+- Add CLAUDE.md pointer enforcing constitution re-agreement
+- *(cross-platform)* Add H11 watchdog-kill hazard + sbx-secret fix for H4
 - DoR for formal Harness API + self-discovering registry
 - *(codex)* Phase-0 live spike findings (relay-free, config/argv/schema pinned)
 
