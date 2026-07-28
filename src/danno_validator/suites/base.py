@@ -135,9 +135,31 @@ class BenchVerdict:
     reap: str | None = None  # post-kill reap outcome tag ("killed"/"no-match"/"error:…"/
     #   "exec-failed:…"); None when the cell was not gate-killed. The error tags already emitted
     #   a loud warning (#103) — this surfaces the failed cleanup in the row, not just in stderr.
-    termination: str = "completed"  # "gate_kill" if a gate killed the cell, "no_requests" if its
-    #   active backend saw 0 inference requests (#105 — the model never ran; grade is workspace-
-    #   only), else "completed" (orthogonal to `passed`: both are events regardless of grading)
+    termination: str = "completed"  # how the cell ended, a faithful enum: "gate_kill" |
+    #   "no_requests" | "error" | "completed" (see `_termination`). "no_requests" = the active
+    #   backend saw 0 inference requests (#105 — the model never ran; grade is workspace-only).
+    #   Orthogonal to `passed`: how the cell terminated, regardless of what grading found.
+
+
+def _termination(*, gate_killed: bool, backend_dark: bool, failure_class: FailureClass) -> str:
+    """How a bench cell ended, as a faithful enum: ``gate_kill`` | ``no_requests`` |
+    ``error`` | ``completed``.
+
+    An errored cell (harness/transport failure, no real attempt) must never read as
+    ``completed`` — the field is named for *how* the cell terminated, so a health check
+    keyed off it alone would otherwise wave a hard failure through (issue #104). Precedence:
+    a gate kill wins (a gate-breach verdict is never ``ERROR`` — its class is the breach slug,
+    so the two are mutually exclusive); then ``no_requests``, the specific case where the
+    active backend was never dialed so the grade reflects only the workspace (#105); then any
+    other ``ERROR`` verdict; else ``completed``.
+    """
+    if gate_killed:
+        return "gate_kill"
+    if backend_dark:
+        return "no_requests"
+    if failure_class is FailureClass.ERROR:
+        return "error"
+    return "completed"
 
 
 def error_verdict(task_id: str, suite: str, detail: str) -> BenchVerdict:
@@ -161,6 +183,9 @@ def error_verdict(task_id: str, suite: str, detail: str) -> BenchVerdict:
         cost=0.0,
         latency_s=0.0,
         error_summary=detail,
+        termination=_termination(
+            gate_killed=False, backend_dark=False, failure_class=FailureClass.ERROR
+        ),
     )
 
 
@@ -449,12 +474,10 @@ def run_bench_task(
         and active_backend in {t.backend_name for t in capture.targets}
         and tally.posts(active_backend) == 0
     )
-    termination = "completed"
     if breach is not None:
         # A killed cell is a gate event regardless of what grading finds in the workspace.
         verdict = gate_verdict(breach, tool_call_count=turn.tool_call_count)
         error_summary: str | None = verdict.rationale
-        termination = "gate_kill"
     elif active_backend_dark:
         reason = (
             f"active backend '{active_backend}' saw 0 inference requests for {suite}/{task.id} "
@@ -471,7 +494,6 @@ def run_bench_task(
             rationale=reason,
         )
         error_summary = reason
-        termination = "no_requests"
     else:
         verdict = classify_turn(turn, side_effect=passed, expects_action=True)
         error_summary = turn.error_summary
@@ -493,7 +515,11 @@ def run_bench_task(
         survivors=survivors,
         survivors_unknown=survivors_unknown,
         reap=reap,
-        termination=termination,
+        termination=_termination(
+            gate_killed=breach is not None,
+            backend_dark=active_backend_dark,
+            failure_class=verdict.failure_class,
+        ),
     )
 
 

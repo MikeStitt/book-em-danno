@@ -135,6 +135,32 @@ def test_run_bench_task_fail_classifies_turn(tmp_path: Path) -> None:
     assert v.verdict.passed is False
 
 
+def test_run_bench_task_errored_cell_terminates_error(tmp_path: Path) -> None:
+    # A harness/transport error (an `error` event on the turn) is a hard failure, not a
+    # completion: `termination` must reflect that, never say "completed" for a verdict=error
+    # row (issue #104 — else a health check keyed off `termination` waves the failure through).
+    task = _FakeTask(_passed=False)
+    v = base.run_bench_task(
+        Runner(),
+        "box",
+        task=task,
+        suite="aider",
+        workspace=tmp_path,
+        run_turn=_run_turn_returning(_FakeTurn(errs=[{"type": "error"}])),
+    )
+    assert str(v.verdict.failure_class) == "error"
+    assert v.termination == "error"
+    assert v.termination != "completed"  # the invariant this issue locks in
+
+
+def test_error_verdict_terminates_error() -> None:
+    # The could-not-even-run path (deps won't install, repo won't clone) is also an error,
+    # so it must not be labeled "completed" either (issue #104 invariant).
+    v = base.error_verdict("demo/task", "swebench", "provision failed")
+    assert str(v.verdict.failure_class) == "error"
+    assert v.termination == "error"
+
+
 def test_load_benchmarks_missing_file_is_all_disabled(tmp_path: Path) -> None:
     cfg = load_benchmarks(tmp_path / "nope.toml")
     assert isinstance(cfg, BenchmarksConfig)
