@@ -556,6 +556,13 @@ def _result_row(
         row["gate"] = {"gate": v.gate.gate, "observed": v.gate.observed, "limit": v.gate.limit}
     if v.survivors:
         row["survivors"] = list(v.survivors)  # harness PIDs that leaked past the kill (fail-loud)
+    if v.survivors_unknown:
+        # The survivor probe could not run — survivors are UNKNOWN, not verified clean (#103).
+        row["survivors_unknown"] = True
+    if v.reap is not None:
+        # Post-kill reap outcome; an "error:…"/"exec-failed:…" tag means cleanup could not be
+        # confirmed (a loud warning already fired) — visible in the row, not only in stderr (#103).
+        row["reap"] = v.reap
     wire = _wire_summary(v.wire, num_ctx_by_model.get(v.model or ""))
     if wire is not None:
         row["wire"] = wire

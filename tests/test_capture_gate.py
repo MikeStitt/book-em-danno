@@ -32,6 +32,20 @@ def test_gate_tally_counts_calls_and_sums_tokens() -> None:
     assert tally.tokens() == 150
 
 
+def test_gate_tally_attributes_posts_per_backend() -> None:
+    # #105: the cell's proxies share one tally, so `posts()` alone can't tell whether the MODEL's
+    # backend was dialed. `posts(backend)` splits it out; an unseen backend reads 0 (not KeyError).
+    tally = GateTally()
+    tally.observe_post("oai")
+    tally.observe_post("ollama")
+    tally.observe_post("ollama")
+    tally.observe_post()  # a backend-less POST still bumps the cell total, no per-backend key
+    assert tally.posts() == 4  # cell total across all backends (+ the unattributed one)
+    assert tally.posts("ollama") == 2
+    assert tally.posts("oai") == 1
+    assert tally.posts("never-dialed") == 0  # a backend with 0 traffic — the 0-request signal
+
+
 class _Upstream(BaseHTTPRequestHandler):
     """POST /v1/chat/completions → a usage-bearing body; GET → a discovery body (no usage)."""
 
@@ -104,3 +118,28 @@ def test_proxy_feeds_tally_on_inference_posts_not_discovery(tmp_path: Path) -> N
     assert tally.inference_calls() == 2
     assert tally.tokens() == 30  # 2 × 15
     assert not tally.blind()  # saw inference rounds, so not a blind cell
+
+
+def test_proxy_attributes_posts_to_its_backend(tmp_path: Path) -> None:
+    # #105: the proxy tags each POST with its `backend_name`, so a cell can later ask whether its
+    # ACTIVE backend was dialed. A GET (discovery) does not count as a POST.
+    tally = GateTally()
+    with _upstream() as up_port:
+        cfg = CaptureProxyConfig(
+            upstream=f"http://127.0.0.1:{up_port}",
+            capture_file=tmp_path / "cap.jsonl",
+            port=_free_port(),
+            tally=tally,
+            backend_name="oai",
+        )
+        with capture_proxy(cfg):
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{cfg.port}/v1/chat/completions",
+                data=b"{}",
+                headers={"Content-Type": "application/json"},
+            )
+            urllib.request.urlopen(req, timeout=10).read()
+            urllib.request.urlopen(f"http://127.0.0.1:{cfg.port}/api/tags", timeout=10).read()
+    assert tally.posts("oai") == 1  # the one POST, attributed to this proxy's backend
+    assert tally.posts() == 1  # GET did not count
+    assert tally.posts("ollama") == 0  # a different backend saw nothing here

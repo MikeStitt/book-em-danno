@@ -152,6 +152,24 @@ record the breached gate + the partial transcript; fail loud in the report row
   after a kill; `run_bench_task._reap_harness` does `sbx exec <sandbox> pkill -9 -f
   'opencode|claurst|index.mjs|DANNO_RELAY'`. See
   [`live-verify-runaway-gates.md`](live-verify-runaway-gates.md) §3.
+  - **Fail-loud cleanup (#103).** The reap and the post-turn survivor probe no longer swallow
+    their own failures (`2>/dev/null; true` / `|| true` + `except OSError: return ()`). The
+    reap runs UNWATCHED (`Runner.capture_unwatched`, so the still-armed breach can't kill the
+    reap and recurse into `on_kill`), inspects the `pkill` exit code, and records a `reap` tag
+    on the row (`killed` / `no-match` / `error:…` / `exec-failed:…`); a genuine reap error
+    warns loud. The survivor probe distinguishes "ran, found nothing (clean)" from "could not
+    run (UNKNOWN)" via `SurvivorProbe.ran` — a probe that can't execute records
+    `survivors_unknown=true`, never a silent clean `()`. Both surface in `bench.json`.
+  - **0-request active backend (#105).** `blind()` catches "proxy saw POSTs but counted 0
+    rounds" (an unrecognised dialect); the complementary hole is a cell whose **active**
+    backend (the model's own, `model.split("/")[0]`) saw **zero** POSTs — the model was never
+    dialed, so grading measured only the workspace and can silently pass (or masquerade as a
+    model failure). The tally now attributes each POST to its `backend_name`
+    (`observe_post(backend)`/`posts(backend)`), so `posts(active_backend) == 0` (under an active
+    proxy, for a proxied backend, on a non-gate-killed cell) marks the row `termination=
+    "no_requests"` with an ERROR verdict and a loud warning — never a clean pass. Scoped to the
+    active backend so an idle sidecar backend's incidental title-gen traffic can't mask it, and
+    skipped for an uncaptured cloud ref (no sensor — `uncaptured_cloud_refs` warns about those).
 
 ### 3.3 Per-harness Gate 1 wiring summary
 

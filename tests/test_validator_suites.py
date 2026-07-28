@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from book_em_danno.core.exec import Runner
+from book_em_danno.core.exec import CaptureResult, Runner
 from danno_validator.oracle import FailureClass
 from danno_validator.suites import base
 from danno_validator.suites.config import (
@@ -116,6 +116,8 @@ def test_run_bench_task_pass(tmp_path: Path) -> None:
     assert v.gate is None
     assert v.rounds is None
     assert v.survivors is None
+    assert v.survivors_unknown is False  # #103: ungated cell is not "unknown", it never probed
+    assert v.reap is None  # #103: no gate kill -> no reap attempted
 
 
 def test_run_bench_task_fail_classifies_turn(tmp_path: Path) -> None:
@@ -294,7 +296,9 @@ def test_run_bench_task_gate_timeout_kills_and_classifies(
 ) -> None:
     # End-to-end through run_bench_task (real subprocess, no Docker): a wedged turn under
     # a 0.3s Gate 3 is killed and recorded as a `timeout` verdict, not a normal stall/pass.
-    monkeypatch.setattr(base, "_surviving_harness_pids", lambda runner, sandbox: ())
+    monkeypatch.setattr(
+        base, "_surviving_harness_pids", lambda runner, sandbox: base.SurvivorProbe(True, ())
+    )
     task = _FakeTask(_passed=False)
     v = base.run_bench_task(
         Runner(),
@@ -328,7 +332,9 @@ def test_run_bench_task_rounds_snapshot_excludes_grading(
 
     tally = GateTally()
     monkeypatch.setattr(base, "GateTally", lambda: tally)
-    monkeypatch.setattr(base, "_surviving_harness_pids", lambda runner, sandbox: ())
+    monkeypatch.setattr(
+        base, "_surviving_harness_pids", lambda runner, sandbox: base.SurvivorProbe(True, ())
+    )
 
     def _turn(runner, name, prompt, **kw):  # type: ignore[no-untyped-def]
         for _ in range(3):
@@ -354,3 +360,232 @@ def test_run_bench_task_rounds_snapshot_excludes_grading(
     assert v.tool_calls == 1  # rounds (3) is a distinct axis from tool_calls (1)
     assert v.termination == "completed" and v.gate is None
     assert v.survivors == ()
+
+
+# --- #103: reap & survivor probe must make their own failures observable --------------------
+
+
+class _ReapRunner:
+    """Minimal runner exposing only the two capture surfaces `_reap_harness` (`capture_unwatched`)
+    and `_surviving_harness_pids` (`capture`) touch — so the failure-visibility paths can be
+    driven without a sandbox: a canned `CaptureResult`, or an exception on launch."""
+
+    def __init__(
+        self,
+        *,
+        unwatched: CaptureResult | None = None,
+        unwatched_exc: BaseException | None = None,
+        watched: CaptureResult | None = None,
+        watched_exc: BaseException | None = None,
+    ) -> None:
+        self._unwatched = unwatched
+        self._unwatched_exc = unwatched_exc
+        self._watched = watched
+        self._watched_exc = watched_exc
+
+    def capture_unwatched(self, cmd, *, check=False):  # type: ignore[no-untyped-def]
+        if self._unwatched_exc is not None:
+            raise self._unwatched_exc
+        assert self._unwatched is not None
+        return self._unwatched
+
+    def capture(self, cmd, *, check=False):  # type: ignore[no-untyped-def]
+        if self._watched_exc is not None:
+            raise self._watched_exc
+        assert self._watched is not None
+        return self._watched
+
+
+def test_reap_harness_killed_is_quiet(capsys: pytest.CaptureFixture[str]) -> None:
+    # pkill exit 0 = matched+signalled: the reap worked, no warning.
+    r = _ReapRunner(unwatched=CaptureResult(["x"], 0, "", ""))
+    assert base._reap_harness(r, "box") == "killed"  # type: ignore[arg-type]
+    assert "[WARN]" not in capsys.readouterr().out
+
+
+def test_reap_harness_no_match_is_quiet(capsys: pytest.CaptureFixture[str]) -> None:
+    # pkill exit 1 with no stderr = nothing to kill (harness already exited): expected, quiet.
+    r = _ReapRunner(unwatched=CaptureResult(["x"], 1, "", ""))
+    assert base._reap_harness(r, "box") == "no-match"  # type: ignore[arg-type]
+    assert "[WARN]" not in capsys.readouterr().out
+
+
+def test_reap_harness_transport_failure_is_loud_and_tagged(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # sbx exec never reached the sandbox (OSError on launch): a failed reap must NOT look clean
+    # (#103) — it warns loud and tags the row so a swallowed cleanup is visible in the result.
+    r = _ReapRunner(unwatched_exc=FileNotFoundError("sbx not found"))
+    tag = base._reap_harness(r, "box")  # type: ignore[arg-type]
+    assert tag.startswith("exec-failed:")
+    out = capsys.readouterr().out
+    assert "[WARN]" in out and "reap could not run" in out
+
+
+def test_reap_harness_pkill_error_is_loud_and_tagged(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # exit >=2 (pkill/exec error, distinct from the exit-1 no-match case) is a genuine failure.
+    r = _ReapRunner(unwatched=CaptureResult(["x"], 2, "", "pkill: bad usage"))
+    tag = base._reap_harness(r, "box")  # type: ignore[arg-type]
+    assert tag.startswith("error:")
+    out = capsys.readouterr().out
+    assert "[WARN]" in out and "could not confirm" in out
+
+
+def test_surviving_harness_pids_clean_ran(tmp_path: Path) -> None:
+    # pgrep exit 1 = no matches = a genuinely clean sandbox: ran=True, no survivors.
+    r = _ReapRunner(watched=CaptureResult(["x"], 1, "", ""))
+    probe = base._surviving_harness_pids(r, "box")  # type: ignore[arg-type]
+    assert probe.ran is True and probe.pids == ()
+
+
+def test_surviving_harness_pids_reports_pids(tmp_path: Path) -> None:
+    r = _ReapRunner(watched=CaptureResult(["x"], 0, "111\n222\n", ""))
+    probe = base._surviving_harness_pids(r, "box")  # type: ignore[arg-type]
+    assert probe.ran is True and probe.pids == (111, 222)
+
+
+def test_surviving_harness_pids_probe_error_is_unknown_not_clean() -> None:
+    # pgrep/exec exit >=2 = the probe itself could not run: UNKNOWN, never a silent clean () (#103).
+    r = _ReapRunner(watched=CaptureResult(["x"], 2, "", "sbx: no such sandbox"))
+    probe = base._surviving_harness_pids(r, "box")  # type: ignore[arg-type]
+    assert probe.ran is False and probe.pids == ()
+
+
+def test_surviving_harness_pids_launch_failure_is_unknown() -> None:
+    r = _ReapRunner(watched_exc=FileNotFoundError("sbx"))
+    probe = base._surviving_harness_pids(r, "box")  # type: ignore[arg-type]
+    assert probe.ran is False
+
+
+def test_run_bench_task_survivor_probe_failure_records_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # End-to-end (#103): a gate kill whose survivor probe can't run records survivors as UNKNOWN
+    # (survivors_unknown=True, survivors=None) — never a silent clean () — and warns loud. The
+    # reap outcome tag also lands on the row so a failed cleanup is visible in the result.
+    monkeypatch.setattr(
+        base, "_surviving_harness_pids", lambda runner, sandbox: base.SurvivorProbe(False, ())
+    )
+    monkeypatch.setattr(base, "_reap_harness", lambda runner, sandbox: "exec-failed:OSError")
+    v = base.run_bench_task(
+        Runner(),
+        "box",
+        task=_FakeTask(_passed=False),
+        suite="aider",
+        workspace=tmp_path,
+        model="ollama/x",
+        run_turn=_run_turn_wedged,
+        gates=ResolvedGates(max_turns=None, max_tokens=None, timeout_s=0.3),
+    )
+    assert v.termination == "gate_kill"
+    assert v.survivors_unknown is True
+    assert v.survivors is None  # UNKNOWN, not a verified-clean ()
+    assert v.reap == "exec-failed:OSError"  # the failed reap is recorded on the row
+    out = capsys.readouterr().out
+    assert "[WARN]" in out and "survivor probe could not run" in out
+
+
+# --- #105: a 0-request active backend must fail loud, never grade to a silent pass ------------
+
+
+def _zero_request_binding(tmp_path: Path, *, backend_name: str = "ollama"):  # type: ignore[no-untyped-def]
+    """A real single-backend CaptureBinding on a free port. The proxy stands up but the fake
+    turn never dials it, so the tally records 0 POSTs for `backend_name` (the #105 signal)."""
+    import socket
+
+    from book_em_danno.capture.wiring import CaptureBinding, CaptureTarget
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("0.0.0.0", 0))
+        port = sock.getsockname()[1]
+    return CaptureBinding(
+        targets=(
+            CaptureTarget(
+                backend_name=backend_name,
+                real_base_url="http://h:11434/v1",
+                upstream="http://127.0.0.1:1",  # never dialed by the fake turn
+                proxy_port=port,
+                capture_file=tmp_path / f"{backend_name}.jsonl",
+                is_local=True,
+            ),
+        ),
+        capture_dir=tmp_path / "captures",
+    )
+
+
+def test_run_bench_task_zero_request_active_backend_fails_loud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # #105: the model's own backend saw ZERO inference requests — it was never dialed. Even though
+    # grading passed (workspace-only), the cell must NOT be reported as a clean pass: it is marked
+    # `no_requests` with an ERROR verdict and a loud warning, distinct from a genuine pass/fail.
+    monkeypatch.setattr(
+        base, "_surviving_harness_pids", lambda runner, sandbox: base.SurvivorProbe(True, ())
+    )
+    v = base.run_bench_task(
+        Runner(),
+        "box",
+        task=_FakeTask(_passed=True),  # workspace already satisfies the tests
+        suite="aider",
+        workspace=tmp_path,
+        model="ollama/x",
+        run_turn=_run_turn_returning(_FakeTurn()),  # returns without dialing the proxy
+        capture=_zero_request_binding(tmp_path),
+        gates=ResolvedGates(max_turns=10, max_tokens=None, timeout_s=30.0),
+    )
+    assert v.termination == "no_requests"  # marked, not "completed"
+    assert v.verdict.failure_class is FailureClass.ERROR  # not a clean-pass verdict
+    assert v.passed is True  # ground truth preserved, but the row is not a silent green
+    out = capsys.readouterr().out
+    assert "[WARN]" in out and "0 inference requests" in out and "ollama" in out
+
+
+def test_run_bench_task_active_backend_with_traffic_is_not_flagged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The guard fires ONLY on a truly-dark active backend: a cell whose active backend DID see
+    # traffic (here pre-seeded, as a real dial would) grades normally — no false no_requests.
+    tally = base.GateTally()
+    tally.observe_post("ollama")  # the active backend was dialed this cell
+    monkeypatch.setattr(base, "GateTally", lambda: tally)
+    monkeypatch.setattr(
+        base, "_surviving_harness_pids", lambda runner, sandbox: base.SurvivorProbe(True, ())
+    )
+    v = base.run_bench_task(
+        Runner(),
+        "box",
+        task=_FakeTask(_passed=True),
+        suite="aider",
+        workspace=tmp_path,
+        model="ollama/x",
+        run_turn=_run_turn_returning(_FakeTurn()),
+        capture=_zero_request_binding(tmp_path),
+        gates=ResolvedGates(max_turns=10, max_tokens=None, timeout_s=30.0),
+    )
+    assert v.termination == "completed"
+    assert v.verdict.passed is True
+
+
+def test_run_bench_task_uncaptured_active_backend_not_falsely_flagged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An uncaptured cloud ref (its backend has no proxy this cell) has NO 0-request sensor, so the
+    # guard must not fire — `uncaptured_cloud_refs` warns about those separately. Only the local
+    # `ollama` backend is proxied; the active backend `anthropic` is not in the target set.
+    monkeypatch.setattr(
+        base, "_surviving_harness_pids", lambda runner, sandbox: base.SurvivorProbe(True, ())
+    )
+    v = base.run_bench_task(
+        Runner(),
+        "box",
+        task=_FakeTask(_passed=True),
+        suite="aider",
+        workspace=tmp_path,
+        model="anthropic/claude-x",  # backend 'anthropic' is not among the captured targets
+        run_turn=_run_turn_returning(_FakeTurn()),
+        capture=_zero_request_binding(tmp_path, backend_name="ollama"),
+        gates=ResolvedGates(max_turns=10, max_tokens=None, timeout_s=30.0),
+    )
+    assert v.termination == "completed"  # not flagged: no sensor for the active backend

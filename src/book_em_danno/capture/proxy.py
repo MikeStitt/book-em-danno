@@ -62,6 +62,10 @@ class CaptureProxyConfig:
     capture_file: Path
     port: int
     pass_headers: bool = True
+    # The capture target's `backend_name`, so a POST this proxy sees is attributed to its
+    # backend in the shared `tally` (`observe_post(backend_name)`) — lets the runaway path tell
+    # whether the cell's ACTIVE backend was ever dialed vs only an idle sidecar backend (#105).
+    backend_name: str | None = None
     # When set (`danno bench`'s runaway gates), each usage-bearing response feeds this live
     # tally so the exec watchdog can trip Gate 1 (round count) / Gate 2 (tokens) mid-cell.
     tally: GateTally | None = None
@@ -102,6 +106,7 @@ class _CaptureServer(ThreadingHTTPServer):
         self.cfg = cfg
         self.counter = itertools.count(1)
         self.write_lock = threading.Lock()
+        self.capture_started = False  # flips true on the first persisted record (lazy create)
         self._summaries: list[CallSummary] = []
         self._summary_lock = threading.Lock()
         super().__init__(("0.0.0.0", cfg.port), _Handler)
@@ -137,8 +142,19 @@ class _Handler(BaseHTTPRequestHandler):
     def _record(self, record: dict[str, Any]) -> None:
         server = self._server
         line = json.dumps(record) + "\n"
-        with server.write_lock, server.cfg.capture_file.open("a", encoding="utf-8") as fh:
-            fh.write(line)
+        with server.write_lock:
+            if not server.capture_started:
+                # Create the file lazily on the FIRST record, so a proxy that saw no traffic
+                # leaves NO file — `captures/` then reflects real traffic (issue #112). Truncate
+                # once here (mode "w") to keep the "this run's records only" guarantee the old
+                # eager truncate-on-entry gave; append ("a") on every record after.
+                server.cfg.capture_file.parent.mkdir(parents=True, exist_ok=True)
+                server.capture_started = True
+                mode = "w"
+            else:
+                mode = "a"
+            with server.cfg.capture_file.open(mode, encoding="utf-8") as fh:
+                fh.write(line)
 
     def _proxy(self, body: bytes | None) -> None:
         cfg = self._server.cfg
@@ -212,7 +228,7 @@ class _Handler(BaseHTTPRequestHandler):
             # stream without `include_usage` — still advances the tally (F1). Tokens are
             # recorded when extractable, else `None` (a round with no token spend).
             if self.command == "POST":
-                cfg.tally.observe_post()
+                cfg.tally.observe_post(cfg.backend_name)
             if is_inference:
                 cfg.tally.record(tokens=total_tokens(usage) if usage is not None else None)
 
@@ -238,12 +254,10 @@ def capture_proxy(cfg: CaptureProxyConfig) -> Iterator[_CaptureServer]:
 
     Binds 0.0.0.0 so the sandbox VM can reach it via `host.docker.internal`. Fails
     loud (Working Rule 8) if the port is already taken. When `cfg.persist` (the default),
-    truncates the capture file on entry so `read_captures` returns just this run's records;
-    when NOT persisting (`--no-save-captures`), touches NO path at all — no dir is created,
-    no file is written — while the summaries + tally still populate in RAM."""
-    if cfg.persist:
-        cfg.capture_file.parent.mkdir(parents=True, exist_ok=True)
-        cfg.capture_file.write_text("", encoding="utf-8")
+    the capture file is created lazily on the FIRST record (`_record`, mode "w" truncate-once)
+    so a proxy that receives no traffic leaves NO file — `captures/` reflects real traffic
+    (issue #112); when NOT persisting (`--no-save-captures`), touches NO path at all — no dir is
+    created, no file is written — while the summaries + tally still populate in RAM."""
     try:
         server = _CaptureServer(cfg)
     except OSError as exc:

@@ -431,6 +431,70 @@ def test_requires_wire_explicit_only_chat_only_harness_fails_loud() -> None:
         harnesses.get("claurst").model_matrix(cfg, ["qwen"])
 
 
+def _unmapped_cloud_config() -> DannoConfig:
+    """A mixed matrix where the cloud model is SPEAKABLE by claurst (OpenAI-compatible, Chat)
+    but UNREACHABLE — its host is neither Ollama nor NVIDIA NIM and declares no
+    `claurst_provider`, so claurst can't map a provider for it (the `o4-mini` on
+    `host.docker.internal` case, #107). `qwen` (Ollama) is reachable."""
+    return DannoConfig(
+        backends={
+            "ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1"),
+            "oai": OpenAIBackend(
+                kind="openai",
+                base_url="http://host.docker.internal:11434/v1",
+                api_key_env="OPENAI_API_KEY",
+            ),
+        },
+        models={
+            "qwen": Model(
+                backend="ollama", tag="qwen3:latest", context_budget=32000, output_limit=8192
+            ),
+            "o4": Model(backend="oai", tag="o4-mini", context_budget=200000, output_limit=32768),
+        },
+        agents={"build": "qwen"},
+    )
+
+
+def test_claurst_matrix_skips_unreachable_backend_model(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # #107: an unreachable-backend model is DROPPED from claurst's implicit sweep (loudly, with
+    # its reason) so the sweep completes the reachable cells instead of aborting the whole run.
+    cfg = _unmapped_cloud_config()
+    variants = harnesses.get("claurst").model_matrix(cfg, None)
+    assert [v.model_name for v in variants] == ["qwen"]  # o4 skipped, qwen kept
+    out = capsys.readouterr().out
+    assert "can't reach" in out and "o4" in out and "host.docker.internal" in out
+
+
+def test_claurst_matrix_explicit_only_unreachable_fails_loud() -> None:
+    # But naming the unreachable model explicitly (`--only o4`) is an impossible pairing →
+    # fail loud, not a silent narrowing (the whole-sweep abort is reserved for genuine faults).
+    cfg = _unmapped_cloud_config()
+    with pytest.raises(ValueError, match="can't reach these models"):
+        harnesses.get("claurst").model_matrix(cfg, ["o4"])
+
+
+def test_claurst_matrix_keeps_reachable_cloud_model() -> None:
+    # Regression: the reachability filter must not drop a cloud model claurst CAN reach — the
+    # NVIDIA NIM row (host maps to the inferred `nvidia` provider) is still swept.
+    cfg = _cloud_config()
+    assert [v.model_name for v in harnesses.get("claurst").model_matrix(cfg, None)] == [
+        "nemo",
+        "qwen",
+    ]
+
+
+def test_opencode_matrix_keeps_unreachable_by_claurst_model() -> None:
+    # The claurst-only reachability filter must NOT touch opencode: opencode generates a
+    # provider block for any dialable backend, so it still sweeps the model claurst can't reach.
+    cfg = _unmapped_cloud_config()
+    assert [v.model_name for v in harnesses.get("opencode").model_matrix(cfg, None)] == [
+        "o4",
+        "qwen",
+    ]
+
+
 def test_run_bench_non_claude_harness_skips_inert_models(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -509,6 +573,59 @@ def test_run_aider_provisions_by_harness_name_not_sandbox_image(
     opts = bench.BenchOptions(target=tmp_path, harness=harness, out_dir=tmp_path / "out")
     with pytest.raises(_StopEarly):
         bench._run_aider(
+            Runner(),
+            cfg,
+            opts,
+            workspace=tmp_path / "ws",
+            variants=[],
+            config=_config(),
+            env_files={},
+            capture=None,
+            sampler=None,
+            allow_hosts=("localhost:11434",),
+            capture_port=None,
+            warm=False,
+            warmup=[],
+        )
+    assert seen["harness"] == harness
+    assert seen["harness"] in harnesses.all_names()  # never the "shell" image
+
+
+class _FakeSweTask:
+    """Minimal swebench task: `_run_swebench` provisions + installs the harness BEFORE any
+    per-task work, so a no-op task + zero variants reaches the `sb.provision` call site
+    (b1fcfea's crash site) and nothing heavier."""
+
+    id = "stub-108"
+
+    def provision(self, runner: object, name: str, workspace: object) -> None:
+        pass
+
+
+@pytest.mark.parametrize("harness", ["claurst", "codex"])
+def test_run_swebench_provisions_by_harness_name_not_sandbox_image(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, harness: str
+) -> None:
+    # #108: the same b1fcfea guard, extended to `_run_swebench` (bench.py:414) — the second
+    # uncovered `sb.provision` caller, where the name!=image bug could re-enter. The value
+    # handed to provision must be a registered harness NAME, never the "shell" image.
+    seen: dict[str, object] = {}
+
+    class _StopEarly(Exception):
+        pass
+
+    def fake_provision(runner, name, workspace, *, harness, **kw):  # type: ignore[no-untyped-def]
+        seen["harness"] = harness
+        raise _StopEarly
+
+    monkeypatch.setattr(bench, "load_swebench_tasks", lambda *a, **k: [_FakeSweTask()])
+    monkeypatch.setattr(bench.sb, "provision", fake_provision)
+    cfg = BenchmarksConfig()
+    cfg.swebench.enabled = True
+    cfg.swebench.select = ["stub-108"]
+    opts = bench.BenchOptions(target=tmp_path, harness=harness, out_dir=tmp_path / "out")
+    with pytest.raises(_StopEarly):
+        bench._run_swebench(
             Runner(),
             cfg,
             opts,
