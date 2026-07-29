@@ -14,6 +14,14 @@ Real subprocesses, no Docker. `Runner.capture` under `watching()` takes the watc
 
 The other two rows (kill-latency, watched/unwatched parity) are standing regression nets.
 See `.docs/plan-runaway-gates-validation.md` §2.2/§2.3/§4.
+
+The four rows above drive `_kill_process_group` down its SUCCESS paths (the kill takes,
+the group/child dies). The two `_kill_process_group_warns_*` rows at the bottom cover its
+two FAILURE branches — the ones that only WARN (policy §5) rather than raise — which no
+happy-path test reaches: the Windows `taskkill /T` non-zero exit, and the POSIX
+`killpg` `PermissionError` (a process we may not signal). Both are driven with stubs (no
+real child), so the Windows branch is exercised on every OS leg (platform forced) while the
+POSIX branch, unreachable on Windows, is skipped there.
 """
 
 from __future__ import annotations
@@ -23,6 +31,7 @@ import time
 
 import pytest
 
+from book_em_danno.core import exec as exec_mod
 from book_em_danno.core.exec import Runner
 
 pytestmark = pytest.mark.timeout(15)
@@ -94,3 +103,78 @@ def test_watched_matches_unwatched_for_well_behaved_child() -> None:
         unwatched.returncode,
     )
     assert unwatched.returncode == 3
+
+
+class _FakeProc:
+    """A stand-in for the child `Popen` — `_kill_process_group` only reads `.pid` and, on a
+    fallback, calls `.kill()`, so no real process is needed to drive its FAILURE branches."""
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.kill_calls = 0
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+
+
+@pytest.mark.parametrize(
+    ("returncode", "expect_warn"),
+    [
+        (1, True),  # tree kill did NOT take -> a runaway grandchild may survive -> WARN
+        (0, False),  # kill took cleanly -> silent
+        (128, False),  # "process not found" -> already gone, a no-op, not a failure -> silent
+    ],
+)
+def test_kill_process_group_warns_on_windows_taskkill_failure(
+    returncode: int, expect_warn: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The Windows branch WARNs only when `taskkill /T` exits non-zero-and-not-128 (the tree
+    # kill silently failed, so a grandchild may still be burning CPU — the gate's whole point).
+    # Force the win32 branch and stub `taskkill` so this runs on every OS leg without a real
+    # process; assert the WARN fires (or doesn't) per the return code.
+    monkeypatch.setattr(exec_mod.sys, "platform", "win32")
+    warnings: list[str] = []
+    monkeypatch.setattr(exec_mod, "log_warn", warnings.append)
+
+    class _Completed:
+        pass
+
+    completed = _Completed()
+    completed.returncode = returncode  # type: ignore[attr-defined]
+    monkeypatch.setattr(exec_mod.subprocess, "run", lambda *a, **k: completed)
+
+    exec_mod._kill_process_group(_FakeProc(pid=4321))  # type: ignore[arg-type]
+
+    if expect_warn:
+        assert len(warnings) == 1
+        assert "taskkill" in warnings[0]
+        assert "4321" in warnings[0] and str(returncode) in warnings[0]
+    else:
+        assert warnings == []
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the killpg/PermissionError branch is POSIX-only — Windows returns before reaching it",
+)
+def test_kill_process_group_warns_on_posix_killpg_permission_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # When we may not signal the child's whole group, the reaper degrades to killing the child
+    # alone (grandchildren may survive) and WARNs rather than pretending the kill fully took.
+    monkeypatch.setattr(exec_mod.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(exec_mod.os, "killpg", _raise_permission_error)
+    warnings: list[str] = []
+    monkeypatch.setattr(exec_mod, "log_warn", warnings.append)
+
+    proc = _FakeProc(pid=777)
+    exec_mod._kill_process_group(proc)  # type: ignore[arg-type]
+
+    assert proc.kill_calls == 1  # fell back to killing just the child
+    assert len(warnings) == 1
+    assert "process group" in warnings[0]
+    assert "permission" in warnings[0] and "777" in warnings[0]
+
+
+def _raise_permission_error(*args: object, **kwargs: object) -> None:
+    raise PermissionError
