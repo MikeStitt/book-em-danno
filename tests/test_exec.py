@@ -11,7 +11,12 @@ from book_em_danno.core.exec import (
     CommandNotFoundError,
     Runner,
     require_cmd,
+    retry_transient,
 )
+
+
+def _nosleep(_s: float) -> None:
+    """A no-op sleep so retry tests don't wait on wall-clock backoff."""
 
 
 class _FakeProbe:
@@ -143,6 +148,82 @@ def test_capture_runs_regardless_of_apply(monkeypatch: pytest.MonkeyPatch) -> No
     assert calls == [["echo", "hi"]]
 
 
+_MISSING_BIN = "danno-definitely-not-a-real-binary-xyz"
+
+
+def test_capture_missing_binary_raises_command_not_found() -> None:
+    # A missing binary must surface as CommandNotFoundError, not a raw FileNotFoundError the
+    # caller can't distinguish from a captured non-zero exit (policy §5, ERROR).
+    with pytest.raises(CommandNotFoundError, match=_MISSING_BIN):
+        Runner().capture([_MISSING_BIN, "--version"])
+
+
+def test_capture_watched_missing_binary_raises_command_not_found() -> None:
+    # The gated path (Popen) translates the same way, so the two paths fail identically.
+    runner = Runner()
+    with runner.watching(timeout_s=0.5):
+        with pytest.raises(CommandNotFoundError, match=_MISSING_BIN):
+            runner.capture([_MISSING_BIN, "--version"])
+
+
+class _Blip(Exception):
+    """A stand-in transient failure for retry_transient tests."""
+
+
+def test_retry_transient_returns_on_first_success() -> None:
+    calls = {"n": 0}
+
+    def op() -> str:
+        calls["n"] += 1
+        return "ok"
+
+    assert retry_transient(op, what="probe", retry_on=(_Blip,), sleep=_nosleep) == "ok"
+    assert calls["n"] == 1  # no retry when the first attempt succeeds
+
+
+def test_retry_transient_retries_then_succeeds(capsys: pytest.CaptureFixture[str]) -> None:
+    calls = {"n": 0}
+
+    def op() -> str:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise _Blip("blip")
+        return "ok"
+
+    assert retry_transient(op, what="probe", retry_on=(_Blip,), attempts=3, sleep=_nosleep) == "ok"
+    assert calls["n"] == 3
+    err = capsys.readouterr().err
+    assert "[TRANSIENT]" in err  # each retriable failure logs TRANSIENT
+    assert "[ERROR]" not in err  # succeeded before the budget ran out
+
+
+def test_retry_transient_escalates_to_error_and_reraises(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = {"n": 0}
+
+    def op() -> str:
+        calls["n"] += 1
+        raise _Blip("persistent")
+
+    with pytest.raises(_Blip, match="persistent"):
+        retry_transient(op, what="probe", retry_on=(_Blip,), attempts=3, sleep=_nosleep)
+    assert calls["n"] == 3  # exhausted the whole budget
+    assert "[ERROR]" in capsys.readouterr().err  # a spent TRANSIENT budget escalates to ERROR
+
+
+def test_retry_transient_does_not_retry_unlisted_exception() -> None:
+    calls = {"n": 0}
+
+    def op() -> str:
+        calls["n"] += 1
+        raise ValueError("definitive")
+
+    with pytest.raises(ValueError, match="definitive"):
+        retry_transient(op, what="probe", retry_on=(_Blip,), attempts=3, sleep=_nosleep)
+    assert calls["n"] == 1  # a non-transient failure propagates immediately, no retry
+
+
 def test_capture_uses_capture_output_and_text(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
     monkeypatch.setattr(
@@ -266,8 +347,12 @@ def test_watchdog_on_kill_not_called_without_a_breach() -> None:
     assert called == []
 
 
-def test_watchdog_on_kill_failure_is_suppressed() -> None:
-    # A reaper that raises must not mask the breach (best-effort cleanup).
+def test_watchdog_on_kill_failure_warns_but_keeps_breach(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A reaper that raises must not mask the breach — but "best-effort" is not "silent": a failed
+    # reap can leave the harness burning VM CPU, so it WARNs (greppable) rather than swallowing,
+    # then still surfaces the breach (policy §5, WARNING).
     def boom() -> None:
         raise RuntimeError("reap failed")
 
@@ -275,6 +360,8 @@ def test_watchdog_on_kill_failure_is_suppressed() -> None:
     with runner.watching(timeout_s=0.4, on_kill=boom) as watch:
         runner.capture(_SLEEP)
     assert watch.breach is not None  # breach still recorded despite the reaper error
+    err = " ".join(capsys.readouterr().err.split())
+    assert "[WARNING]" in err and "post-kill reaper failed" in err
 
 
 def test_watching_context_restores_normal_capture(monkeypatch: pytest.MonkeyPatch) -> None:

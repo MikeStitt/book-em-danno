@@ -48,7 +48,7 @@ from ..config.generate import (
 from ..config.loader import DannoConfigError, load_config
 from ..config.schema import DannoConfig, NpmPlugin, OpenAIBackend, Sandbox
 from ..core import registry
-from ..core.exec import CommandFailedError, Runner, log_info, log_warn
+from ..core.exec import CommandFailedError, Runner, log_debug, log_info, log_warn
 from . import ollama, sandbox_cli
 
 
@@ -138,9 +138,16 @@ def live_sandbox_names() -> set[str]:
     `docker sandbox ls` is a header + table (skip row 0, first column)."""
     argv, quiet = sandbox_cli.ls_names_argv()
     try:
-        out = subprocess.run(argv, capture_output=True, text=True, check=False).stdout
+        proc = subprocess.run(argv, capture_output=True, text=True, check=False)
     except (FileNotFoundError, OSError):
-        return set()
+        return set()  # the sandbox CLI isn't installed: legitimately no live sandboxes
+    if proc.returncode != 0:
+        # A non-zero `ls` means the name set is UNRELIABLE, not empty. Callers use it as the
+        # name-collision guard (`sandbox_exists`), so silently returning an incomplete set could
+        # let a create clobber an existing sandbox — WARN the anomaly (policy §5), then return
+        # what we parsed rather than pretend the listing succeeded.
+        log_warn(f"sandbox listing exited {proc.returncode}; the live-name set may be incomplete")
+    out = proc.stdout
     if quiet:
         return {line.strip() for line in out.splitlines() if line.strip()}
     return {line.split()[0] for line in out.splitlines()[1:] if line.split()}
@@ -155,14 +162,17 @@ def _sbx_policy_initialized() -> bool:
     """True if the sbx global network policy is initialized (`sbx policy ls`
     succeeds). Treated as True/absent for docker (no such requirement)."""
     try:
-        return (
-            subprocess.run(
-                sandbox_cli.policy_ls_argv(), capture_output=True, text=True, check=False
-            ).returncode
-            == 0
+        proc = subprocess.run(
+            sandbox_cli.policy_ls_argv(), capture_output=True, text=True, check=False
         )
     except (FileNotFoundError, OSError):
         return False
+    if proc.returncode != 0 and proc.stderr.strip():
+        # A non-zero exit here is the DESIGNED "not initialized" signal (it fires on every fresh
+        # host), so it is NOT a WARNING — but the stderr can still distinguish "not initialized"
+        # from a real sbx fault, so keep it diagnosable under -v rather than dropping it (§5).
+        log_debug(f"sbx policy ls exited {proc.returncode}: {proc.stderr.strip()}")
+    return proc.returncode == 0
 
 
 def ensure_policy_initialized(runner: Runner) -> None:
@@ -329,10 +339,16 @@ def seed_onboarding(home: Path, workspace: Path) -> None:
     if f.is_file():
         try:
             loaded = json.loads(f.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            # A present-but-corrupt `.claude.json` is about to be OVERWRITTEN with our seed —
+            # that silently discards whatever it held. WARN the clobber (policy §5) so the loss
+            # is greppable; a legitimately-absent file (the `else` below) is silent.
+            log_warn(f"existing {f} is unreadable and will be overwritten ({exc})")
+        else:
             if isinstance(loaded, dict):
                 data = loaded
-        except json.JSONDecodeError:
-            data = {}
+            else:
+                log_warn(f"existing {f} is not a JSON object and will be overwritten")
     data.setdefault("hasCompletedOnboarding", True)
     data.setdefault("theme", "dark")
     projects = data.setdefault("projects", {})
@@ -483,8 +499,11 @@ def provision(
         harnesses.get(harness).reads_generated_config
         and not (target_abs / ".opencode" / "opencode.jsonc").is_file()
     ):
-        log_info(
-            "[yellow]WARN[/yellow] target has no .opencode/opencode.jsonc — "
+        # A missing generated config means the harness will start with nothing to load — a real
+        # anomaly, so a true WARNING, not INFO carrying a hand-rolled `[yellow]WARN[/yellow]` tag
+        # the formatter would double-tag and `-q` could not suppress independently (policy §5).
+        log_warn(
+            "target has no .opencode/opencode.jsonc — "
             "run `danno install` first so the sandbox has a config to load."
         )
     # A fresh `create` leaves the VM running, so `configure_proxy` works. But on a
@@ -791,7 +810,12 @@ def _build_env_file(harness_lines: list[str], env_pairs: list[str], env_files: l
     p.chmod(0o600)
     lines: list[str] = []
     for f in env_files:
-        lines.append(Path(f).read_text(encoding="utf-8").rstrip("\n"))
+        # A user-supplied --env-file that's missing/unreadable is actionable user error, not a
+        # raw FileNotFoundError deep in temp-file assembly (policy §5, ERROR).
+        try:
+            lines.append(Path(f).read_text(encoding="utf-8").rstrip("\n"))
+        except OSError as exc:
+            raise CommandFailedError(f"cannot read --env-file {f}: {exc}") from exc
     lines.extend(env_pairs)
     lines.extend(harness_lines)
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -816,7 +840,11 @@ def _provided_env(env_pairs: list[str], env_files: list[str]) -> dict[str, str]:
     """KEY→VAL the user is injecting via --env / --env-file (later entries win)."""
     provided: dict[str, str] = {}
     for f in env_files:
-        for line in Path(f).read_text(encoding="utf-8").splitlines():
+        try:
+            text = Path(f).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise CommandFailedError(f"cannot read --env-file {f}: {exc}") from exc
+        for line in text.splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 key, val = line.split("=", 1)
@@ -1248,8 +1276,12 @@ def _capture_session(
     log_info(f"--capture: recording opencode<->backend wire traffic to {capture_dir}")
     jsonc = target_abs / ".opencode" / "opencode.jsonc"
     snapshot = jsonc.read_text(encoding="utf-8") if jsonc.is_file() else None
-    generate(cfg_for_run, target_abs, apply=True)  # rewrite baseURLs to the proxies
+    # The rewrite MUST be inside the try: if generate() (or captures_running's __enter__)
+    # raises after touching opencode.jsonc, the finally still restores the user's committed
+    # config byte-for-byte — otherwise a mid-setup failure leaves it pointing at dead per-run
+    # proxy ports (policy §5, ERROR: a raise must not corrupt the user's tracked config).
     try:
+        generate(cfg_for_run, target_abs, apply=True)  # rewrite baseURLs to the proxies
         with captures_running(targets):
             yield _CaptureWiring(allow)
     finally:

@@ -69,10 +69,13 @@ This is the enforceable core of Fail Loud for code:
   re-exported from [`core/exec.py`](../../../src/book_em_danno/core/exec.py) so
   existing `from book_em_danno.core.exec import log_warn` imports are unchanged.
   No module invents its own `print` / `Console` / `echo` path for logging.
-- The **TRANSIENT *retry* helper** (the retry-with-escalation-budget loop) is
-  deliberately **not** built yet — it lands with its first real call site in the
-  remediation sweep (no speculative abstraction); `log_transient` records the
-  first-occurrence warning today.
+- The **TRANSIENT *retry* helper** — `core.exec.retry_transient`, the
+  retry-with-escalation-budget loop — was built in the remediation sweep with its
+  first real call sites (the `commands/ollama.py` capability probes and model pull),
+  not speculatively ahead of them. It retries a retry-safe failure with linear
+  backoff (each logged at TRANSIENT) and escalates the final failure to ERROR before
+  re-raising, enforcing the "every TRANSIENT carries a bound" rule; `log_transient`
+  remains available for a bare first-occurrence record.
 - **Emitting a command's data product is the one sanctioned exception** and uses
   the explicit stdout writer `core.exec.console`, never the logger (see the
   channel split).

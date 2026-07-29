@@ -13,6 +13,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .exec import log_warn
+
+
+class RegistryError(Exception):
+    """The sandbox registry could not be persisted (fail loud, Working Rule 8)."""
+
 
 def default_path() -> Path:
     """The host registry file danno uses outside of tests."""
@@ -20,14 +26,21 @@ def default_path() -> Path:
 
 
 def load(path: Path) -> dict[str, dict[str, str]]:
-    """Read the registry; an absent or unreadable file is an empty registry."""
+    """Read the registry. An *absent* file is legitimately an empty registry (silent). A
+    *present* file that won't read or parse — or whose top level isn't an object — is an
+    anomaly, not an empty registry: treating it as empty silently defeats the name-collision
+    guard, so WARN (greppable) before falling back to empty (policy §5, WARNING)."""
     if not path.is_file():
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as exc:
+        log_warn(f"sandbox registry {path} is unreadable, treating as empty ({exc})")
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        log_warn(f"sandbox registry {path} is not a JSON object, treating as empty")
+        return {}
+    return data
 
 
 def lookup(path: Path, name: str) -> dict[str, str] | None:
@@ -40,5 +53,11 @@ def record(path: Path, name: str, target: str, harness: str) -> None:
     leaves the file's content unchanged (keys are sorted on write)."""
     data = load(path)
     data[name] = {"target": target, "harness": harness}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    # A failed registry write is definitive, not ignorable: the name-collision guard goes
+    # blind until it's fixed. Surface it as a typed RegistryError with the path/cause rather
+    # than a bare OSError traceback from deep in pathlib (policy §5, ERROR).
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise RegistryError(f"cannot write sandbox registry {path} ({exc})") from exc

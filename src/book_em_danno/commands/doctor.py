@@ -13,8 +13,10 @@ import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
-from ..core.exec import console
+from ..config.loader import DannoConfigError, load_config
+from ..core.exec import console, log_debug
 from . import ollama, sandbox_cli
 
 MIN_PYTHON = (3, 13)
@@ -55,8 +57,14 @@ def _on_path(name: str) -> bool:
     return shutil.which(name) is not None
 
 
-def run_doctor(*, ollama_host_url: str = ollama.DEFAULT_HOST_URL) -> int:
-    """Run the checklist, print it, and return the count of failed required checks."""
+def run_doctor(*, ollama_host_url: str = ollama.DEFAULT_HOST_URL, target: Path = Path(".")) -> int:
+    """Run the checklist, print it, and return the count of failed required checks.
+
+    `target` is the project whose `danno.toml` is validated (the Configuration section);
+    it defaults to the cwd. An ABSENT config is a normal pre-`install` state (a dim note,
+    not a failure); a PRESENT-but-invalid one is a required FAIL — so a broken config is
+    caught here instead of exploding later at install/validate.
+    """
     tally = _Tally()
     console.print("danno doctor — preflight\n")
     console.print("Runtime (required to provision and run the sandbox):")
@@ -75,12 +83,6 @@ def run_doctor(*, ollama_host_url: str = ollama.DEFAULT_HOST_URL) -> int:
             lambda: _on_path("git"),
         ),
         (True, "Docker daemon running", "start Docker Desktop", lambda: _cmd_ok("docker", "info")),
-        (
-            True,
-            f"sandbox CLI ({sandbox_cli.label()})",
-            "install sbx (brew install docker/tap/sbx) or update Docker Desktop",
-            lambda: _cmd_ok(*sandbox_cli.availability_argv()),
-        ),
         (
             True,
             "ollama installed",
@@ -102,6 +104,8 @@ def run_doctor(*, ollama_host_url: str = ollama.DEFAULT_HOST_URL) -> int:
     ]
     for required, label, fix, pred in checks:
         _report(tally, required=required, label=label, fix=fix, ok=_safe(pred))
+
+    _check_sandbox_cli(tally)
 
     # Public-interface bind is a WARN, not a hard failure: a 0.0.0.0 Ollama works but
     # exposes it to the LAN. The sandbox reaches a loopback-only server through its
@@ -132,6 +136,9 @@ def run_doctor(*, ollama_host_url: str = ollama.DEFAULT_HOST_URL) -> int:
             ok=responses_ready,
         )
 
+    console.print("\nConfiguration:")
+    _check_danno_toml(tally, target)
+
     console.print()
     if tally.failed:
         console.print(
@@ -140,6 +147,44 @@ def run_doctor(*, ollama_host_url: str = ollama.DEFAULT_HOST_URL) -> int:
     else:
         console.print(f"[green]All required checks passed[/green] ({tally.warned} warning(s)).")
     return tally.failed
+
+
+def _check_sandbox_cli(tally: _Tally) -> None:
+    """A sandbox CLI is required, but EITHER backend satisfies it: `sbx` (preferred) or the
+    deprecated `docker sandbox`. Probe BOTH — the old check only tested the single auto-resolved
+    backend, so a host with just one installed (e.g. an `sbx`-only migrated machine, or a forced
+    `DANNO_SANDBOX_CLI` that isn't the installed one) could FAIL doctor despite being fully
+    usable. Required PASS = at least one present."""
+    present = [name for name, argv in sandbox_cli.availability_probes() if _cmd_ok(*argv)]
+    _report(
+        tally,
+        required=True,
+        label="a sandbox CLI is installed (sbx or docker sandbox)",
+        fix="install sbx (brew install docker/tap/sbx) or update Docker Desktop for docker sandbox",
+        ok=bool(present),
+    )
+    if present:
+        console.print(f"        [dim]found: {', '.join(present)}[/dim]")
+
+
+def _check_danno_toml(tally: _Tally, target: Path) -> None:
+    """Validate `<target>/danno.toml` so a malformed config fails HERE, loud, instead of
+    passing doctor clean and exploding later at install/validate. Absent = a dim note (a
+    fresh project has no config until `danno install`); present-but-invalid = required FAIL
+    with the loader's typed reason as the fix."""
+    toml = target / "danno.toml"
+    if not toml.is_file():
+        console.print(
+            f"  [dim]--[/dim]    no danno.toml at {toml} yet (written by `danno install`)"
+        )
+        return
+    label = f"danno.toml loads and validates ({toml})"
+    try:
+        load_config(toml)
+    except DannoConfigError as exc:
+        _report(tally, required=True, label=label, fix=f"correct the config — {exc}", ok=False)
+        return
+    _report(tally, required=True, label=label, fix="", ok=True)
 
 
 def _ollama_has_model() -> bool:
@@ -153,7 +198,11 @@ def _ollama_has_model() -> bool:
 
 
 def _safe(pred: Callable[[], bool]) -> bool:
+    # A check that raises is reported as a (non-crashing) FAIL/WARN row, but the CAUSE must not
+    # vanish — keep it diagnosable under `-v` instead of swallowing it whole (policy §5). DEBUG,
+    # not WARN: the row itself already tells the operator the check didn't pass.
     try:
         return pred()
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - doctor must survive any one check's failure
+        log_debug(f"doctor check raised, treating as not-ok ({exc!r})")
         return False

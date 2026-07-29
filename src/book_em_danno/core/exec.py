@@ -44,6 +44,7 @@ from .log import log_fatal as log_fatal
 from .log import log_info as log_info
 from .log import log_transient as log_transient
 from .log import log_warn as log_warn
+from .log import run_log as run_log
 
 # stdout is the DATA channel: a command's parseable product (`--version`, a managed-file
 # diff, the doctor report, validate's results grid). Operational logs go through the
@@ -75,6 +76,42 @@ class SandboxSecurityError(Exception):
     (`"**"`/`"*"`), which would open the sandbox to the whole internet. See the
     `sandbox-security-contract-fail-loud` invariant.
     """
+
+
+def retry_transient[T](
+    op: Callable[[], T],
+    *,
+    what: str,
+    retry_on: tuple[type[BaseException], ...],
+    attempts: int = 3,
+    delay_s: float = 0.5,
+    sleep: Callable[[float], None] | None = None,
+) -> T:
+    """Run `op`, retrying a *transient* (retry-safe) failure with linear backoff, then
+    re-raise once the attempt budget is spent.
+
+    This is the policy's TRANSIENT tier made concrete (`.log.log_transient`): each retriable
+    failure — one whose type is in `retry_on` — is logged at TRANSIENT and retried; the FINAL
+    failure is escalated to ERROR and re-raised, because a TRANSIENT with no bound is just a
+    swallowed error. `op` MUST be idempotent (it may run up to `attempts` times). Exceptions
+    NOT in `retry_on` are definitive and propagate immediately, unlogged and un-retried — the
+    caller distinguishes "the probe couldn't run" (transient) from "the probe ran and the
+    answer is no" (a real verdict). `sleep` is injectable (resolved at call time) so tests
+    don't wait on wall-clock."""
+    _sleep = time.sleep if sleep is None else sleep
+    last: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return op()
+        except retry_on as exc:
+            last = exc
+            if attempt < attempts:
+                log_transient(f"{what}: attempt {attempt}/{attempts} failed ({exc}); retrying")
+                _sleep(delay_s * attempt)
+            else:
+                log_err(f"{what}: failed after {attempts} attempt(s) ({exc})")
+    assert last is not None  # the loop only exits here via the final `except`
+    raise last
 
 
 @dataclass
@@ -157,7 +194,7 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
     to stop). Fall back to killing just the child if taskkill is unavailable or the tree is gone."""
     if sys.platform == "win32":
         try:
-            subprocess.run(  # noqa: S603, S607 - fixed argv, pid is our own child
+            done = subprocess.run(  # noqa: S603, S607 - fixed argv, pid is our own child
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -166,10 +203,26 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
         except OSError:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
+        else:
+            # returncode 128 == "process not found" (already gone: a no-op, not a failure).
+            # Any other non-zero means the tree kill did NOT take, so a runaway grandchild may
+            # still be burning CPU — the gate's whole purpose — WARN it (policy §5), don't drop.
+            if done.returncode not in (0, 128):
+                log_warn(f"watchdog: taskkill /T on pid {proc.pid} exited {done.returncode}")
         return
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()  # group already gone; reap just the child if it lingers
+    except PermissionError:
+        # We couldn't signal the whole group — fall back to the child alone, but that leaves
+        # any grandchildren in the group alive. That's a real degradation of the reaper, so
+        # WARN it (policy §5) instead of pretending the kill fully took.
+        log_warn(
+            f"watchdog: could not SIGKILL process group for pid {proc.pid} (permission); "
+            f"killed the child only — grandchildren may survive"
+        )
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
 
@@ -313,15 +366,21 @@ class Runner:
             return self._capture_watched(cmd, cwd=cwd, env=env, check=check, watch=self._watch)
         # `errors="replace"` for parity with the watched path (F3): telemetry wants
         # best-effort text, never a strict UnicodeDecodeError on a stray byte.
-        result = subprocess.run(
-            cmd,
-            cwd=cwd,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            errors="replace",
-        )
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=cwd,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                errors="replace",
+            )
+        except FileNotFoundError as exc:
+            # A missing binary is a definitive, actionable failure (the harness/tool isn't
+            # installed) — surface it as CommandNotFoundError, not a raw OSError traceback
+            # the caller can't tell apart from a captured non-zero exit (policy §5, ERROR).
+            raise CommandNotFoundError(f"required command not found: {cmd[0]}") from exc
         if check and result.returncode != 0:
             raise CommandFailedError(
                 f"command failed (exit {result.returncode}): {shlex.join(cmd)}"
@@ -371,17 +430,22 @@ class Runner:
         still can't unblock is abandoned with a loud warning rather than hanging. Decoding is
         best-effort (`errors="replace"`) and any unexpected reader error is surfaced in the
         main thread, never swallowed into a silent empty string."""
-        proc = subprocess.Popen(  # noqa: S603 - cmd is built from trusted internal argv
-            cmd,
-            cwd=cwd,
-            env=env,
-            stdin=subprocess.DEVNULL,  # never inherit the caller's TTY (see capture docstring)
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            errors="replace",
-            start_new_session=True,
-        )
+        try:
+            proc = subprocess.Popen(  # noqa: S603 - cmd is built from trusted internal argv
+                cmd,
+                cwd=cwd,
+                env=env,
+                stdin=subprocess.DEVNULL,  # never inherit the caller's TTY (see capture docstring)
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                errors="replace",
+                start_new_session=True,
+            )
+        except FileNotFoundError as exc:
+            # Parity with capture(): a missing binary is CommandNotFoundError, not a raw
+            # OSError (policy §5, ERROR). Caught here too so the gated path fails identically.
+            raise CommandNotFoundError(f"required command not found: {cmd[0]}") from exc
         out: list[str] = []
         err: list[str] = []
         reader_errors: list[BaseException] = []
@@ -410,10 +474,17 @@ class Runner:
                     _kill_process_group(proc)
                     proc.wait()
                     if watch.on_kill is not None:
-                        # Reap the in-VM harness (the host kill doesn't propagate). Never let
-                        # a reaper failure mask the breach — this is best-effort cleanup.
-                        with contextlib.suppress(Exception):
+                        # Reap the in-VM harness (the host kill doesn't propagate). Never let a
+                        # reaper failure mask the breach — but "best-effort" is not "silent": a
+                        # failed reap can leave the harness burning VM CPU, so WARN it (policy §5)
+                        # instead of swallowing, then carry on surfacing the breach.
+                        try:
                             watch.on_kill()
+                        except Exception as exc:  # noqa: BLE001 - cleanup must not mask the breach
+                            log_warn(
+                                f"watchdog: post-kill reaper failed ({exc}); the in-VM harness "
+                                f"may still be running after: {shlex.join(cmd)}"
+                            )
                     break
         for reader in readers:
             reader.join(timeout=_READER_JOIN_S)
@@ -427,6 +498,14 @@ class Runner:
             )
         if reader_errors and watch.breach is None:
             raise reader_errors[0]  # surface an unexpected reader crash like the unwatched path
+        if reader_errors and watch.breach is not None:
+            # A gate kill is the dominant outcome (we return `watch.breach`), so a reader crash
+            # can't be raised without masking it — but it's still a real anomaly that shortened
+            # the transcript, so WARN rather than drop it silently (policy §5).
+            log_warn(
+                f"watchdog: output reader crashed during a gated kill ({reader_errors[0]}); "
+                f"transcript may be truncated for: {shlex.join(cmd)}"
+            )
         result = CaptureResult(cmd, proc.returncode, out[0] if out else "", err[0] if err else "")
         # A gate kill is an expected outcome (the caller reads `watch.breach`), never a
         # CommandFailedError; only a genuine non-gate non-zero exit escalates under `check`.

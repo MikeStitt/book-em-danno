@@ -38,11 +38,13 @@ def test_auto_detect_falls_back_to_docker(monkeypatch: pytest.MonkeyPatch) -> No
     assert sandbox_cli.resolve_backend() == "docker"
 
 
-def test_availability_argv(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DANNO_SANDBOX_CLI", "sbx")
-    assert sandbox_cli.availability_argv() == ["sbx", "version"]
-    monkeypatch.setenv("DANNO_SANDBOX_CLI", "docker")
-    assert sandbox_cli.availability_argv() == ["docker", "sandbox", "version"]
+def test_availability_probes_covers_both_backends() -> None:
+    # doctor needs to probe BOTH CLIs (either satisfies the requirement), so this is
+    # backend-agnostic: it lists both regardless of the resolved/active backend.
+    assert sandbox_cli.availability_probes() == [
+        ("sbx", ["sbx", "version"]),
+        ("docker sandbox", ["docker", "sandbox", "version"]),
+    ]
 
 
 def test_policy_allow_sbx_allows_only_given_hosts_never_star(

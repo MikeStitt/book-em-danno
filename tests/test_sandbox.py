@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -907,6 +909,37 @@ def test_seed_onboarding_does_not_clobber(tmp_path: Path) -> None:
     assert proj["keep"] == 1  # unrelated per-project key preserved
 
 
+def test_seed_onboarding_corrupt_file_warns_and_overwrites(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A present-but-corrupt .claude.json is about to be OVERWRITTEN with our seed — that silently
+    # discards whatever it held, so the clobber must WARN (greppable), unlike a legitimately
+    # absent file (test_seed_onboarding_creates_and_merges, which is silent) — policy §5.
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".claude.json").write_text("{corrupt json,,,")
+    sandbox.seed_onboarding(home, Path("/work/proj"))
+    data = json.loads((home / ".claude.json").read_text())  # rewritten with a clean seed
+    assert data["hasCompletedOnboarding"] is True
+    err = " ".join(capsys.readouterr().err.split())
+    assert "[WARNING]" in err and "unreadable and will be overwritten" in err
+
+
+def test_live_sandbox_names_nonzero_returncode_warns(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A non-zero `ls` means the name set is UNRELIABLE, not empty — callers use it as the
+    # name-collision guard, so silently returning an incomplete set could let a create clobber
+    # an existing sandbox. WARN the anomaly (policy §5, WARNING).
+    def failed_run(*a: object, **k: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="boom")
+
+    monkeypatch.setattr(sandbox.subprocess, "run", failed_run)
+    assert sandbox.live_sandbox_names() == set()
+    err = " ".join(capsys.readouterr().err.split())
+    assert "[WARNING]" in err and "may be incomplete" in err
+
+
 # --- agent-home: ls -------------------------------------------------------------
 
 
@@ -1030,3 +1063,55 @@ def test_codex_cloud_env_lines_cloud_key_unset_fails_loud(monkeypatch: pytest.Mo
 def test_codex_env_lines_is_empty() -> None:
     # codex reads everything from config.toml (written inline); no env-file lines.
     assert sandbox._codex_env_lines("http://host.docker.internal:11434/v1") == []
+
+
+def test_build_env_file_missing_env_file_fails_loud(tmp_path: Path) -> None:
+    # A user-supplied --env-file that doesn't exist is actionable user error, not a raw
+    # FileNotFoundError deep in temp-file assembly (policy §5, ERROR).
+    missing = str(tmp_path / "nope.env")
+    # `match` is a regex: a Windows path (C:\Users\…) injects invalid escapes, so escape it.
+    with pytest.raises(CommandFailedError, match=re.escape(f"cannot read --env-file {missing}")):
+        sandbox._build_env_file([], [], [missing])
+
+
+def test_provided_env_missing_env_file_fails_loud(tmp_path: Path) -> None:
+    missing = str(tmp_path / "nope.env")
+    with pytest.raises(CommandFailedError, match=re.escape(f"cannot read --env-file {missing}")):
+        sandbox._provided_env([], [missing])
+
+
+def test_capture_session_restores_config_when_setup_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # If setup raises AFTER generate() rewrites opencode.jsonc to proxy base_urls, the finally
+    # must restore the user's committed config byte-for-byte — a mid-setup failure must never
+    # leave it pointing at dead per-run proxy ports (policy §5, ERROR).
+    import shutil
+
+    example = Path(__file__).resolve().parents[1] / "danno.toml.example"
+    target = tmp_path / "proj"
+    (target / ".opencode").mkdir(parents=True)
+    shutil.copy(example, target / "danno.toml")
+    jsonc = target / ".opencode" / "opencode.jsonc"
+    original = '{"user": "config"}\n'
+    jsonc.write_text(original, encoding="utf-8")
+
+    def boom(*_a: object, **_k: object) -> None:
+        jsonc.write_text('{"REWRITTEN": "proxy urls"}\n', encoding="utf-8")  # the rewrite
+        raise RuntimeError("boom mid-setup")
+
+    monkeypatch.setattr(sandbox, "generate", boom)
+    # The finally also snapshots egress (#101); neuter it so this test isolates config restore.
+    monkeypatch.setattr(sandbox, "record_egress", lambda *a, **k: None)
+
+    with pytest.raises(RuntimeError, match="boom mid-setup"):
+        with sandbox._capture_session(
+            Runner(apply=True),
+            "danno-box",
+            target,
+            harness="opencode",
+            capture_dir=tmp_path / "cap",
+            base_allow_hosts=("localhost:11434",),
+        ):
+            pass  # pragma: no cover - setup raises before the body runs
+    assert jsonc.read_text(encoding="utf-8") == original  # restored, not left rewritten

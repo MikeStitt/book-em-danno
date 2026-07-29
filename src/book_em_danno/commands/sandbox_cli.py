@@ -67,11 +67,6 @@ def base() -> list[str]:
     return ["sbx"] if resolve_backend() == "sbx" else ["docker", "sandbox"]
 
 
-def label() -> str:
-    """Human label for the active backend (doctor / logs), e.g. `sbx`."""
-    return " ".join(base())
-
-
 def env_forward_argv(
     env_file: str | os.PathLike[str] | None,
 ) -> tuple[list[str], dict[str, str] | None]:
@@ -112,9 +107,17 @@ def env_forward_argv(
     return flags, {**os.environ, **values}
 
 
-def availability_argv() -> list[str]:
-    """A cheap 'is the active CLI present' probe: `<base> version`."""
-    return [*base(), "version"]
+def availability_probes() -> list[tuple[str, list[str]]]:
+    """Every backend's cheap "is it installed" probe as `(human label, argv)`.
+
+    doctor probes ALL of them because EITHER backend satisfies the requirement — an
+    `sbx`-only host (the ideal state once `docker sandbox` is retired) must not be failed
+    for lacking `docker sandbox`, and vice-versa. This is deliberately backend-agnostic
+    (not gated on `resolve_backend()`): the run path picks ONE active backend, but the
+    preflight reports the whole ecosystem so the "at least one present" requirement is
+    honest. Keeps the CLI argv in this seam — no other module hardcodes it.
+    """
+    return [("sbx", ["sbx", "version"]), ("docker sandbox", ["docker", "sandbox", "version"])]
 
 
 def rm_argv(name: str) -> list[str]:

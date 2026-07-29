@@ -10,6 +10,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..core.exec import log_warn
+
 
 class Overrides(BaseModel):
     """Per-harness escape hatch, co-located with the element it modifies.
@@ -389,4 +391,19 @@ class DannoConfig(BaseModel):
             # value names a [models] entry, which must exist.
             if ref is not None and "/" not in ref and ref not in self.models:
                 raise ValueError(f"agent '{agent}' references unknown model '{ref}'")
+        # `default_agent` may name a built-in or a markdown-defined agent that danno can't see
+        # here, so an unknown value can't be a hard error — but an EXPLICITLY-set default that
+        # isn't among the agents this config DOES define is very likely a typo, so WARN it
+        # (policy §5) rather than let it silently fall through to a wrong/missing agent. Only
+        # when the user set it AND defined agents — the implicit "pm" built-in stays silent.
+        if (
+            "default_agent" in self.defaults.model_fields_set
+            and self.agents
+            and "/" not in self.defaults.default_agent
+            and self.defaults.default_agent not in self.agents
+        ):
+            log_warn(
+                f"default_agent '{self.defaults.default_agent}' is not in [agents]; "
+                "ensure it is a built-in or markdown-defined agent, else it won't resolve"
+            )
         return self

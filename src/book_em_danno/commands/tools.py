@@ -54,13 +54,19 @@ def _copy_md_dir(runner: Runner, src: Path, dest: Path, label: str) -> None:
         return
     md_files = sorted(src.glob("*.md"))
     if runner.apply:
-        dest.mkdir(parents=True, exist_ok=True)
-        for f in md_files:
-            target = dest / f.name
-            if target.is_file() and filecmp.cmp(f, target, shallow=False):
-                continue
-            shutil.copy2(f, target)
-            log_info(f"copy {label}/{f.name}")
+        # A copy/compare OSError here would escape install.py's (ToolInstallError,
+        # CommandFailedError) except set as a raw traceback; surface it as the module's
+        # fail-loud type so the tool is reported failed, not crashed (policy §5, ERROR).
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+            for f in md_files:
+                target = dest / f.name
+                if target.is_file() and filecmp.cmp(f, target, shallow=False):
+                    continue
+                shutil.copy2(f, target)
+                log_info(f"copy {label}/{f.name}")
+        except OSError as exc:
+            raise ToolInstallError(f"cannot copy ADOS {label} defs into {dest}: {exc}") from exc
     else:
         runner.advise(
             ["cp", f"{src}/*.md", str(dest) + "/"],
@@ -83,13 +89,18 @@ def _write_provenance(ados: Path, target_abs: Path) -> None:
     except (FileNotFoundError, OSError):
         pass
     out = target_abs / ".opencode" / "ados-provenance.txt"
-    out.parent.mkdir(parents=True, exist_ok=True)
     when = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    out.write_text(
-        f"ADOS source:  {ados}\nADOS commit:  {sha}\nInstalled:    {when}\n"
-        f"Installed by: book-em-danno (danno install)\n",
-        encoding="utf-8",
-    )
+    # Same contract as _copy_md_dir: a durable-write OSError becomes a ToolInstallError so
+    # install.py records the tool failed rather than dumping a traceback (policy §5, ERROR).
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            f"ADOS source:  {ados}\nADOS commit:  {sha}\nInstalled:    {when}\n"
+            f"Installed by: book-em-danno (danno install)\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        raise ToolInstallError(f"cannot write ADOS provenance {out}: {exc}") from exc
     log_info(f"wrote {out} (ADOS {sha})")
 
 
@@ -132,10 +143,17 @@ def install_generic_git(runner: Runner, tool: Tool, target_abs: Path) -> None:
         ["git", "clone", tool.source, str(dest)],
         why=f"clone tool '{tool.name}' from {tool.source} into a temp dir",
     )
-    log_info(
+    hint = (
         f"after clone, run {tool.name}'s installer per its README; for install_to="
         f"'{tool.install_to}' it lands in the {tool.install_to}."
     )
+    if runner.apply:
+        # Under --apply the caller expects the tool INSTALLED, but this fallback only clones and
+        # leaves the installer to a manual step — so a clean provision would overstate "ready".
+        # WARN the gap (policy §5) so it isn't read as a completed install; advise mode is info.
+        log_warn(f"tool '{tool.name}' was only cloned, not installed — {hint}")
+    else:
+        log_info(hint)
 
 
 def _is_git_source(source: str) -> bool:

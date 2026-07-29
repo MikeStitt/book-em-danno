@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -82,6 +84,38 @@ def test_dangling_agent_reference_fails_loud(tmp_path: Path) -> None:
         load_config(bad)
 
 
+def test_default_agent_not_in_agents_warns(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # An explicitly-set default_agent that names none of the agents THIS config defines is very
+    # likely a typo. It can't be a hard error (a built-in / markdown agent may supply it), so it
+    # WARNs and still loads (policy §5, WARNING).
+    cfg_path = tmp_path / "danno.toml"
+    cfg_path.write_text(
+        "[defaults]\ndefault_agent = 'reviewr'\n"
+        "[agents]\nreviewer = 'anthropic/claude-sonnet-4-6'\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.defaults.default_agent == "reviewr"  # loaded, not rejected
+    err = " ".join(capsys.readouterr().err.split())
+    assert "[WARNING]" in err and "default_agent 'reviewr'" in err
+
+
+def test_default_agent_implicit_pm_is_silent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The implicit "pm" default (never set by the user) must NOT warn even when [agents] defines
+    # other names — it is the built-in default, not a typo.
+    cfg_path = tmp_path / "danno.toml"
+    cfg_path.write_text(
+        "[agents]\nbuild = 'anthropic/claude-sonnet-4-6'\n",
+        encoding="utf-8",
+    )
+    assert load_config(cfg_path).defaults.default_agent == "pm"
+    assert capsys.readouterr().err == ""
+
+
 def test_inline_raw_ref_agent_ok(tmp_path: Path) -> None:
     # A value containing "/" is a raw OpenCode ref, passed through without a [models]
     # entry — the cloud path after retiring the `cloud` backend.
@@ -148,6 +182,31 @@ def test_malformed_toml_fails_loud(tmp_path: Path) -> None:
     bad.write_text("[defaults\n", encoding="utf-8")
     with pytest.raises(DannoConfigError, match="invalid TOML"):
         load_config(bad)
+
+
+def test_non_utf8_file_fails_loud(tmp_path: Path) -> None:
+    # `is_file()` passes but the read can still fail on a non-UTF-8 payload; that must
+    # surface through the DannoConfigError contract, not a raw UnicodeDecodeError (policy §5).
+    bad = tmp_path / "danno.toml"
+    bad.write_bytes(b"\xff\xfe not utf-8")
+    with pytest.raises(DannoConfigError, match="cannot read danno.toml"):
+        load_config(bad)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="Windows chmod can't deny a read, and root bypasses file-mode checks",
+)
+def test_unreadable_file_fails_loud(tmp_path: Path) -> None:
+    # A permission-denied read is an OSError; it too must surface as a DannoConfigError.
+    bad = tmp_path / "danno.toml"
+    bad.write_text("[defaults]\n", encoding="utf-8")
+    bad.chmod(0o000)
+    try:
+        with pytest.raises(DannoConfigError, match="cannot read danno.toml"):
+            load_config(bad)
+    finally:
+        bad.chmod(0o600)  # let tmp_path cleanup remove it
 
 
 def test_sandbox_defaults_to_per_project() -> None:

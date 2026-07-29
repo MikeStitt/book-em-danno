@@ -6,6 +6,7 @@ framing, discovery routing, and the transcript schema. No Docker, no live model 
 from __future__ import annotations
 
 import json
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -16,8 +17,9 @@ from pathlib import Path
 import pytest
 
 from book_em_danno.capture.usage import extract_usage
+from book_em_danno.core.exec import CommandFailedError
 from book_em_danno.stubai import Drip, Finish, StubConfig, ToolCall, ToolLoop, stub_ai
-from book_em_danno.stubai.server import Stub
+from book_em_danno.stubai.server import Stub, StubServer
 
 pytestmark = pytest.mark.timeout(30)
 
@@ -242,6 +244,58 @@ def test_drip_delays_the_whole_buffered_body_when_not_streaming(tmp_path: Path) 
     body = json.loads(raw.decode())
     assert body["choices"][0]["message"]["content"] == "one two three four"
     assert elapsed >= 0.1  # same ~0.2 s total as the streamed case, delivered at once
+
+
+# --- handler-error capture + malformed input (policy §5) --------------------
+
+
+def test_handle_error_records_and_counts(tmp_path: Path) -> None:
+    # A crash escaping a handler thread lands as a synthetic `error` transcript record +
+    # a bumped `handler_errors` counter, not a bare stderr traceback (policy §5).
+    server = StubServer(StubConfig(script=[Finish("x")], transcript_file=tmp_path / "t.jsonl"))
+    try:
+        try:
+            raise RuntimeError("boom inside a handler")
+        except RuntimeError:
+            server.handle_error(request=None, client_address=("127.0.0.1", 5555))
+        assert server.handler_errors == 1
+        records = [json.loads(line) for line in (tmp_path / "t.jsonl").read_text().splitlines()]
+        err = next(r for r in records if r["direction"] == "error")
+        assert "boom inside a handler" in err["error"]
+        assert "RuntimeError" in err["traceback"]
+    finally:
+        server.server_close()
+
+
+def test_non_integer_content_length_does_not_crash_handler(tmp_path: Path) -> None:
+    # A malformed Content-Length must not crash the handler thread: the stub treats the body
+    # as empty, still answers, and records no handler error (policy §5).
+    with _stub([Finish("answer")], tmp_path) as stub:
+        raw = (
+            "POST /v1/chat/completions HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{stub.port}\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: not-a-number\r\n"
+            "Connection: close\r\n\r\n"
+        ).encode()
+        with socket.create_connection(("127.0.0.1", stub.port), timeout=15) as sock:
+            sock.sendall(raw)
+            resp = b""
+            while chunk := sock.recv(4096):
+                resp += chunk
+    assert b"200" in resp.split(b"\r\n", 1)[0]  # status line is a 200, handler survived
+    assert stub._server.handler_errors == 0
+
+
+def test_unpreparable_transcript_fails_loud(tmp_path: Path) -> None:
+    # Preparing the transcript is a precondition for the whole run; a bare OSError (here an
+    # unwritable path — the parent is a FILE, not a dir) must fail loud as a CommandFailedError,
+    # not dump a raw traceback (policy §5, FATAL).
+    (tmp_path / "afile").write_text("i am a file, not a dir", encoding="utf-8")
+    bad_transcript = tmp_path / "afile" / "transcript.jsonl"
+    with pytest.raises(CommandFailedError, match="could not prepare its transcript"):
+        with stub_ai(StubConfig(script=[Finish("x")], transcript_file=bad_transcript)):
+            pass
 
 
 # --- helpers ----------------------------------------------------------------
