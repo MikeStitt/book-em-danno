@@ -143,6 +143,23 @@ def policy_ls_argv() -> list[str]:
     return ["sbx", "policy", "ls"]
 
 
+def policy_log_argv(name: str) -> list[str] | None:
+    """`sbx policy log <name> --type network --json` — the sandbox's egress
+    reachability log, or `None` for docker (legacy `docker sandbox` exposes no
+    equivalent host-side audit).
+
+    This is sbx's own L3/L4 accounting: every host `name` tried to reach, allowed or
+    blocked, aggregated per host (proxy_type/rule/since/last_seen/count_since). It is
+    read HOST-SIDE from the sbx daemon, so it works whether or not the sandbox is still
+    running — but a reused sandbox's log persists across runs (filter by `last_seen`).
+    `--type network` drops the (unsupported) filesystem rows; `--json` gives the
+    `{allowed_hosts, blocked_hosts}` shape `capture.egress` parses.
+    """
+    if resolve_backend() != "sbx":
+        return None
+    return ["sbx", "policy", "log", name, "--type", "network", "--json"]
+
+
 def ls_names_argv() -> tuple[list[str], bool]:
     """Argv that lists sandbox names, and whether the output is *quiet* (one bare
     name per line, no header). `sbx ls -q` is quiet — empty output when there are

@@ -180,6 +180,22 @@ def test_policy_init_argv(monkeypatch: pytest.MonkeyPatch) -> None:
     assert sandbox_cli.policy_init_argv() is None
 
 
+def test_policy_log_argv(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DANNO_SANDBOX_CLI", "sbx")
+    assert sandbox_cli.policy_log_argv("box") == [
+        "sbx",
+        "policy",
+        "log",
+        "box",
+        "--type",
+        "network",
+        "--json",
+    ]
+    # docker has no host-side egress audit → None (the whole egress artifact no-ops there).
+    monkeypatch.setenv("DANNO_SANDBOX_CLI", "docker")
+    assert sandbox_cli.policy_log_argv("box") is None
+
+
 def test_ensure_policy_initialized_docker_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DANNO_SANDBOX_CLI", "docker")
     runner = RecordingRunner()
