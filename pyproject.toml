@@ -58,7 +58,14 @@ line-length = 100
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = ["E", "F", "I", "UP", "B", "T20"]
+
+[tool.ruff.lint.per-file-ignores]
+# The portability probe is a std-lib-only operator diagnostic that must run anywhere
+# `uv` is on PATH (it deliberately does NOT import danno, so it cannot use the logging
+# policy's helpers); its `print`s ARE the command's stdout report. The T20 bare-print
+# ban targets the `src/` danno package, not standalone operator scripts.
+"scripts/portability/probe.py" = ["T201"]
 
 [tool.ruff.lint.flake8-bugbear]
 # typer's documented pattern puts Option/Argument in argument defaults.
