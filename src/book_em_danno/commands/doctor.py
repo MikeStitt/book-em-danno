@@ -85,12 +85,6 @@ def run_doctor(*, ollama_host_url: str = ollama.DEFAULT_HOST_URL, target: Path =
         (True, "Docker daemon running", "start Docker Desktop", lambda: _cmd_ok("docker", "info")),
         (
             True,
-            f"sandbox CLI ({sandbox_cli.label()})",
-            "install sbx (brew install docker/tap/sbx) or update Docker Desktop",
-            lambda: _cmd_ok(*sandbox_cli.availability_argv()),
-        ),
-        (
-            True,
             "ollama installed",
             "brew install ollama  (or see https://ollama.com)",
             lambda: _on_path("ollama"),
@@ -110,6 +104,8 @@ def run_doctor(*, ollama_host_url: str = ollama.DEFAULT_HOST_URL, target: Path =
     ]
     for required, label, fix, pred in checks:
         _report(tally, required=required, label=label, fix=fix, ok=_safe(pred))
+
+    _check_sandbox_cli(tally)
 
     # Public-interface bind is a WARN, not a hard failure: a 0.0.0.0 Ollama works but
     # exposes it to the LAN. The sandbox reaches a loopback-only server through its
@@ -151,6 +147,24 @@ def run_doctor(*, ollama_host_url: str = ollama.DEFAULT_HOST_URL, target: Path =
     else:
         console.print(f"[green]All required checks passed[/green] ({tally.warned} warning(s)).")
     return tally.failed
+
+
+def _check_sandbox_cli(tally: _Tally) -> None:
+    """A sandbox CLI is required, but EITHER backend satisfies it: `sbx` (preferred) or the
+    deprecated `docker sandbox`. Probe BOTH — the old check only tested the single auto-resolved
+    backend, so a host with just one installed (e.g. an `sbx`-only migrated machine, or a forced
+    `DANNO_SANDBOX_CLI` that isn't the installed one) could FAIL doctor despite being fully
+    usable. Required PASS = at least one present."""
+    present = [name for name, argv in sandbox_cli.availability_probes() if _cmd_ok(*argv)]
+    _report(
+        tally,
+        required=True,
+        label="a sandbox CLI is installed (sbx or docker sandbox)",
+        fix="install sbx (brew install docker/tap/sbx) or update Docker Desktop for docker sandbox",
+        ok=bool(present),
+    )
+    if present:
+        console.print(f"        [dim]found: {', '.join(present)}[/dim]")
 
 
 def _check_danno_toml(tally: _Tally, target: Path) -> None:

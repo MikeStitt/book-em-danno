@@ -48,6 +48,25 @@ def test_unreachable_ollama_skips_responses_check(monkeypatch: pytest.MonkeyPatc
     assert doctor.run_doctor() == 0
 
 
+def test_doctor_passes_with_only_sbx_installed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # An sbx-only host (docker sandbox uninstalled — the ideal post-migration state) must PASS:
+    # doctor probes BOTH backends and requires only that at least one is present.
+    _all_green(monkeypatch)
+    monkeypatch.setattr(doctor, "_cmd_ok", lambda *cmd: cmd[:2] != ("docker", "sandbox"))
+    assert doctor.run_doctor() == 0
+    assert "found: sbx" in capsys.readouterr().out
+
+
+def test_doctor_fails_when_no_sandbox_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Neither sbx nor docker sandbox present -> the one required sandbox-CLI failure.
+    _all_green(monkeypatch)
+    absent = {("sbx", "version"), ("docker", "sandbox", "version")}
+    monkeypatch.setattr(doctor, "_cmd_ok", lambda *cmd: cmd not in absent)
+    assert doctor.run_doctor() == 1
+
+
 def test_doctor_validates_present_danno_toml(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

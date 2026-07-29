@@ -121,8 +121,9 @@ danno doctor
 ```
 
 A read-only PASS/FAIL/WARN checklist with copy-paste fixes: Python, git, the
-Docker daemon, the **sandbox CLI** (`sbx`, or the deprecated `docker sandbox` — see
-below), Ollama (installed, reachable, a model pulled), and a WARN if Ollama is
+Docker daemon, a **sandbox CLI** (`sbx` *or* the deprecated `docker sandbox` — either
+one satisfies the check, so an `sbx`-only host passes; see below), Ollama (installed,
+reachable, a model pulled), and a WARN if Ollama is
 bound to loopback only (unreachable from the sandbox VM). It also **validates the
 project's `danno.toml`** (`-C/--target <dir>`, default the cwd) so a malformed config
 is caught here rather than exploding later at `install`/`validate`; an absent config
