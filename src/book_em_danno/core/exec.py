@@ -78,6 +78,42 @@ class SandboxSecurityError(Exception):
     """
 
 
+def retry_transient[T](
+    op: Callable[[], T],
+    *,
+    what: str,
+    retry_on: tuple[type[BaseException], ...],
+    attempts: int = 3,
+    delay_s: float = 0.5,
+    sleep: Callable[[float], None] | None = None,
+) -> T:
+    """Run `op`, retrying a *transient* (retry-safe) failure with linear backoff, then
+    re-raise once the attempt budget is spent.
+
+    This is the policy's TRANSIENT tier made concrete (`.log.log_transient`): each retriable
+    failure — one whose type is in `retry_on` — is logged at TRANSIENT and retried; the FINAL
+    failure is escalated to ERROR and re-raised, because a TRANSIENT with no bound is just a
+    swallowed error. `op` MUST be idempotent (it may run up to `attempts` times). Exceptions
+    NOT in `retry_on` are definitive and propagate immediately, unlogged and un-retried — the
+    caller distinguishes "the probe couldn't run" (transient) from "the probe ran and the
+    answer is no" (a real verdict). `sleep` is injectable (resolved at call time) so tests
+    don't wait on wall-clock."""
+    _sleep = time.sleep if sleep is None else sleep
+    last: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return op()
+        except retry_on as exc:
+            last = exc
+            if attempt < attempts:
+                log_transient(f"{what}: attempt {attempt}/{attempts} failed ({exc}); retrying")
+                _sleep(delay_s * attempt)
+            else:
+                log_err(f"{what}: failed after {attempts} attempt(s) ({exc})")
+    assert last is not None  # the loop only exits here via the final `except`
+    raise last
+
+
 @dataclass
 class CaptureResult:
     """Outcome of `Runner.capture`: the exact command plus its captured streams."""

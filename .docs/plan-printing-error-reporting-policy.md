@@ -360,11 +360,18 @@ already correct (reference).
 
 ### commands/ollama.py — probes conflate transient with definitive
 
-- ⚠ `verify_responds` (236) & `tool_call_probe` (257) → `False` on
-  URLError/OSError/JSONDecodeError: a blip == a real capability-failure verdict —
-  **TRANSIENT→ERROR**.
-- ⚠ `ensure_model` pull, no retry (189): registry blip fails permanently on first
-  try — **TRANSIENT→ERROR**.
+The **TRANSIENT retry helper** (`core.exec.retry_transient`) was built here (step 7)
+with these as its first real call sites — no speculative abstraction. It retries a
+retry-safe failure with linear backoff, logging each at TRANSIENT, and escalates the
+final failure to ERROR before re-raising (a TRANSIENT with no bound is a swallowed error).
+
+- ✓ (DONE step 7) `verify_responds` & `tool_call_probe`: a transient URLError/OSError is
+  now retried (TRANSIENT) and only a persistent failure escalates to ERROR + returns the
+  negative verdict; a parsed-but-negative body is returned WITHOUT retry (a real answer,
+  not a blip) — **TRANSIENT→ERROR**.
+- ✓ (DONE step 7) `ensure_model` pull: a failed `ollama pull` is retried (TRANSIENT) under
+  `--apply` and escalates to ERROR + raises on persistent failure; an advise-only run returns
+  on the first call (no execution to retry) — **TRANSIENT→ERROR**.
 - ⚠ `installed_tags` swallows `JSONDecodeError`→`set()` (50): malformed == no
   models — **WARNING**.
 - ✓ `warm_model` URLError→`log_warn` "non-fatal" (195): the fail-soft-with-log
@@ -372,9 +379,10 @@ already correct (reference).
 
 ### commands/install.py · tools.py
 
-- ⚠ install `ensure_model` loop aborts on first pull failure (102): no retry —
-  **TRANSIENT→ERROR**; `present = installed_tags()` blind if Ollama unreachable
-  (101), unlogged — **WARNING**.
+- ✓ (DONE step 7) install `ensure_model` loop: the retry now lives in `ensure_model`
+  itself (via `retry_transient`), so the loop no longer aborts the whole provision on a
+  transient first-pull blip — **TRANSIENT→ERROR**. (`present = installed_tags()` blind if
+  Ollama unreachable (101), unlogged — **WARNING**, still open.)
 - ✓ (DONE step 7) tools `filecmp.cmp`/`shutil.copy2` & provenance `write_text`: an `OSError`
   now raises `ToolInstallError` (which install.py's except set catches → the tool is reported
   failed), not a raw traceback that escapes it — **ERROR**.
@@ -467,7 +475,11 @@ run-log wiring), 5 (handler-error capture), and 7 (the §5 sweep) remain.
      the restore try/finally + `_build_env_file`/`_provided_env` → `CommandFailedError`;
      `commands/tools.py` copy/provenance → `ToolInstallError`. (`capture/egress.py`
      ERROR sites deferred to #101 — file not in this tree.)
-   - TRANSIENT and WARNING tiers follow.
+   - **TRANSIENT tier landed** + the **retry helper** (`core.exec.retry_transient`) built
+     with its first real call sites (no speculative abstraction): `commands/ollama.py`
+     `verify_responds`/`tool_call_probe` retry-then-escalate; `ensure_model` retries a failed
+     pull. (`capture/egress.py` TRANSIENT probe deferred to #101.)
+   - WARNING tier follows.
 
 ## Related
 

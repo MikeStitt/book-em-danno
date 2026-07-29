@@ -15,7 +15,11 @@ import urllib.error
 import urllib.request
 from collections.abc import Mapping
 
-from ..core.exec import Runner, log_info, log_warn
+from ..core.exec import CommandFailedError, Runner, log_info, log_warn, retry_transient
+
+# Transient network failures worth a retry before we trust a probe's negative verdict: a
+# connection blip / timeout, not a parsed-but-negative body (that's a real answer, not a blip).
+_TRANSIENT_NET = (urllib.error.URLError, OSError)
 
 # Env override for the Ollama endpoint danno probes. Set it to route danno at a remote
 # server, e.g. a LAN host: `DANNO_OLLAMA_HOST_URL=http://10.0.1.27:11434`. The slow Ollama
@@ -188,8 +192,17 @@ def responses_api_ready(host_url: str = DEFAULT_HOST_URL, *, timeout: float = 2.
 
 def ensure_model(runner: Runner, tag: str, *, host_url: str = DEFAULT_HOST_URL) -> list[str]:
     """Advise (and under --apply, run) `ollama pull <tag>`. `ollama pull` is itself
-    idempotent — an already-present model is a fast no-op."""
-    return runner.advise(["ollama", "pull", tag], why=f"ensure Ollama model present: {tag}")
+    idempotent — an already-present model is a fast no-op.
+
+    Under --apply a pull can fail on a transient registry/network blip; that shouldn't kill
+    the whole provision on the first try. The pull is retried (TRANSIENT) and only a
+    persistent failure escalates to ERROR and raises (policy §5, TRANSIENT→ERROR). Advise-only
+    runs never execute, so `op` returns on the first call with no retry."""
+
+    def _pull() -> list[str]:
+        return runner.advise(["ollama", "pull", tag], why=f"ensure Ollama model present: {tag}")
+
+    return retry_transient(_pull, what=f"ollama pull {tag}", retry_on=(CommandFailedError,))
 
 
 def warm_model(tag: str, *, host_url: str = DEFAULT_HOST_URL, timeout: float = 600.0) -> dict:
@@ -234,7 +247,12 @@ def warm_model(tag: str, *, host_url: str = DEFAULT_HOST_URL, timeout: float = 6
 
 
 def verify_responds(tag: str, *, host_url: str = DEFAULT_HOST_URL, num_ctx: int = 32000) -> bool:
-    """POST /api/generate and confirm the model returns a response field."""
+    """POST /api/generate and confirm the model returns a response field.
+
+    A transient network blip must not read as "the model can't respond": the probe is
+    retried (TRANSIENT), and only a persistent failure escalates to ERROR and returns the
+    negative verdict (policy §5, TRANSIENT→ERROR). A parsed-but-fieldless body is a real
+    negative answer, returned without retry."""
     payload = json.dumps(
         {
             "model": tag,
@@ -243,22 +261,30 @@ def verify_responds(tag: str, *, host_url: str = DEFAULT_HOST_URL, num_ctx: int 
             "options": {"num_ctx": num_ctx},
         }
     ).encode()
-    try:
+
+    def _probe() -> bool:
         req = urllib.request.Request(
             f"{host_url}/api/generate", data=payload, headers={"Content-Type": "application/json"}
         )
         with urllib.request.urlopen(req, timeout=120) as resp:
             body = json.loads(resp.read())
         return "response" in body
-    except (urllib.error.URLError, OSError, json.JSONDecodeError):
-        return False
+
+    try:
+        return retry_transient(_probe, what=f"verify {tag} responds", retry_on=_TRANSIENT_NET)
+    except (urllib.error.URLError, OSError):
+        return False  # already escalated to ERROR inside retry_transient
+    except json.JSONDecodeError:
+        return False  # a malformed 200 body is a definitive no, not a retry-able blip
 
 
 def tool_call_probe(tag: str, *, host_url: str = DEFAULT_HOST_URL, num_ctx: int = 32000) -> bool:
     """Best-effort probe: ask the model to use a tool and check for tool_calls.
 
     A model that cannot tool-call is unusable for ADOS agents (gemma3:1b is the
-    known-bad case). Returns False on any failure — caller decides severity.
+    known-bad case). A transient network blip is retried (TRANSIENT) so it isn't misread
+    as a real capability failure; a persistent failure escalates to ERROR and returns the
+    negative verdict (policy §5, TRANSIENT→ERROR).
     """
     payload = json.dumps(
         {
@@ -284,7 +310,8 @@ def tool_call_probe(tag: str, *, host_url: str = DEFAULT_HOST_URL, num_ctx: int 
             "options": {"num_ctx": num_ctx},
         }
     ).encode()
-    try:
+
+    def _probe() -> bool:
         req = urllib.request.Request(
             f"{host_url}/api/chat", data=payload, headers={"Content-Type": "application/json"}
         )
@@ -292,8 +319,13 @@ def tool_call_probe(tag: str, *, host_url: str = DEFAULT_HOST_URL, num_ctx: int 
             body = json.loads(resp.read())
         message = body.get("message", {})
         return bool(message.get("tool_calls"))
-    except (urllib.error.URLError, OSError, json.JSONDecodeError):
-        return False
+
+    try:
+        return retry_transient(_probe, what=f"tool-call probe {tag}", retry_on=_TRANSIENT_NET)
+    except (urllib.error.URLError, OSError):
+        return False  # already escalated to ERROR inside retry_transient
+    except json.JSONDecodeError:
+        return False  # a malformed 200 body is a definitive no, not a retry-able blip
 
 
 def lan_exposure_warning(*, port: int = 11434) -> str | None:
