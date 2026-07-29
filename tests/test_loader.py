@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -148,6 +149,30 @@ def test_malformed_toml_fails_loud(tmp_path: Path) -> None:
     bad.write_text("[defaults\n", encoding="utf-8")
     with pytest.raises(DannoConfigError, match="invalid TOML"):
         load_config(bad)
+
+
+def test_non_utf8_file_fails_loud(tmp_path: Path) -> None:
+    # `is_file()` passes but the read can still fail on a non-UTF-8 payload; that must
+    # surface through the DannoConfigError contract, not a raw UnicodeDecodeError (policy §5).
+    bad = tmp_path / "danno.toml"
+    bad.write_bytes(b"\xff\xfe not utf-8")
+    with pytest.raises(DannoConfigError, match="cannot read danno.toml"):
+        load_config(bad)
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="root bypasses file-mode permission checks, so the read won't fail"
+)
+def test_unreadable_file_fails_loud(tmp_path: Path) -> None:
+    # A permission-denied read is an OSError; it too must surface as a DannoConfigError.
+    bad = tmp_path / "danno.toml"
+    bad.write_text("[defaults]\n", encoding="utf-8")
+    bad.chmod(0o000)
+    try:
+        with pytest.raises(DannoConfigError, match="cannot read danno.toml"):
+            load_config(bad)
+    finally:
+        bad.chmod(0o600)  # let tmp_path cleanup remove it
 
 
 def test_sandbox_defaults_to_per_project() -> None:

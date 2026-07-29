@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from ..core.exec import log_warn
 from .schema import (
     AgentSpec,
     DannoConfig,
@@ -666,7 +667,17 @@ def scan_agent_frontmatter(target: Path) -> dict[str, set[str]]:
         if not directory.is_dir():
             continue
         for md in sorted(directory.glob("*.md")):
-            keys = _frontmatter_keys(md.read_text(encoding="utf-8"))
+            # An unreadable agent def shouldn't abort the whole scan with a raw traceback:
+            # warn and record the file as present-but-keyless (policy §5, WARNING) so the
+            # collision-check still sees the file exists. A vanished/permission-denied file
+            # is the anomaly here, not a stop-the-world error.
+            try:
+                text = md.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                log_warn(f"cannot read agent def {md}: {exc}; treating it as present but keyless")
+                found.setdefault(md.stem, set())
+                continue
+            keys = _frontmatter_keys(text)
             found.setdefault(md.stem, set()).update(keys)
     return found
 
@@ -1017,9 +1028,27 @@ def generate_claurst(
     settings_dest = claurst_dir / _CLAURST_SETTINGS_FILE
     settings: dict[str, Any] = {}
     if settings_dest.is_file():
-        loaded = json.loads(settings_dest.read_text(encoding="utf-8"))
+        # We are about to REWRITE this file, merging our `agents` key into the user's other
+        # keys. If we can't parse it we must NOT clobber it silently (policy §5, FATAL) — a
+        # raw JSONDecodeError traceback here would also lose the user's settings.
+        try:
+            loaded = json.loads(settings_dest.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"cannot read existing claurst settings ({settings_dest}): {exc}. Fix or remove "
+                "the file, then re-run — danno will not overwrite an unreadable settings file."
+            ) from exc
         if isinstance(loaded, dict):  # preserve the user's other keys; own only `agents`
             settings = loaded
+        else:
+            # Valid JSON but not an object: we can't merge into it, so writing `agents` would
+            # discard whatever it holds. Warn loudly (policy §5, WARNING/data-loss) rather
+            # than drop the user's content without a word.
+            log_warn(
+                f"claurst settings ({settings_dest}) is not a JSON object "
+                f"({type(loaded).__name__}); danno cannot preserve its contents and will "
+                "replace it with just `agents`."
+            )
     settings["agents"] = generate_claurst_agents(config)
     results.append(
         _emit_json(

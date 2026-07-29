@@ -520,6 +520,52 @@ def test_generate_claurst_warns_unmapped_on_settings_result(tmp_path: Path) -> N
     assert any("mode" in w and "claurst" in w for w in settings_result.warnings)
 
 
+def test_generate_claurst_corrupt_settings_fails_loud(tmp_path: Path) -> None:
+    # A settings.json we can't parse must NOT be silently clobbered (policy §5, FATAL) —
+    # rewriting it would lose the user's other keys. Fail loud instead.
+    cdir = tmp_path / ".claurst"
+    cdir.mkdir()
+    (cdir / "settings.json").write_text("{not: valid json", encoding="utf-8")
+    with pytest.raises(ValueError, match="cannot read existing claurst settings"):
+        generate_claurst(_claurst_cfg(), cdir, apply=True)
+    # The unreadable file is left untouched (we refused to overwrite it).
+    assert (cdir / "settings.json").read_text(encoding="utf-8") == "{not: valid json"
+
+
+def test_generate_claurst_non_object_settings_warns_and_replaces(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Valid JSON but not an object: we can't merge `agents` into it, so replacing it drops
+    # the user's content — warn loudly (policy §5, WARNING/data-loss) rather than silently.
+    cdir = tmp_path / ".claurst"
+    cdir.mkdir()
+    (cdir / "settings.json").write_text(json.dumps(["a", "list"]), encoding="utf-8")
+    generate_claurst(_claurst_cfg(), cdir, apply=True)
+    # RichHandler wraps console lines, so collapse whitespace before matching the message.
+    err = " ".join(capsys.readouterr().err.split())
+    assert "is not a JSON object" in err
+    settings = json.loads((cdir / "settings.json").read_text(encoding="utf-8"))
+    assert settings == {"agents": {"build": {"model": "ollama/qwen3-coder-next"}}}
+
+
+def test_scan_agent_frontmatter_unreadable_def_warns_but_continues(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # One unreadable agent def shouldn't abort the whole scan with a raw traceback: warn and
+    # record it as present-but-keyless (policy §5, WARNING) so the collision check still sees
+    # it, while a readable sibling is scanned normally.
+    agents_dir = tmp_path / ".opencode" / "agent"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "good.md").write_text("---\nmodel: x\n---\n", encoding="utf-8")
+    # Non-UTF-8 bytes make read_text(encoding="utf-8") raise UnicodeDecodeError deterministically.
+    (agents_dir / "bad.md").write_bytes(b"\xff\xfe not utf-8")
+    found = scan_agent_frontmatter(tmp_path)
+    err = capsys.readouterr().err
+    assert "cannot read agent def" in err and "bad.md" in err
+    assert found["bad"] == set()  # present but keyless
+    assert "model" in found["good"]  # readable sibling still scanned
+
+
 def test_first_run_writes(tmp_path: Path) -> None:
     result = generate(_example(), tmp_path)
     assert result.action is Action.WROTE

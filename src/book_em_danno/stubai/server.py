@@ -271,9 +271,17 @@ def stub_ai(cfg: StubConfig) -> Iterator[Stub]:
     """Run the stub AI on `0.0.0.0:<port>` (ephemeral when `port=0`) for the block.
 
     Binds 0.0.0.0 so a sandbox VM can reach it via `host.docker.internal`. Truncates the
-    transcript on entry. Fails loud (Working Rule 8) if a fixed port is already taken."""
-    cfg.transcript_file.parent.mkdir(parents=True, exist_ok=True)
-    cfg.transcript_file.write_text("", encoding="utf-8")
+    transcript on entry. Fails loud (Working Rule 8) if a fixed port is already taken or the
+    transcript path can't be prepared."""
+    # Preparing the transcript is a precondition for the whole run — a bare OSError here (an
+    # unwritable dir, a bad path) must fail loud, not dump a raw traceback (policy §5, FATAL).
+    try:
+        cfg.transcript_file.parent.mkdir(parents=True, exist_ok=True)
+        cfg.transcript_file.write_text("", encoding="utf-8")
+    except OSError as exc:
+        raise CommandFailedError(
+            f"stub-ai could not prepare its transcript {cfg.transcript_file} ({exc})"
+        ) from exc
     try:
         server = StubServer(cfg)
     except OSError as exc:

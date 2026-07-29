@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from book_em_danno.capture.usage import extract_usage
+from book_em_danno.core.exec import CommandFailedError
 from book_em_danno.stubai import Drip, Finish, StubConfig, ToolCall, ToolLoop, stub_ai
 from book_em_danno.stubai.server import Stub, StubServer
 
@@ -284,6 +285,17 @@ def test_non_integer_content_length_does_not_crash_handler(tmp_path: Path) -> No
                 resp += chunk
     assert b"200" in resp.split(b"\r\n", 1)[0]  # status line is a 200, handler survived
     assert stub._server.handler_errors == 0
+
+
+def test_unpreparable_transcript_fails_loud(tmp_path: Path) -> None:
+    # Preparing the transcript is a precondition for the whole run; a bare OSError (here an
+    # unwritable path — the parent is a FILE, not a dir) must fail loud as a CommandFailedError,
+    # not dump a raw traceback (policy §5, FATAL).
+    (tmp_path / "afile").write_text("i am a file, not a dir", encoding="utf-8")
+    bad_transcript = tmp_path / "afile" / "transcript.jsonl"
+    with pytest.raises(CommandFailedError, match="could not prepare its transcript"):
+        with stub_ai(StubConfig(script=[Finish("x")], transcript_file=bad_transcript)):
+            pass
 
 
 # --- helpers ----------------------------------------------------------------

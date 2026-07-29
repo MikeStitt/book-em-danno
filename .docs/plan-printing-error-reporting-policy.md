@@ -373,12 +373,14 @@ already correct (reference).
 
 ### config/loader.py · schema.py · generate.py
 
-- ✗ `loader.py:21` `read_text` after `is_file`: `OSError`/`UnicodeDecodeError`
-  escape the `DannoConfigError` contract — **FATAL**.
-- ✗ `generate.py:1020` `json.loads` of user's claurst `settings.json`:
-  `JSONDecodeError` → raw traceback — **FATAL**; `:1021` non-dict → `{}` then
-  overwrite **silently discards the user's settings file** — **WARNING**/data-loss.
-- ✗ `generate.py:669` agent `.md` `read_text` unguarded — **WARNING**.
+- ✓ (DONE step 7) `loader.py` `read_text` after `is_file`: `OSError`/`UnicodeDecodeError`
+  now wrapped into the `DannoConfigError` contract — **FATAL**.
+- ✓ (DONE step 7) `generate.py` `json.loads` of the user's claurst `settings.json`:
+  an unparseable file raises `ValueError` (we refuse to overwrite it) — **FATAL**; a
+  valid-but-non-object payload now `log_warn`s the data-loss instead of silently
+  discarding it — **WARNING**/data-loss.
+- ✓ (DONE step 7) `generate.py` `scan_agent_frontmatter` agent `.md` `read_text` now
+  `log_warn`s an unreadable def and records it present-but-keyless — **WARNING**.
 - ⚠ `schema.py` `default_agent` (default `"pm"`) never validated to exist —
   **WARNING**.
 
@@ -399,7 +401,8 @@ already correct (reference).
   to kill clients mid-stream — the response record is already written).
 - ✓ (DONE step 5) `int(Content-Length)` (99): a non-integer header is logged at
   **ERROR** and the body treated as empty (no handler crash).
-- ✗ setup `mkdir`/`write_text("")` (230–231): bare `OSError` — **FATAL** (step 7).
+- ✓ (DONE step 7) setup `mkdir`/`write_text("")`: a bare `OSError` preparing the
+  transcript now raises `CommandFailedError` — **FATAL**.
 - ✓ port bind `OSError→CommandFailedError` (233) — **FATAL** (the model to copy).
 
 ---
@@ -445,7 +448,9 @@ run-log wiring), 5 (handler-error capture), and 7 (the §5 sweep) remain.
    exist would break the gate.
 7. **Remediate §5** call sites against the taxonomy, most-severe first (FATAL
    security-invariant checks → ERROR durable-record gaps → TRANSIENT retry
-   budgets → WARNING anomalies).
+   budgets → WARNING anomalies). **FATAL tier landed** (branch `log-swallow-sweep`):
+   `loader.py` read guard, `generate.py` claurst-settings + agent-def guards,
+   `stubai/server.py` transcript-prepare guard. ERROR/TRANSIENT/WARNING tiers follow.
 
 ## Related
 
