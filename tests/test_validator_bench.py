@@ -22,6 +22,7 @@ from book_em_danno.core import exec as exec_mod
 from book_em_danno.core.exec import CommandFailedError, Runner
 from danno_validator import baseline, harnesses
 from danno_validator.matrix import model_variants
+from danno_validator.oracle import FailureClass, TurnVerdict
 from danno_validator.suites import aut, bench
 from danno_validator.suites.config import BenchmarksConfig
 
@@ -693,6 +694,160 @@ def test_run_turn_for_claude_uses_default_when_no_override(
 
 def test_run_turn_for_claurst_returns_callable() -> None:
     assert callable(aut.run_turn_for("claurst", None))
+
+
+# --- #113: incremental verdict persistence (results.jsonl journal + partial finalize) ------
+
+
+def _bench_verdict(
+    task_id: str, *, suite: str = "aider", passed: bool = True
+) -> bench.BenchVerdict:
+    """A minimal graded `BenchVerdict` for driving the journal/finalize paths without Docker."""
+    fc = FailureClass.PASS if passed else FailureClass.ERROR
+    return bench.BenchVerdict(
+        task_id=task_id,
+        suite=suite,
+        passed=passed,
+        verdict=TurnVerdict(
+            failure_class=fc,
+            promised_action=True,
+            tool_call_count=1,
+            side_effect=passed,
+            rationale="",
+        ),
+        tool_calls=1,
+        tokens=10,
+        cost=0.0,
+        latency_s=1.0,
+        model=None,
+    )
+
+
+def test_bench_journals_each_verdict_to_results_jsonl(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # #113 (A): each cell's verdict is appended to results.jsonl the moment it is graded, so a
+    # kill loses at most the in-flight cell. On the happy path the journal is additive: the
+    # canonical bench.json still lands and carries NO `partial` flag.
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-abc")
+
+    def fake_aider(runner, cfg, opts, *, on_verdict=None, **kw):  # type: ignore[no-untyped-def]
+        verdicts = [_bench_verdict("t1"), _bench_verdict("t2")]
+        for v in verdicts:
+            if on_verdict is not None:
+                on_verdict(v)
+        return verdicts
+
+    monkeypatch.setattr(bench, "_run_aider", fake_aider)
+    monkeypatch.setattr(bench, "_run_swebench", lambda *a, on_verdict=None, **k: [])
+    opts = bench.BenchOptions(target=tmp_path, harness="claude", out_dir=tmp_path / "out")
+    report = bench.run_bench(_config(), BenchmarksConfig(), opts, Runner())
+
+    journal = tmp_path / "out" / "results.jsonl"
+    rows = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+    assert [r["task"] for r in rows] == ["t1", "t2"]  # one durable line per graded cell
+    payload = json.loads((tmp_path / "out" / "bench.json").read_text(encoding="utf-8"))
+    assert "partial" not in payload  # completed run → unchanged canonical bench.json
+    assert [r["task"] for r in payload["results"]] == ["t1", "t2"]
+    assert [v.task_id for v in report.verdicts] == ["t1", "t2"]
+
+
+def test_bench_interrupted_leg_finalizes_partial_results(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # #113 (B, the issue's required test): raise mid-leg after N cells are graded, then assert
+    # the durable journal holds all N AND a valid, clearly-partial bench.json + report was
+    # written from the finally-path (a run killed mid-loop no longer loses its graded cells).
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-abc")
+
+    def boom_aider(runner, cfg, opts, *, on_verdict=None, **kw):  # type: ignore[no-untyped-def]
+        for tid in ("t1", "t2", "t3"):
+            v = _bench_verdict(tid)
+            if on_verdict is not None:
+                on_verdict(v)
+        raise RuntimeError("killed mid-leg")
+
+    monkeypatch.setattr(bench, "_run_aider", boom_aider)
+    monkeypatch.setattr(bench, "_run_swebench", lambda *a, on_verdict=None, **k: [])
+    opts = bench.BenchOptions(target=tmp_path, harness="claude", out_dir=tmp_path / "out")
+    with pytest.raises(RuntimeError, match="killed mid-leg"):
+        bench.run_bench(_config(), BenchmarksConfig(), opts, Runner())
+
+    out = tmp_path / "out"
+    journal_lines = (out / "results.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(journal_lines) == 3  # every graded cell survived the kill
+    payload = json.loads((out / "bench.json").read_text(encoding="utf-8"))
+    assert payload["partial"] is True  # clearly flagged partial
+    assert [r["task"] for r in payload["results"]] == ["t1", "t2", "t3"]
+    assert (out / "report.md").is_file()  # partial human report written too
+
+
+def test_run_bench_harnesses_merges_from_disk_when_a_leg_is_killed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # #113 (D): a leg killed mid-sweep must not suppress the cross-harness comparison for the
+    # legs that finished. The merge is built in a `finally` from whatever <root>/<harness>/
+    # bench.json files exist on disk — including a killed leg's own partial one.
+    root = tmp_path / "root"
+
+    def fake_run_bench(config, bench_cfg, opts, runner, *, now=None):  # type: ignore[no-untyped-def]
+        leg = opts.out_dir
+        leg.mkdir(parents=True, exist_ok=True)
+        if opts.harness == "opencode":
+            (leg / "bench.json").write_text(
+                json.dumps(
+                    {
+                        "harness": "opencode",
+                        "models": ["ollama/qwen3:latest"],
+                        "results": [
+                            {
+                                "suite": "aider",
+                                "task": "t1",
+                                "passed": True,
+                                "tool_calls": 1,
+                                "latency_s": 1.0,
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            return bench.BenchReport(out_dir=leg, results_json=leg / "bench.json")
+        # codex leg: write a PARTIAL bench.json (as run_bench's finally would) then die.
+        (leg / "bench.json").write_text(
+            json.dumps(
+                {
+                    "harness": "codex",
+                    "models": ["ollama/qwen3:latest"],
+                    "partial": True,
+                    "results": [
+                        {
+                            "suite": "aider",
+                            "task": "t1",
+                            "passed": False,
+                            "tool_calls": 0,
+                            "latency_s": 0.5,
+                        }
+                    ],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        raise RuntimeError("codex killed")
+
+    monkeypatch.setattr(bench, "run_bench", fake_run_bench)
+    opts = bench.BenchOptions(target=tmp_path, out_dir=root)
+    with pytest.raises(RuntimeError, match="codex killed"):
+        bench.run_bench_harnesses(
+            _config(), BenchmarksConfig(), opts, Runner(), ["opencode", "codex"]
+        )
+
+    md = root / "report.md"
+    assert md.is_file() and (root / "report.html").is_file()  # grid built despite the kill
+    text = md.read_text(encoding="utf-8")
+    assert "opencode" in text and "codex" in text  # both legs' columns present
 
 
 def test_setup_bench_capture_no_save_is_always_on_but_never_persists(tmp_path: Path) -> None:

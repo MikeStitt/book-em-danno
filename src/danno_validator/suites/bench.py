@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import tempfile
 from collections.abc import Sequence
@@ -45,7 +46,12 @@ from danno_validator.suites.aut import (
     install_harness,
     run_turn_for,
 )
-from danno_validator.suites.base import BenchVerdict, error_verdict, run_bench_task
+from danno_validator.suites.base import (
+    BenchVerdict,
+    VerdictSink,
+    error_verdict,
+    run_bench_task,
+)
 from danno_validator.suites.config import BenchmarksConfig, resolve_gates
 from danno_validator.suites.run import (
     clone_polyglot,
@@ -331,6 +337,7 @@ def _run_aider(
     capture_port: int | None,
     warm: bool,
     warmup: list[dict],
+    on_verdict: VerdictSink | None = None,
 ) -> list[BenchVerdict]:
     ap = cfg.aider_polyglot
     if not (ap.enabled and ap.select):
@@ -380,6 +387,7 @@ def _run_aider(
                 capture=capture,
                 sampler=sampler,
                 gates=resolved,
+                on_verdict=on_verdict,
             )
     finally:
         remove_checkout(checkout)
@@ -402,6 +410,7 @@ def _run_swebench(
     capture_port: int | None,
     warm: bool,
     warmup: list[dict],
+    on_verdict: VerdictSink | None = None,
 ) -> list[BenchVerdict]:
     sw = cfg.swebench
     if not (sw.enabled and sw.select):
@@ -421,9 +430,11 @@ def _run_swebench(
                 # record an errored row per model variant and move on (fail loud,
                 # but per-row, as the suite promises).
                 log_warn(f"[bench] swebench {task.id} provision failed: {exc}")
-                verdicts += [
-                    error_verdict(task.id, "swebench", f"provision failed: {exc}") for _ in variants
-                ]
+                for _ in variants:
+                    v = error_verdict(task.id, "swebench", f"provision failed: {exc}")
+                    verdicts.append(v)
+                    if on_verdict is not None:
+                        on_verdict(v)
                 continue
             for variant in variants:
                 # Task-major: the prior task's model may have evicted this one — warm before
@@ -431,32 +442,31 @@ def _run_swebench(
                 _warm_variant(variant, warm=warm, warmup=warmup)
                 log_info(f"[bench] swebench {task.id} × {variant.model_ref}")
                 resolved = resolve_gates(cfg.gates, harness=opts.harness, model=variant.model_name)
-                verdicts.append(
-                    run_bench_task(
-                        runner,
-                        name,
-                        task=task,
-                        suite="swebench",
-                        workspace=workspace,
-                        model=variant.model_ref,
-                        run_turn=cwd_bound(
-                            run_turn_for(
-                                opts.harness,
-                                env_files[variant.model_ref],
-                                capture_port,
-                                model_override=_harness_dial_ref(opts.harness, config, variant),
-                                max_turns=resolved.max_turns,  # claurst native polite-stop
-                                codex_provider=_harness_dial_provider(
-                                    opts.harness, config, variant
-                                ),
-                            ),
-                            task.workspace_dir(workspace),
+                v = run_bench_task(
+                    runner,
+                    name,
+                    task=task,
+                    suite="swebench",
+                    workspace=workspace,
+                    model=variant.model_ref,
+                    run_turn=cwd_bound(
+                        run_turn_for(
+                            opts.harness,
+                            env_files[variant.model_ref],
+                            capture_port,
+                            model_override=_harness_dial_ref(opts.harness, config, variant),
+                            max_turns=resolved.max_turns,  # claurst native polite-stop
+                            codex_provider=_harness_dial_provider(opts.harness, config, variant),
                         ),
-                        capture=capture,
-                        sampler=sampler,
-                        gates=resolved,
-                    )
+                        task.workspace_dir(workspace),
+                    ),
+                    capture=capture,
+                    sampler=sampler,
+                    gates=resolved,
                 )
+                verdicts.append(v)
+                if on_verdict is not None:
+                    on_verdict(v)
         finally:
             _teardown(runner, name, keep=opts.keep_sandboxes)
     return verdicts
@@ -583,8 +593,9 @@ def _build_results_payload(
     num_ctx_by_model: dict[str, int | None],
     capture_dir: Path | None,
     captures_persisted: bool,
+    partial: bool = False,
 ) -> dict:
-    return {
+    payload = {
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "config": str(config_path),
         "harness": harness,
@@ -602,6 +613,12 @@ def _build_results_payload(
             for v in report.verdicts
         ],
     }
+    if partial:
+        # Written from the finally-path when a leg was interrupted (#113): these results
+        # cover only the cells graded before the kill. The key is OMITTED on the happy path
+        # so a completed run's bench.json is byte-for-byte what it always was (additive only).
+        payload["partial"] = True
+    return payload
 
 
 def _write_results(
@@ -613,6 +630,7 @@ def _write_results(
     num_ctx_by_model: dict[str, int | None] | None = None,
     capture_dir: Path | None = None,
     captures_persisted: bool = True,
+    partial: bool = False,
 ) -> Path:
     report.out_dir.mkdir(parents=True, exist_ok=True)
     path = report.out_dir / "bench.json"
@@ -624,9 +642,97 @@ def _write_results(
         num_ctx_by_model=num_ctx_by_model or {},
         capture_dir=capture_dir,
         captures_persisted=captures_persisted,
+        partial=partial,
     )
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path
+
+
+class _VerdictJournal:
+    """Append-only crash journal of a bench leg's graded cells (#113).
+
+    `danno bench` grades each cell live in-sandbox but historically flushed the pass/fail
+    rollup to `bench.json` only ONCE, at end-of-leg — so a kill anywhere in the model×task
+    loop lost every graded verdict, even though the capture/metrics/transcript sidecars were
+    written per cell and survived. This journal brings the verdict index up to that same
+    per-cell durability: `append` writes one `bench.json`-shaped row to `<out_dir>/results.jsonl`
+    the moment the cell is graded, flushed + fsync'd, so even a SIGKILL loses at most the single
+    in-flight cell. `verdicts` keeps the same rows in memory so the finally-path can finalize a
+    valid partial `bench.json` (see `_finalize_partial`).
+
+    Journal rows carry no context headroom (`num_ctx_by_model={}`) — they are the raw crash
+    record; the canonical end-of-leg `bench.json` still computes headroom from provenance. On
+    a run that completes normally the journal is purely additive: `bench.json` is unchanged.
+    """
+
+    def __init__(self, *, out_dir: Path, capture_dir: Path | None) -> None:
+        self.out_dir = out_dir
+        self._capture_dir = capture_dir
+        self._path = out_dir / "results.jsonl"
+        self.verdicts: list[BenchVerdict] = []
+        self._started = False
+
+    def append(self, verdict: BenchVerdict) -> None:
+        self.verdicts.append(verdict)
+        row = _result_row(
+            verdict, num_ctx_by_model={}, out_dir=self.out_dir, capture_dir=self._capture_dir
+        )
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        # Truncate on the first record (this run's rows only), append thereafter — mirroring the
+        # capture proxy's lazy "w"-then-"a" so a re-run into the same dir starts a clean journal.
+        mode = "w" if not self._started else "a"
+        with self._path.open(mode, encoding="utf-8") as fh:
+            fh.write(json.dumps(row) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        self._started = True
+
+
+def _finalize_partial(
+    report: BenchReport,
+    journal: _VerdictJournal,
+    *,
+    config_path: Path,
+    harness: str,
+    variants: list[ConfigVariant],
+    capture_dir: Path | None,
+    captures_persisted: bool,
+) -> None:
+    """Write a valid, clearly-PARTIAL `bench.json` + report from the cells graded before an
+    interruption (#113), run from `run_bench`'s `finally`.
+
+    A leg killed mid-loop otherwise leaves no `bench.json` at all. Here the durable per-cell
+    journal (a superset of whatever `report.verdicts` accumulated — the sink fired for every
+    graded cell) becomes the payload, flagged `partial: true`. Provenance is best-effort/absent
+    (the interruption may have preceded `collect_provenance`), so context headroom is simply
+    omitted. Best-effort throughout: a failure finalizing must NEVER mask the original
+    interruption — it warns loud (Working Rule 8) and returns. No-op if nothing was graded."""
+    if not journal.verdicts:
+        return
+    report.verdicts = list(journal.verdicts)
+    try:
+        report.results_json = _write_results(
+            report,
+            config_path=config_path,
+            harness=harness,
+            variants=variants,
+            capture_dir=capture_dir,
+            captures_persisted=captures_persisted,
+            partial=True,
+        )
+        payload = json.loads(report.results_json.read_text(encoding="utf-8"))
+        write_report(report.out_dir, payload, provenance=None)
+    except Exception as exc:  # noqa: BLE001 - never let finalize mask the interruption
+        log_warn(
+            f"[bench] {harness}: could not finalize partial results after interruption: {exc} "
+            f"(the durable journal at {journal.out_dir / 'results.jsonl'} still holds every "
+            "graded cell)."
+        )
+        return
+    log_warn(
+        f"[bench] {harness} interrupted — wrote PARTIAL results for {len(journal.verdicts)} "
+        f"graded cell(s) to {report.out_dir / 'bench.json'} (marked partial)."
+    )
 
 
 def _summary(verdicts: list[BenchVerdict]) -> None:
@@ -744,6 +850,13 @@ def run_bench(
     # capture-rewritten config so a cloud dial reaches the --capture proxy, and up front so a
     # missing cloud key / claude token fails loud before provisioning.
     env_files = _build_bench_env_files(cfg_for_run, opts, variants)
+    # Journal every graded cell to `<out_dir>/results.jsonl` as it lands, so a kill (SIGTERM/
+    # SIGINT, or even SIGKILL) loses at most the in-flight cell — matching the per-cell
+    # durability the capture/metrics/transcript sidecars already have (#113). `completed` gates
+    # the finally: an interrupted leg finalizes a valid PARTIAL bench.json from the journal; a
+    # clean leg falls through to the unchanged full write below.
+    journal = _VerdictJournal(out_dir=out_dir, capture_dir=opts.capture_dir)
+    completed = False
     try:
         report.verdicts += _run_aider(
             runner,
@@ -759,6 +872,7 @@ def run_bench(
             capture_port=capture_port,
             warm=opts.warm,
             warmup=warmup,
+            on_verdict=journal.append,
         )
         report.verdicts += _run_swebench(
             runner,
@@ -774,10 +888,24 @@ def run_bench(
             capture_port=capture_port,
             warm=opts.warm,
             warmup=warmup,
+            on_verdict=journal.append,
         )
+        completed = True
     finally:
         for env_file in {p for p in env_files.values() if p is not None}:
             env_file.unlink(missing_ok=True)
+        if not completed:
+            # Killed/errored mid-loop: turn the durable journal into a partial bench.json +
+            # report before the exception propagates, so the leg's graded cells survive.
+            _finalize_partial(
+                report,
+                journal,
+                config_path=opts.target / "danno.toml",
+                harness=opts.harness,
+                variants=variants,
+                capture_dir=opts.capture_dir,
+                captures_persisted=opts.save_captures,
+            )
 
     # §7 provenance is always written (a separate file, so bench.json's schema is stable):
     # exact model bytes + static facts, harness/danno pins, host descriptor, sampler
@@ -834,30 +962,53 @@ def run_bench_harnesses(
 
     root = opts.out_dir or Path(".danno-bench") / now.strftime("%Y-%m-%dT%H-%M-%S")
     log_info(f"danno bench — {len(harnesses)} harnesses [{', '.join(harnesses)}] → {root}")
-    reports = [
-        run_bench(config, bench_cfg, replace(opts, harness=ag, out_dir=root / ag), runner, now=now)
-        for ag in harnesses
-    ]
-    if opts.dry_run:
-        return reports
+    reports: list[BenchReport] = []
+    try:
+        for ag in harnesses:
+            reports.append(
+                run_bench(
+                    config, bench_cfg, replace(opts, harness=ag, out_dir=root / ag), runner, now=now
+                )
+            )
+    finally:
+        # Build the comparison from whatever leg bench.jsons made it to disk — including a
+        # PARTIAL one a killed leg's finally wrote (#113). Running this in the `finally` means a
+        # leg killed mid-sweep still yields the cross-harness grid for the legs that finished,
+        # instead of the kill suppressing it for everyone; the interruption then propagates.
+        if not opts.dry_run:
+            _merge_cross_harness(root, harnesses)
+    return reports
 
-    jsons = [r.results_json for r in reports if r.results_json is not None]
-    if jsons:
-        payloads = load_reports(jsons)
+
+def _merge_cross_harness(root: Path, harnesses: list[str]) -> None:
+    """Write the cross-harness `report.md`/`report.html` grid from each `<root>/<harness>/
+    bench.json` present on disk (disk truth, not the in-memory reports) so a killed leg doesn't
+    suppress the comparison for the legs that finished (#113). No-op if none exist yet."""
+    jsons = [root / ag / "bench.json" for ag in harnesses]
+    jsons = [j for j in jsons if j.is_file()]
+    if not jsons:
+        return
+    payloads = load_reports(jsons)
+    for p in payloads:
         # A harness whose whole model matrix was N/A (every model on a backend kind it can't
         # dial) produces an empty column. The per-model drop was already named loudly by
         # `dialable_variants`; call out the empty column too so the merged grid's blank is
         # read as a reasoned N/A, never a silent gap (Working Rule 8).
-        for p in payloads:
-            if not p.get("results"):
-                log_warn(
-                    f"harness '{p.get('harness', '?')}' ran no cells — its entire model matrix "
-                    f"is N/A for it (nothing it can dial); its comparison column is empty."
-                )
-        root.mkdir(parents=True, exist_ok=True)
-        md = root / "report.md"
-        html = root / "report.html"
-        md.write_text(merge_markdown(payloads), encoding="utf-8")
-        html.write_text(merge_html(payloads), encoding="utf-8")
-        log_info(f"\n  comparison  {md}  ·  {html}")
-    return reports
+        if not p.get("results"):
+            log_warn(
+                f"harness '{p.get('harness', '?')}' ran no cells — its entire model matrix "
+                f"is N/A for it (nothing it can dial); its comparison column is empty."
+            )
+        elif p.get("partial"):
+            # A killed leg's column is real but incomplete — say so, so the grid's short column
+            # reads as an interrupted leg, not a silent gap (Working Rule 8).
+            log_warn(
+                f"harness '{p.get('harness', '?')}' results are PARTIAL (leg interrupted) — its "
+                "comparison column covers only the cells graded before the kill."
+            )
+    root.mkdir(parents=True, exist_ok=True)
+    md = root / "report.md"
+    html = root / "report.html"
+    md.write_text(merge_markdown(payloads), encoding="utf-8")
+    html.write_text(merge_html(payloads), encoding="utf-8")
+    log_info(f"\n  comparison  {md}  ·  {html}")
