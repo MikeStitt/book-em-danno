@@ -328,6 +328,27 @@ class Runner:
             )
         return CaptureResult(cmd, result.returncode, result.stdout, result.stderr)
 
+    def capture_unwatched(
+        self,
+        cmd: list[str],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        check: bool = False,
+    ) -> CaptureResult:
+        """Like `capture()` but never engages the runaway-gate watchdog, even inside a
+        `watching()` block. For cleanup commands invoked from `on_kill` (the reap, #103): the
+        watch is still armed there (`on_kill` runs from inside `_capture_watched`, before
+        `watching()`'s `finally` restores the previous watch), so routing the reap through the
+        normal `capture()` would re-enter the watchdog, let the same breach kill the reap, and
+        recurse into `on_kill`. `on_kill` runs on the poll thread that owns `_watch`, so
+        suspending it for this one capture is safe."""
+        prev, self._watch = self._watch, None
+        try:
+            return self.capture(cmd, cwd=cwd, env=env, check=check)
+        finally:
+            self._watch = prev
+
     def _capture_watched(
         self,
         cmd: list[str],

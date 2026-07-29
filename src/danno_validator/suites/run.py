@@ -24,7 +24,7 @@ from danno_validator.suites.aider import (
     languages_in,
     load_aider_tasks,
 )
-from danno_validator.suites.base import BenchVerdict, run_bench_task
+from danno_validator.suites.base import BenchVerdict, VerdictSink, run_bench_task
 from danno_validator.suites.config import ResolvedGates
 from danno_validator.telemetry.sampler import SampleBinding
 
@@ -66,6 +66,7 @@ def run_aider_suite(
     sampler: SampleBinding | None = None,
     gates: ResolvedGates | None = None,
     attempts: int = AIDER_ATTEMPTS,
+    on_verdict: VerdictSink | None = None,
 ) -> list[BenchVerdict]:
     """Run the selected Aider Polyglot exercises against one HUT, in `select` order.
 
@@ -77,27 +78,32 @@ def run_aider_suite(
     (from `--capture`) and `sampler` (from `--sample`) are threaded to `run_bench_task`
     for per-permutation wire recording and resource profiling. The selected languages'
     toolchains are installed once (idempotent) before the task loop.
+
+    `on_verdict`, when set, is called with each cell's verdict the moment it is graded
+    (before the next task runs), so the caller can journal it to disk — a kill then loses
+    at most the in-flight cell, not every graded verdict in the leg (#113).
     """
     tasks: list[AiderTask] = load_aider_tasks(checkout, list(select))
     install_toolchains(runner, sandbox, languages_in(list(select)))
     verdicts: list[BenchVerdict] = []
     for task in tasks:
         task.provision(runner, sandbox, workspace)
-        verdicts.append(
-            run_bench_task(
-                runner,
-                sandbox,
-                task=task,
-                suite="aider",
-                workspace=workspace,
-                model=model,
-                run_turn=cwd_bound(run_turn, task.workspace_dir(workspace)),
-                capture=capture,
-                sampler=sampler,
-                gates=gates,
-                attempts=attempts,
-            )
+        verdict = run_bench_task(
+            runner,
+            sandbox,
+            task=task,
+            suite="aider",
+            workspace=workspace,
+            model=model,
+            run_turn=cwd_bound(run_turn, task.workspace_dir(workspace)),
+            capture=capture,
+            sampler=sampler,
+            gates=gates,
+            attempts=attempts,
         )
+        verdicts.append(verdict)
+        if on_verdict is not None:
+            on_verdict(verdict)
     return verdicts
 
 

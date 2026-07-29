@@ -30,6 +30,12 @@ class GateTally:
     _calls: int = 0
     _tokens: int = 0
     _posts: int = 0
+    # Per-backend POST tallies, keyed by the capture target's `backend_name`. The cell's proxies
+    # share one tally (so the gates see the combined totals), so `_posts` alone can't tell whether
+    # the MODEL's own backend was ever dialed — a cell can rack up POSTs on the idle local backend
+    # (incidental title-gen) while its active cloud backend saw zero. This map keeps the split so
+    # `posts(backend=...)` can answer "did the active backend see any traffic?" (#105).
+    _posts_by_backend: dict[str, int] = field(default_factory=dict)
 
     def record(self, *, tokens: int | None) -> None:
         """Register one inference round. The proxy calls this for every POST to an
@@ -43,11 +49,15 @@ class GateTally:
             if tokens:
                 self._tokens += tokens
 
-    def observe_post(self) -> None:
+    def observe_post(self, backend: str | None = None) -> None:
         """Note that the proxy saw a POST (any path). Feeds `blind()` so an inference cell
-        whose dialect the sensor didn't recognise is surfaced, not silently under-counted."""
+        whose dialect the sensor didn't recognise is surfaced, not silently under-counted.
+        `backend` (the capture target's `backend_name`) attributes the POST to a specific
+        backend so `posts(backend=...)` can tell whether the active backend was dialed (#105)."""
         with self._lock:
             self._posts += 1
+            if backend is not None:
+                self._posts_by_backend[backend] = self._posts_by_backend.get(backend, 0) + 1
 
     def inference_calls(self) -> int:
         with self._lock:
@@ -56,6 +66,13 @@ class GateTally:
     def tokens(self) -> int:
         with self._lock:
             return self._tokens
+
+    def posts(self, backend: str | None = None) -> int:
+        """POSTs the proxy saw: the cell total (`backend=None`) or the count attributed to one
+        `backend_name`. `posts(active_backend) == 0` means the model's own backend was never
+        dialed — a 0-request cell (#105), distinct from `blind()` (traffic seen, none counted)."""
+        with self._lock:
+            return self._posts if backend is None else self._posts_by_backend.get(backend, 0)
 
     def blind(self) -> bool:
         """True when the proxy saw ≥1 POST but counted zero inference rounds — the gate

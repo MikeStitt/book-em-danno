@@ -22,7 +22,7 @@ from book_em_danno.capture.gate import GateTally
 from book_em_danno.capture.proxy import read_captures
 from book_em_danno.capture.wiring import CaptureBinding, RunningCaptures
 from book_em_danno.commands import sandbox_cli
-from book_em_danno.core.exec import GateBreach, Runner, log_warn
+from book_em_danno.core.exec import GateBreach, Runner, log_info, log_warn
 from danno_validator import harnesses
 from danno_validator.driver import Turn, TurnFn, opencode_run
 from danno_validator.oracle import FailureClass, TurnVerdict, classify_turn, gate_verdict
@@ -40,6 +40,11 @@ from danno_validator.telemetry.wire_metrics import (
     write_metrics,
     write_transcript,
 )
+
+# A per-cell sink the suite runners call the moment each cell is graded, so a verdict is
+# durable (journaled to disk) before the next cell starts — a kill then loses at most the
+# in-flight cell, not the whole leg (#113). Optional everywhere; `None` = no journaling.
+VerdictSink = Callable[["BenchVerdict"], None]
 
 
 @dataclass(frozen=True)
@@ -130,8 +135,40 @@ class BenchVerdict:
     #   `tool_calls`; excludes grading (the tally stops before `task.grade`). None if ungated.
     gate: GateBreach | None = None  # the breach that killed the cell (gate/observed/limit)
     survivors: tuple[int, ...] | None = None  # harness PIDs alive after the turn; () = clean
-    termination: str = "completed"  # "gate_kill" if a gate killed the cell, else "completed"
-    #   (orthogonal to `passed`: a killed cell is a gate event regardless of grading)
+    survivors_unknown: bool = False  # True when the survivor probe itself could not run (#103):
+    #   `survivors` is None because it is UNKNOWN, not because it was verified clean.
+    reap: str | None = None  # post-kill reap outcome tag ("killed"/"no-match"/"error:…"/
+    #   "exec-failed:…"); None when the cell was not gate-killed. The error tags already emitted
+    #   a loud warning (#103) — this surfaces the failed cleanup in the row, not just in stderr.
+    termination: str = "completed"  # how the cell ended, a faithful enum: "gate_kill" |
+    #   "no_requests" | "error" | "completed" (see `_termination`). "no_requests" = the active
+    #   backend saw 0 inference requests (#105 — the model never ran; grade is workspace-only).
+    #   Orthogonal to `passed`: how the cell terminated, regardless of what grading found.
+    resolved_gates: ResolvedGates | None = None  # the effective gate caps this cell ran under
+    #   (max_turns/max_tokens/timeout_s after the model > harness > global overlay). Verdict-local
+    #   so it survives a partial/interrupted run, unlike the raw `[gates]` config in provenance;
+    #   None for a cell that never ran under gates (e.g. an errored provision row) (#89 F5-A).
+
+
+def _termination(*, gate_killed: bool, backend_dark: bool, failure_class: FailureClass) -> str:
+    """How a bench cell ended, as a faithful enum: ``gate_kill`` | ``no_requests`` |
+    ``error`` | ``completed``.
+
+    An errored cell (harness/transport failure, no real attempt) must never read as
+    ``completed`` — the field is named for *how* the cell terminated, so a health check
+    keyed off it alone would otherwise wave a hard failure through (issue #104). Precedence:
+    a gate kill wins (a gate-breach verdict is never ``ERROR`` — its class is the breach slug,
+    so the two are mutually exclusive); then ``no_requests``, the specific case where the
+    active backend was never dialed so the grade reflects only the workspace (#105); then any
+    other ``ERROR`` verdict; else ``completed``.
+    """
+    if gate_killed:
+        return "gate_kill"
+    if backend_dark:
+        return "no_requests"
+    if failure_class is FailureClass.ERROR:
+        return "error"
+    return "completed"
 
 
 def error_verdict(task_id: str, suite: str, detail: str) -> BenchVerdict:
@@ -155,6 +192,9 @@ def error_verdict(task_id: str, suite: str, detail: str) -> BenchVerdict:
         cost=0.0,
         latency_s=0.0,
         error_summary=detail,
+        termination=_termination(
+            gate_killed=False, backend_dark=False, failure_class=FailureClass.ERROR
+        ),
     )
 
 
@@ -170,21 +210,55 @@ _REAP_PATTERN = "|".join(
 )
 
 
-def _reap_harness(runner: Runner, sandbox: str) -> None:
+def _last_line(text: str) -> str:
+    """The last non-blank line of `text` (a command's stderr tail), for a compact row tag."""
+    lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
+    return lines[-1] if lines else ""
+
+
+def _reap_harness(runner: Runner, sandbox: str) -> str:
     """Best-effort `pkill` of the harness inside `sandbox` after the watchdog killed the
-    host-side exec (which does not reap the VM). Never raises (called under suppression)."""
-    runner.run(
-        [
-            *sandbox_cli.base(),
-            "exec",
-            sandbox,
-            "bash",
-            "-lc",
-            f"pkill -9 -f '{_REAP_PATTERN}' 2>/dev/null; true",
-        ],
-        why=f"reap harness processes in '{sandbox}' after runaway-gate kill",
-        check=False,
+    host-side exec (which does not reap the VM). Runs UNWATCHED — it is invoked from `on_kill`
+    where the gate watch is still armed, and routing it through the watchdog would let the same
+    breach kill the reap and recurse into `on_kill` (see `Runner.capture_unwatched`).
+
+    Never raises (called under suppression), but — unlike the old `2>/dev/null; true` that made
+    a failed reap indistinguishable from a clean one (#103) — it inspects the outcome and
+    returns a short tag recorded on the row, warning loud when the reap could not confirm a kill.
+    `pkill` exit codes: 0 = matched+signalled ≥1 process, 1 = none matched (normal on a clean
+    harness exit — quiet), ≥2 = pkill usage/fatal error. A failed `sbx exec` (sandbox gone,
+    transport error) surfaces as an `OSError` on launch or a non-zero exit with stderr."""
+    cmd = [
+        *sandbox_cli.base(),
+        "exec",
+        sandbox,
+        "bash",
+        "-lc",
+        f"pkill -9 -f '{_REAP_PATTERN}'",
+    ]
+    log_info(f"reap harness processes in '{sandbox}' after runaway-gate kill")
+    try:
+        result = runner.capture_unwatched(cmd, check=False)
+    except OSError as exc:
+        log_warn(
+            f"reap could not run in '{sandbox}': {exc} — a runaway may still be burning VM CPU "
+            "(and, in a shared sandbox, bleed into the next cell)."
+        )
+        return f"exec-failed:{exc.__class__.__name__}"
+    code = result.returncode
+    if code == 0:
+        return "killed"
+    if code == 1 and not result.stderr.strip():
+        # pkill matched nothing — expected when the harness already exited cleanly. Quiet.
+        return "no-match"
+    # exit ≥2 (pkill error) OR exit 1 with stderr (an `sbx exec` transport failure speaking up):
+    # the reap could not confirm the harness was killed — fail loud (Working Rule 8).
+    detail = _last_line(result.stderr) or f"exit {code}"
+    log_warn(
+        f"reap in '{sandbox}' exited {code}: {detail} — could not confirm the harness was "
+        "killed; a runaway may still be burning VM CPU (and bleed into the next cell)."
     )
+    return f"error:{detail[:80]}"
 
 
 # Harness-only survivor probe. The alternatives are bracketed (`[o]pencode`, not `opencode`)
@@ -197,12 +271,26 @@ _SURVIVOR_PATTERN = "|".join(
 )
 
 
-def _surviving_harness_pids(runner: Runner, sandbox: str) -> tuple[int, ...]:
+@dataclass(frozen=True)
+class SurvivorProbe:
+    """Outcome of the post-turn harness-survivor probe. `ran` distinguishes "probe executed,
+    found these PIDs" (possibly empty = clean) from "probe could NOT execute" (`ran=False`) —
+    the latter must never be read as clean (#103): a probe that never ran cannot vouch that a
+    runaway was reaped."""
+
+    ran: bool
+    pids: tuple[int, ...]
+
+
+def _surviving_harness_pids(runner: Runner, sandbox: str) -> SurvivorProbe:
     """Harness PIDs still alive in `sandbox` after the turn (and any post-kill reap). The
     post-turn invariant is that this is empty: a clean cell's harness exits and a killed one is
     reaped, so a non-empty result means a runaway leaked past the kill and will burn VM CPU
-    (and, in a shared sandbox, bleed into the next cell). Best-effort — never raises (a missing
-    sandbox CLI or already-gone sandbox reads as no survivors, not an errored row)."""
+    (and, in a shared sandbox, bleed into the next cell). Best-effort — never raises. Unlike the
+    old `|| true` + `except OSError: return ()` that made a probe which could not run
+    indistinguishable from a genuinely clean sandbox (#103), a failed probe returns `ran=False`
+    (UNKNOWN), never a bare empty tuple the caller would read as clean. `pgrep` exit codes:
+    0 = matches printed, 1 = no matches (clean), ≥2 = pgrep/exec error (probe could not run)."""
     try:
         result = runner.capture(
             [
@@ -211,13 +299,17 @@ def _surviving_harness_pids(runner: Runner, sandbox: str) -> tuple[int, ...]:
                 sandbox,
                 "bash",
                 "-lc",
-                f"pgrep -f '{_SURVIVOR_PATTERN}' || true",
+                f"pgrep -f '{_SURVIVOR_PATTERN}'",
             ],
             check=False,
         )
     except OSError:
-        return ()
-    return tuple(int(p) for p in result.stdout.split() if p.strip().isdigit())
+        return SurvivorProbe(ran=False, pids=())
+    if result.returncode >= 2:
+        # pgrep/exec error — the probe itself could not run. Survivors are UNKNOWN, not clean.
+        return SurvivorProbe(ran=False, pids=())
+    pids = tuple(int(p) for p in result.stdout.split() if p.strip().isdigit())
+    return SurvivorProbe(ran=True, pids=pids)
 
 
 def run_bench_task(
@@ -265,6 +357,12 @@ def run_bench_task(
     tally = GateTally() if gates is not None else None
     start = time.monotonic()
     captures: RunningCaptures | None = None
+    reap: str | None = None  # set by _on_kill iff the watchdog killed this cell (#103)
+
+    def _on_kill() -> None:
+        nonlocal reap
+        reap = _reap_harness(runner, sandbox)
+
     with contextlib.ExitStack() as stack:
         if capture is not None:
             # The handle stays valid after the block closes (the servers outlive
@@ -284,7 +382,7 @@ def run_bench_task(
                     max_turns=watchdog_max_turns(gates.max_turns),
                     max_tokens=gates.max_tokens,
                     timeout_s=gates.timeout_s,
-                    on_kill=lambda: _reap_harness(runner, sandbox),
+                    on_kill=_on_kill,
                 )
             )
             if gates is not None
@@ -346,20 +444,65 @@ def run_bench_task(
         grade = task.grade(runner, sandbox, workspace)
     passed = grade.passed
     survivors: tuple[int, ...] | None = None
+    survivors_unknown = False
     if gates is not None:
         # Post-turn invariant: no harness left running (a clean turn exits; a killed one is
         # reaped by on_kill). A survivor means the runaway leaked — fail loud (Working Rule 8).
-        survivors = _surviving_harness_pids(runner, sandbox)
-        if survivors:
+        probe = _surviving_harness_pids(runner, sandbox)
+        if not probe.ran:
+            # The probe itself could not run: survivors are UNKNOWN, not clean. Never let a
+            # failed backstop read as a verified-clean sandbox (#103) — fail loud.
+            survivors_unknown = True
             log_warn(
-                f"surviving harness process(es) {list(survivors)} in '{sandbox}' after "
-                f"{suite}/{task.id} {model}: a runaway leaked past the kill/reap and will burn "
-                "VM CPU (and, in a shared sandbox, bleed into the next cell)."
+                f"survivor probe could not run in '{sandbox}' after {suite}/{task.id} {model}: "
+                "cannot confirm the harness was reaped — recording survivors as UNKNOWN, not "
+                "clean (a runaway that leaked past the kill would otherwise be invisible)."
             )
+        else:
+            survivors = probe.pids
+            if survivors:
+                log_warn(
+                    f"surviving harness process(es) {list(survivors)} in '{sandbox}' after "
+                    f"{suite}/{task.id} {model}: a runaway leaked past the kill/reap and will "
+                    "burn VM CPU (and, in a shared sandbox, bleed into the next cell)."
+                )
+    # A cell whose ACTIVE backend (the model's own, `model.split("/")[0]`) saw zero POSTs was
+    # never dialed: the model never ran, so grading measured only whatever was in the workspace
+    # (#105). That is an infrastructure/triple failure — it must never grade to a silent pass or
+    # masquerade as an ordinary model failure. Distinct from `blind()` (traffic seen but none
+    # counted): here NO traffic reached the active backend. Only checked under an active capture
+    # proxy (the tally's only feed) and a real model row, and only for a backend we actually proxy
+    # (an uncaptured cloud ref has no sensor — `uncaptured_cloud_refs` warns about those); a gate
+    # kill already fails loud, so it takes precedence.
+    active_backend = model.split("/", 1)[0] if model is not None else None
+    active_backend_dark = (
+        breach is None
+        and tally is not None
+        and capture is not None
+        and active_backend is not None
+        and active_backend in {t.backend_name for t in capture.targets}
+        and tally.posts(active_backend) == 0
+    )
     if breach is not None:
         # A killed cell is a gate event regardless of what grading finds in the workspace.
         verdict = gate_verdict(breach, tool_call_count=turn.tool_call_count)
         error_summary: str | None = verdict.rationale
+    elif active_backend_dark:
+        reason = (
+            f"active backend '{active_backend}' saw 0 inference requests for {suite}/{task.id} "
+            f"{model}: the model was never dialed (harness/sandbox/wiring/egress failure) — the "
+            "grade reflects only the workspace, not the model. Recorded as no_requests, not a "
+            "clean pass/fail."
+        )
+        log_warn(reason)
+        verdict = TurnVerdict(
+            failure_class=FailureClass.ERROR,
+            promised_action=True,
+            tool_call_count=turn.tool_call_count,
+            side_effect=passed,
+            rationale=reason,
+        )
+        error_summary = reason
     else:
         verdict = classify_turn(turn, side_effect=passed, expects_action=True)
         error_summary = turn.error_summary
@@ -379,7 +522,14 @@ def run_bench_task(
         rounds=rounds,
         gate=breach,
         survivors=survivors,
-        termination="gate_kill" if breach is not None else "completed",
+        survivors_unknown=survivors_unknown,
+        reap=reap,
+        termination=_termination(
+            gate_killed=breach is not None,
+            backend_dark=active_backend_dark,
+            failure_class=verdict.failure_class,
+        ),
+        resolved_gates=gates,  # the effective caps this cell ran under (None if ungated) (#89)
     )
 
 

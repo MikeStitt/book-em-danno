@@ -362,6 +362,10 @@ def create(
     otherwise) and a loud warning fires if `name` already maps elsewhere.
     Idempotent under --apply: an already-existing sandbox is left in place.
     """
+    image = _docker_image(harness)  # resolve + validate the harness up front, before any side
+    #   effect (sbx policy init, registry write): a non-registered `harness` arg (e.g. a resolved
+    #   image string like "shell") fails loud here naming the valid set, not deep in the command
+    #   (issue #109).
     ensure_policy_initialized(runner)  # sbx needs a one-time global policy init before create
 
     if registry_path is not None:
@@ -372,7 +376,7 @@ def create(
                 f"for {target_abs} would collide — pass --name to disambiguate."
             )
 
-    cmd = [*sandbox_cli.base(), "create", "--name", name, _docker_image(harness), str(target_abs)]
+    cmd = [*sandbox_cli.base(), "create", "--name", name, image, str(target_abs)]
     if home is not None:
         cmd.append(str(home))
 
@@ -469,6 +473,9 @@ def provision(
     on next start). Does NOT launch the TUI — that's `start`."""
     from danno_validator import harnesses  # local: avoids import cycle
 
+    harnesses.get(harness)  # validate the harness up front (fail loud, naming the valid set)
+    #   before any side effect — a non-registered arg must not print the LAN warning or create
+    #   a sandbox before it's rejected (issue #109).
     ollama.announce_lan_exposure()
     if (
         harnesses.get(harness).reads_generated_config

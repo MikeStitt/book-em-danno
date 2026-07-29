@@ -22,6 +22,7 @@ from book_em_danno.core import exec as exec_mod
 from book_em_danno.core.exec import CommandFailedError, Runner
 from danno_validator import baseline, harnesses
 from danno_validator.matrix import model_variants
+from danno_validator.oracle import FailureClass, TurnVerdict
 from danno_validator.suites import aut, bench
 from danno_validator.suites.config import BenchmarksConfig
 
@@ -431,6 +432,70 @@ def test_requires_wire_explicit_only_chat_only_harness_fails_loud() -> None:
         harnesses.get("claurst").model_matrix(cfg, ["qwen"])
 
 
+def _unmapped_cloud_config() -> DannoConfig:
+    """A mixed matrix where the cloud model is SPEAKABLE by claurst (OpenAI-compatible, Chat)
+    but UNREACHABLE — its host is neither Ollama nor NVIDIA NIM and declares no
+    `claurst_provider`, so claurst can't map a provider for it (the `o4-mini` on
+    `host.docker.internal` case, #107). `qwen` (Ollama) is reachable."""
+    return DannoConfig(
+        backends={
+            "ollama": OllamaBackend(kind="ollama", base_url="http://h:11434/v1"),
+            "oai": OpenAIBackend(
+                kind="openai",
+                base_url="http://host.docker.internal:11434/v1",
+                api_key_env="OPENAI_API_KEY",
+            ),
+        },
+        models={
+            "qwen": Model(
+                backend="ollama", tag="qwen3:latest", context_budget=32000, output_limit=8192
+            ),
+            "o4": Model(backend="oai", tag="o4-mini", context_budget=200000, output_limit=32768),
+        },
+        agents={"build": "qwen"},
+    )
+
+
+def test_claurst_matrix_skips_unreachable_backend_model(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # #107: an unreachable-backend model is DROPPED from claurst's implicit sweep (loudly, with
+    # its reason) so the sweep completes the reachable cells instead of aborting the whole run.
+    cfg = _unmapped_cloud_config()
+    variants = harnesses.get("claurst").model_matrix(cfg, None)
+    assert [v.model_name for v in variants] == ["qwen"]  # o4 skipped, qwen kept
+    out = capsys.readouterr().out
+    assert "can't reach" in out and "o4" in out and "host.docker.internal" in out
+
+
+def test_claurst_matrix_explicit_only_unreachable_fails_loud() -> None:
+    # But naming the unreachable model explicitly (`--only o4`) is an impossible pairing →
+    # fail loud, not a silent narrowing (the whole-sweep abort is reserved for genuine faults).
+    cfg = _unmapped_cloud_config()
+    with pytest.raises(ValueError, match="can't reach these models"):
+        harnesses.get("claurst").model_matrix(cfg, ["o4"])
+
+
+def test_claurst_matrix_keeps_reachable_cloud_model() -> None:
+    # Regression: the reachability filter must not drop a cloud model claurst CAN reach — the
+    # NVIDIA NIM row (host maps to the inferred `nvidia` provider) is still swept.
+    cfg = _cloud_config()
+    assert [v.model_name for v in harnesses.get("claurst").model_matrix(cfg, None)] == [
+        "nemo",
+        "qwen",
+    ]
+
+
+def test_opencode_matrix_keeps_unreachable_by_claurst_model() -> None:
+    # The claurst-only reachability filter must NOT touch opencode: opencode generates a
+    # provider block for any dialable backend, so it still sweeps the model claurst can't reach.
+    cfg = _unmapped_cloud_config()
+    assert [v.model_name for v in harnesses.get("opencode").model_matrix(cfg, None)] == [
+        "o4",
+        "qwen",
+    ]
+
+
 def test_run_bench_non_claude_harness_skips_inert_models(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -522,6 +587,61 @@ def test_run_aider_provisions_by_harness_name_not_sandbox_image(
             capture_port=None,
             warm=False,
             warmup=[],
+            harness_ident={},
+        )
+    assert seen["harness"] == harness
+    assert seen["harness"] in harnesses.all_names()  # never the "shell" image
+
+
+class _FakeSweTask:
+    """Minimal swebench task: `_run_swebench` provisions + installs the harness BEFORE any
+    per-task work, so a no-op task + zero variants reaches the `sb.provision` call site
+    (b1fcfea's crash site) and nothing heavier."""
+
+    id = "stub-108"
+
+    def provision(self, runner: object, name: str, workspace: object) -> None:
+        pass
+
+
+@pytest.mark.parametrize("harness", ["claurst", "codex"])
+def test_run_swebench_provisions_by_harness_name_not_sandbox_image(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, harness: str
+) -> None:
+    # #108: the same b1fcfea guard, extended to `_run_swebench` (bench.py:414) — the second
+    # uncovered `sb.provision` caller, where the name!=image bug could re-enter. The value
+    # handed to provision must be a registered harness NAME, never the "shell" image.
+    seen: dict[str, object] = {}
+
+    class _StopEarly(Exception):
+        pass
+
+    def fake_provision(runner, name, workspace, *, harness, **kw):  # type: ignore[no-untyped-def]
+        seen["harness"] = harness
+        raise _StopEarly
+
+    monkeypatch.setattr(bench, "load_swebench_tasks", lambda *a, **k: [_FakeSweTask()])
+    monkeypatch.setattr(bench.sb, "provision", fake_provision)
+    cfg = BenchmarksConfig()
+    cfg.swebench.enabled = True
+    cfg.swebench.select = ["stub-108"]
+    opts = bench.BenchOptions(target=tmp_path, harness=harness, out_dir=tmp_path / "out")
+    with pytest.raises(_StopEarly):
+        bench._run_swebench(
+            Runner(),
+            cfg,
+            opts,
+            workspace=tmp_path / "ws",
+            variants=[],
+            config=_config(),
+            env_files={},
+            capture=None,
+            sampler=None,
+            allow_hosts=("localhost:11434",),
+            capture_port=None,
+            warm=False,
+            warmup=[],
+            harness_ident={},
         )
     assert seen["harness"] == harness
     assert seen["harness"] in harnesses.all_names()  # never the "shell" image
@@ -576,6 +696,160 @@ def test_run_turn_for_claude_uses_default_when_no_override(
 
 def test_run_turn_for_claurst_returns_callable() -> None:
     assert callable(aut.run_turn_for("claurst", None))
+
+
+# --- #113: incremental verdict persistence (results.jsonl journal + partial finalize) ------
+
+
+def _bench_verdict(
+    task_id: str, *, suite: str = "aider", passed: bool = True
+) -> bench.BenchVerdict:
+    """A minimal graded `BenchVerdict` for driving the journal/finalize paths without Docker."""
+    fc = FailureClass.PASS if passed else FailureClass.ERROR
+    return bench.BenchVerdict(
+        task_id=task_id,
+        suite=suite,
+        passed=passed,
+        verdict=TurnVerdict(
+            failure_class=fc,
+            promised_action=True,
+            tool_call_count=1,
+            side_effect=passed,
+            rationale="",
+        ),
+        tool_calls=1,
+        tokens=10,
+        cost=0.0,
+        latency_s=1.0,
+        model=None,
+    )
+
+
+def test_bench_journals_each_verdict_to_results_jsonl(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # #113 (A): each cell's verdict is appended to results.jsonl the moment it is graded, so a
+    # kill loses at most the in-flight cell. On the happy path the journal is additive: the
+    # canonical bench.json still lands and carries NO `partial` flag.
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-abc")
+
+    def fake_aider(runner, cfg, opts, *, on_verdict=None, **kw):  # type: ignore[no-untyped-def]
+        verdicts = [_bench_verdict("t1"), _bench_verdict("t2")]
+        for v in verdicts:
+            if on_verdict is not None:
+                on_verdict(v)
+        return verdicts
+
+    monkeypatch.setattr(bench, "_run_aider", fake_aider)
+    monkeypatch.setattr(bench, "_run_swebench", lambda *a, on_verdict=None, **k: [])
+    opts = bench.BenchOptions(target=tmp_path, harness="claude", out_dir=tmp_path / "out")
+    report = bench.run_bench(_config(), BenchmarksConfig(), opts, Runner())
+
+    journal = tmp_path / "out" / "results.jsonl"
+    rows = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+    assert [r["task"] for r in rows] == ["t1", "t2"]  # one durable line per graded cell
+    payload = json.loads((tmp_path / "out" / "bench.json").read_text(encoding="utf-8"))
+    assert "partial" not in payload  # completed run → unchanged canonical bench.json
+    assert [r["task"] for r in payload["results"]] == ["t1", "t2"]
+    assert [v.task_id for v in report.verdicts] == ["t1", "t2"]
+
+
+def test_bench_interrupted_leg_finalizes_partial_results(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # #113 (B, the issue's required test): raise mid-leg after N cells are graded, then assert
+    # the durable journal holds all N AND a valid, clearly-partial bench.json + report was
+    # written from the finally-path (a run killed mid-loop no longer loses its graded cells).
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-abc")
+
+    def boom_aider(runner, cfg, opts, *, on_verdict=None, **kw):  # type: ignore[no-untyped-def]
+        for tid in ("t1", "t2", "t3"):
+            v = _bench_verdict(tid)
+            if on_verdict is not None:
+                on_verdict(v)
+        raise RuntimeError("killed mid-leg")
+
+    monkeypatch.setattr(bench, "_run_aider", boom_aider)
+    monkeypatch.setattr(bench, "_run_swebench", lambda *a, on_verdict=None, **k: [])
+    opts = bench.BenchOptions(target=tmp_path, harness="claude", out_dir=tmp_path / "out")
+    with pytest.raises(RuntimeError, match="killed mid-leg"):
+        bench.run_bench(_config(), BenchmarksConfig(), opts, Runner())
+
+    out = tmp_path / "out"
+    journal_lines = (out / "results.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(journal_lines) == 3  # every graded cell survived the kill
+    payload = json.loads((out / "bench.json").read_text(encoding="utf-8"))
+    assert payload["partial"] is True  # clearly flagged partial
+    assert [r["task"] for r in payload["results"]] == ["t1", "t2", "t3"]
+    assert (out / "report.md").is_file()  # partial human report written too
+
+
+def test_run_bench_harnesses_merges_from_disk_when_a_leg_is_killed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # #113 (D): a leg killed mid-sweep must not suppress the cross-harness comparison for the
+    # legs that finished. The merge is built in a `finally` from whatever <root>/<harness>/
+    # bench.json files exist on disk — including a killed leg's own partial one.
+    root = tmp_path / "root"
+
+    def fake_run_bench(config, bench_cfg, opts, runner, *, now=None):  # type: ignore[no-untyped-def]
+        leg = opts.out_dir
+        leg.mkdir(parents=True, exist_ok=True)
+        if opts.harness == "opencode":
+            (leg / "bench.json").write_text(
+                json.dumps(
+                    {
+                        "harness": "opencode",
+                        "models": ["ollama/qwen3:latest"],
+                        "results": [
+                            {
+                                "suite": "aider",
+                                "task": "t1",
+                                "passed": True,
+                                "tool_calls": 1,
+                                "latency_s": 1.0,
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            return bench.BenchReport(out_dir=leg, results_json=leg / "bench.json")
+        # codex leg: write a PARTIAL bench.json (as run_bench's finally would) then die.
+        (leg / "bench.json").write_text(
+            json.dumps(
+                {
+                    "harness": "codex",
+                    "models": ["ollama/qwen3:latest"],
+                    "partial": True,
+                    "results": [
+                        {
+                            "suite": "aider",
+                            "task": "t1",
+                            "passed": False,
+                            "tool_calls": 0,
+                            "latency_s": 0.5,
+                        }
+                    ],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        raise RuntimeError("codex killed")
+
+    monkeypatch.setattr(bench, "run_bench", fake_run_bench)
+    opts = bench.BenchOptions(target=tmp_path, out_dir=root)
+    with pytest.raises(RuntimeError, match="codex killed"):
+        bench.run_bench_harnesses(
+            _config(), BenchmarksConfig(), opts, Runner(), ["opencode", "codex"]
+        )
+
+    md = root / "report.md"
+    assert md.is_file() and (root / "report.html").is_file()  # grid built despite the kill
+    text = md.read_text(encoding="utf-8")
+    assert "opencode" in text and "codex" in text  # both legs' columns present
 
 
 def test_setup_bench_capture_no_save_is_always_on_but_never_persists(tmp_path: Path) -> None:
@@ -794,6 +1068,32 @@ def test_result_row_omits_gate_fields_for_a_clean_ungated_cell(tmp_path: Path) -
     assert "rounds" not in row  # ungated → no round count
     assert "gate" not in row  # no breach
     assert "survivors" not in row  # clean
+    assert "resolved_gates" not in row  # #89: ungated cell records no resolved caps
+
+
+def test_result_row_records_resolved_gates(tmp_path: Path) -> None:
+    # #89 F5-A: the effective caps the cell ran under land on its row (max_turns/max_tokens/
+    # timeout_s), so the row is self-describing even when a harness/model override changed
+    # them from the raw `[gates]` config recorded once in provenance. A disabled gate (None)
+    # is recorded faithfully, not dropped.
+    from danno_validator.oracle import FailureClass
+    from danno_validator.suites.base import BenchVerdict
+    from danno_validator.suites.config import ResolvedGates
+
+    v = BenchVerdict(
+        task_id="python/proverb",
+        suite="aider",
+        passed=True,
+        verdict=_gate_verdict(FailureClass.PASS, "ok"),
+        tool_calls=1,
+        tokens=100,
+        cost=0.0,
+        latency_s=3.0,
+        model="ollama/stub",
+        resolved_gates=ResolvedGates(max_turns=8, max_tokens=None, timeout_s=600.0),
+    )
+    row = bench._result_row(v, num_ctx_by_model={}, out_dir=tmp_path, capture_dir=None)
+    assert row["resolved_gates"] == {"max_turns": 8, "max_tokens": None, "timeout_s": 600.0}
 
 
 def test_run_bench_dry_run_does_not_provision(tmp_path: pytest.TempPathFactory) -> None:
