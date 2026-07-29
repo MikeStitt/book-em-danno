@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -20,6 +21,7 @@ import pytest
 
 from book_em_danno.capture.proxy import (
     CaptureProxyConfig,
+    _CaptureServer,
     _decode_body,
     capture_proxy,
     read_captures,
@@ -129,6 +131,70 @@ def test_busy_port_fails_loud(tmp_path: Path) -> None:
             pass
     finally:
         holder.close()
+
+
+def test_upstream_unreachable_logs_transient_and_returns_502(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Point the proxy at a dead port: the client gets a synthetic 502 AND the blip is
+    # logged at TRANSIENT (retry-safe from the harness's side, policy §5) instead of
+    # vanishing behind the 502 body.
+    cfg = CaptureProxyConfig(
+        upstream="http://127.0.0.1:1", capture_file=tmp_path / "cap.jsonl", port=_free_port()
+    )
+    with capture_proxy(cfg):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{cfg.port}/v1/chat/completions",
+            data=json.dumps({"model": "m"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            status = 200
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+    assert status == 502
+    assert "[TRANSIENT]" in capsys.readouterr().err
+
+
+def test_handler_error_is_recorded_and_counted(tmp_path: Path) -> None:
+    # A crash escaping a handler thread must land as a synthetic `error` record + a bumped
+    # `handler_errors` counter (policy §5), not a bare stderr traceback with a dangling
+    # request record. Exercise the server hook directly from an active `except`.
+    cfg = CaptureProxyConfig(
+        upstream="http://127.0.0.1:1", capture_file=tmp_path / "cap.jsonl", port=_free_port()
+    )
+    server = _CaptureServer(cfg)
+    try:
+        try:
+            raise RuntimeError("boom inside a handler")
+        except RuntimeError:
+            server.handle_error(request=None, client_address=("127.0.0.1", 5555))
+        assert server.handler_errors == 1
+        err = next(r for r in read_captures(cfg.capture_file) if r["direction"] == "error")
+        assert "boom inside a handler" in err["error"]
+        assert "RuntimeError" in err["traceback"]
+    finally:
+        server.server_close()
+
+
+def test_handler_error_counts_but_writes_nothing_when_not_persisting(tmp_path: Path) -> None:
+    cfg = CaptureProxyConfig(
+        upstream="http://127.0.0.1:1",
+        capture_file=tmp_path / "cap.jsonl",
+        port=_free_port(),
+        persist=False,
+    )
+    server = _CaptureServer(cfg)
+    try:
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError:
+            server.handle_error(request=None, client_address=("127.0.0.1", 5555))
+        assert server.handler_errors == 1
+        assert not cfg.capture_file.exists()  # --no-save-captures touches no disk
+    finally:
+        server.server_close()
 
 
 def test_decode_body_variants() -> None:

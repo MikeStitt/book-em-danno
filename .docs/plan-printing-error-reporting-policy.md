@@ -289,14 +289,14 @@ already correct (reference).
 
 ### capture/proxy.py — #102 Part A seed
 
-- ✗ `log_message` no-op (135): no proxy-start / bound-port / per-cell
-  request-count / 0-request-idle logging — **INFO/WARN**.
-- ✗ post-upstream path `_record`/`extract_usage`/`tally`/`send_response`/
-  `wfile.write` (198–239) + `do_POST` `int(Content-Length)`/`rfile.read`
-  (242–243): exceptions escape to stderr via stdlib `handle_error`. Override
-  `handle_error` → synthetic error record + `handler_errors` counter — **ERROR**.
-- ⚠ `URLError`→502 (191) and mid-`resp.read()` `IncompleteRead`/`ssl` (185–186):
-  upstream-unreachable is retry-safe — **TRANSIENT→ERROR**.
+- ✓ (DONE step 5) `log_message` stays silent for per-request *access* noise, but
+  `capture_proxy` now logs lifecycle at **INFO** (bound port → upstream on start;
+  served-call count on close) — the proxy-start/bound-port gap.
+- ✓ (DONE step 5) `handle_error` override on `_CaptureServer` → synthetic `error`
+  record (persist only) + `handler_errors` counter + **ERROR** log, instead of a
+  bare stderr traceback with a dangling request record.
+- ✓ (DONE step 5) `URLError`→502 now also logs at **TRANSIENT** (retry-safe from
+  the harness's side) before synthesising the 502.
 - ✓ bind `OSError`→`CommandFailedError` (263) — **FATAL**.
 
 ### capture/usage.py
@@ -391,13 +391,15 @@ already correct (reference).
 
 ### stubai/server.py · script.py (test harness — same shape as the proxy)
 
-- ✗ no `handle_error` override + `log_message` no-op (86): handler crash → stderr
-  only; transcript has request, no response — **ERROR**.
-- ⚠ streaming `wfile.write`/`flush` loop (163–167): gate-killed client →
-  `BrokenPipeError` flood; the stub *exists* to kill clients mid-stream —
-  **TRANSIENT**.
-- ✗ setup `mkdir`/`write_text("")` (230–231): bare `OSError` — **FATAL**;
-  `int(Content-Length)` (99) — **ERROR**.
+- ✓ (DONE step 5) `handle_error` override on `StubServer` → synthetic `error`
+  transcript record + `handler_errors` counter + **ERROR** log (mirrors
+  `_CaptureServer`); `log_message` stays silent for access noise only.
+- ✓ (DONE step 5) streaming `wfile.write`/`flush` loop now catches
+  `BrokenPipeError`/`ConnectionResetError` and logs **TRANSIENT** (the stub exists
+  to kill clients mid-stream — the response record is already written).
+- ✓ (DONE step 5) `int(Content-Length)` (99): a non-integer header is logged at
+  **ERROR** and the body treated as empty (no handler crash).
+- ✗ setup `mkdir`/`write_text("")` (230–231): bare `OSError` — **FATAL** (step 7).
 - ✓ port bind `OSError→CommandFailedError` (233) — **FATAL** (the model to copy).
 
 ---
@@ -431,8 +433,12 @@ run-log wiring), 5 (handler-error capture), and 7 (the §5 sweep) remain.
    into the `validate` sweep (`<out_dir>/danno.log`, `run.py`) and the `bench`
    sweep (`<out_dir>/danno.log`, `suites/bench.py`), scoped to the real-run body
    (a `--dry-run` opens no log).
-5. **Handler-error capture:** `handle_error` overrides on `capture/proxy.py` and
-   `stubai/server.py` → recorded + counted, never bare stderr.
+5. ✅ **Handler-error capture:** `handle_error` overrides on `_CaptureServer`
+   (`capture/proxy.py`) and `StubServer` (`stubai/server.py`) → a synthetic `error`
+   record + a `handler_errors` counter + an ERROR log, never a bare stderr
+   traceback. Folded in the proxy/stub-adjacent §5 items: capture-proxy lifecycle
+   INFO logging + `URLError`→TRANSIENT; stub streaming `BrokenPipeError`→TRANSIENT
+   + non-integer `Content-Length`→ERROR-and-empty-body.
 6. **Enforcement (§4E follow-on PR):** enable ruff `T20`; annotate the legitimate
    bare prints (`report.py:632`, `level2.py:123,125`) + convert `report.py:635`.
    Deferred out of the keystone because turning `T20` on before those `# noqa`s

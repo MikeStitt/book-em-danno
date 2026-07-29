@@ -21,6 +21,7 @@ import json
 import socketserver
 import threading
 import time
+import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -28,7 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, cast
 
-from book_em_danno.core.exec import CommandFailedError
+from book_em_danno.core.exec import CommandFailedError, log_err, log_transient
 from book_em_danno.stubai.script import (
     ScriptEngine,
     Step,
@@ -67,7 +68,38 @@ class StubServer(ThreadingHTTPServer):
         self.engine = ScriptEngine(cfg.script)
         self.counter = itertools.count(1)
         self.write_lock = threading.Lock()
+        self.handler_errors = 0  # unhandled exceptions escaping a handler thread (policy §5)
+        self._error_lock = threading.Lock()
         super().__init__(("0.0.0.0", cfg.port), _Handler)
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        """A handler thread raised past `_handle` — record + count it instead of the stdlib
+        bare-traceback-to-stderr (policy §5, matching `capture.proxy._CaptureServer`). The
+        transcript holds the request record with no response; append a synthetic `error`
+        record so a reader sees the failure, bump `handler_errors`, and log at ERROR.
+
+        A client the stub deliberately kills mid-stream raises `BrokenPipeError` *inside*
+        `_send_wire` (handled there as TRANSIENT), so it never reaches here — this path is
+        for genuine handler bugs."""
+        detail = traceback.format_exc()
+        last = detail.strip().splitlines()[-1] if detail.strip() else "unknown error"
+        with self._error_lock:
+            self.handler_errors += 1
+            nth = self.handler_errors
+        log_err(f"stub-ai handler crashed (#{nth}, client {client_address}): {last}")
+        record = {
+            "direction": "error",
+            "ts": time.time(),
+            "client": str(client_address),
+            "error": last,
+            "traceback": detail,
+        }
+        line = json.dumps(record) + "\n"
+        try:
+            with self.write_lock, self.cfg.transcript_file.open("a", encoding="utf-8") as fh:
+                fh.write(line)
+        except OSError as exc:  # already the error path — log, never recurse into handle_error
+            log_err(f"stub-ai could not record handler error to disk: {exc}")
 
     def server_bind(self) -> None:
         # Bypass HTTPServer.server_bind's socket.getfqdn(host) reverse-DNS lookup,
@@ -96,7 +128,12 @@ class _Handler(BaseHTTPRequestHandler):
             fh.write(line)
 
     def _read_body(self) -> bytes:
-        length = int(self.headers.get("Content-Length", 0))
+        raw_len = self.headers.get("Content-Length", "0")
+        try:
+            length = int(raw_len)
+        except ValueError:  # malformed header — definitively can't frame the body (policy §5)
+            log_err(f"stub-ai: non-integer Content-Length {raw_len!r}; treating body as empty")
+            return b""
         return self.rfile.read(length) if length else b""
 
     def do_POST(self) -> None:  # noqa: N802 - http.server naming
@@ -160,11 +197,19 @@ class _Handler(BaseHTTPRequestHandler):
         if not wire.stream:
             self.send_header("Content-Length", str(len(assembled)))
         self.end_headers()
-        for delay, data in wire.chunks:
-            if delay > 0:
-                time.sleep(delay)
-            self.wfile.write(data)
-            self.wfile.flush()
+        try:
+            for delay, data in wire.chunks:
+                if delay > 0:
+                    time.sleep(delay)
+                self.wfile.write(data)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            # The stub EXISTS to be killed mid-stream (runaway-gate tests cut the client
+            # off between chunks), so a dropped connection is expected, not a handler bug:
+            # log TRANSIENT and stop writing rather than let it escalate to handle_error
+            # (policy §5 streaming wfile.write: TRANSIENT). The response record is already
+            # written (see above), so the transcript is intact.
+            log_transient(f"stub-ai: client dropped mid-stream ({exc}); stopped writing")
 
     def _send_buffered(self, seq: int, status: int, content_type: str, data: bytes) -> None:
         self._record_response(seq, status, content_type, data)  # record first — see _send_wire

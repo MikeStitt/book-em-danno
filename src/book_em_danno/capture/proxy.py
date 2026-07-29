@@ -24,6 +24,7 @@ import json
 import socketserver
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
@@ -36,7 +37,7 @@ from typing import Any, cast
 from book_em_danno.capture.gate import GateTally
 from book_em_danno.capture.summary import CallSummary
 from book_em_danno.capture.usage import extract_usage, is_inference_request, total_tokens
-from book_em_danno.core.exec import CommandFailedError
+from book_em_danno.core.exec import CommandFailedError, log_err, log_info, log_transient
 
 # Header names whose VALUES carry secrets — recorded as "<redacted>", never verbatim.
 _REDACT = frozenset({"authorization", "x-api-key", "api-key"})
@@ -104,7 +105,37 @@ class _CaptureServer(ThreadingHTTPServer):
         self.write_lock = threading.Lock()
         self._summaries: list[CallSummary] = []
         self._summary_lock = threading.Lock()
+        self.handler_errors = 0  # unhandled exceptions escaping a handler thread (policy §5)
+        self._error_lock = threading.Lock()
         super().__init__(("0.0.0.0", cfg.port), _Handler)
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        """A handler thread raised past `_proxy` — record it and count it instead of
+        letting stdlib dump a bare traceback to stderr (policy §5: no silent swallow /
+        no un-leveled crash). The captured request record is already on disk with no
+        matching response; this appends a synthetic `error` record so the transcript is
+        self-explaining, bumps `handler_errors` so a caller can assert none occurred, and
+        logs at ERROR — the call definitively failed."""
+        detail = traceback.format_exc()
+        last = detail.strip().splitlines()[-1] if detail.strip() else "unknown error"
+        with self._error_lock:
+            self.handler_errors += 1
+            nth = self.handler_errors
+        log_err(f"capture proxy handler crashed (#{nth}, client {client_address}): {last}")
+        if self.cfg.persist:
+            record = {
+                "direction": "error",
+                "ts": time.time(),
+                "client": str(client_address),
+                "error": last,
+                "traceback": detail,
+            }
+            line = json.dumps(record) + "\n"
+            try:
+                with self.write_lock, self.cfg.capture_file.open("a", encoding="utf-8") as fh:
+                    fh.write(line)
+            except OSError as exc:  # already the error path — log, never recurse into handle_error
+                log_err(f"capture proxy could not record handler error to disk: {exc}")
 
     def add_summary(self, summary: CallSummary) -> None:
         with self._summary_lock:
@@ -173,6 +204,12 @@ class _Handler(BaseHTTPRequestHandler):
             resp_headers = dict(exc.headers.items()) if exc.headers else {}
             payload = exc.read()
         except urllib.error.URLError as exc:  # upstream unreachable — synthesise a 502
+            # Retry-safe from the harness's side (a blip, not a verdict): log TRANSIENT so
+            # it is visible and greppable rather than hidden behind the synthetic 502 body
+            # (policy §5 URLError→502: TRANSIENT). The harness owns any retry.
+            log_transient(
+                f"capture proxy upstream unreachable ({cfg.upstream}{self.path}): {exc.reason}"
+            )
             status, resp_headers = 502, {"Content-Type": "application/json"}
             payload = json.dumps({"error": f"capture proxy upstream error: {exc.reason}"}).encode()
 
@@ -252,12 +289,17 @@ def capture_proxy(cfg: CaptureProxyConfig) -> Iterator[_CaptureServer]:
         ) from exc
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    log_info(f"capture proxy up on 0.0.0.0:{cfg.port} → {cfg.upstream}")
     try:
         yield server
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+        served = len(server.read_summaries())
+        # Lifecycle close-out at INFO — the bound-port/served-count logging the no-op
+        # `log_message` never gave (policy §5). A handler crash already logged at ERROR.
+        log_info(f"capture proxy on :{cfg.port} served {served} call(s)")
 
 
 def read_captures(path: Path) -> list[dict[str, Any]]:
