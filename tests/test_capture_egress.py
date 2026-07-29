@@ -72,13 +72,13 @@ def test_snapshot_tolerates_failure_and_non_json(monkeypatch: pytest.MonkeyPatch
 
 def test_warn_on_blocked_names_hosts(capsys: pytest.CaptureFixture[str]) -> None:
     egress.warn_on_blocked("box", _LOG)
-    out = capsys.readouterr().out  # log_warn → rich Console → stdout
-    assert "BLOCKED" in out and "en.wikipedia.org:443" in out and "box" in out
+    err = capsys.readouterr().err  # log_warn → rich Console → stderr (the log channel)
+    assert "BLOCKED" in err and "en.wikipedia.org:443" in err and "box" in err
 
 
 def test_warn_on_blocked_silent_when_clean(capsys: pytest.CaptureFixture[str]) -> None:
     egress.warn_on_blocked("box", {"allowed_hosts": [], "blocked_hosts": []})
-    assert capsys.readouterr().out == ""
+    assert capsys.readouterr().err == ""
 
 
 def test_record_egress_writes_uniform_artifact(
