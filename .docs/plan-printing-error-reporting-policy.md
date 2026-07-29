@@ -306,6 +306,12 @@ already correct (reference).
 
 ### capture/egress.py — biggest silent-failure cluster
 
+> **Deferred to when #101 merges.** `capture/egress.py` was introduced by #101 (the
+> sbx egress-reachability log) on a sibling branch; it is NOT in this keystone-based
+> `log-swallow-sweep` tree, so its call sites can't be remediated here. Fold this
+> cluster in once #101 and the sweep converge. Likewise `commands/sandbox.py`
+> `record_egress` (#101) below.
+
 - ⚠ `except OSError: return None` (58–61): probe never ran — **TRANSIENT→ERROR**.
 - ✗ `returncode != 0 → return None`, `stderr` discarded (62–63): the audit
   definitively failed — **ERROR**.
@@ -318,8 +324,9 @@ already correct (reference).
 
 ### core/exec.py
 
-- ✗ `capture()` `subprocess.run` (304) & `_capture_watched` `Popen` (362):
-  missing-binary → raw `OSError`; translate to `CommandNotFoundError` — **ERROR**.
+- ✓ (DONE step 7) `capture()` `subprocess.run` & `_capture_watched` `Popen`: a missing
+  binary (`FileNotFoundError`) now translates to `CommandNotFoundError` on BOTH paths
+  (parity), not a raw `OSError` the caller can't tell from a non-zero exit — **ERROR**.
 - ⚠ win32 `taskkill check=False` (148), `killpg` suppress (158), `on_kill` reaper
   `suppress(Exception)` (400), reader re-raise only if `breach is None` (416):
   post-kill degradations go silent — **WARNING**.
@@ -328,19 +335,21 @@ already correct (reference).
 
 - ⚠ `load()` `except (JSONDecodeError, OSError): return {}` (26–30): corrupt
   registry == empty, defeats the name-collision guard — **WARNING**.
-- ✗ `record()` `mkdir`+`write_text`, no lock (43): raw traceback; concurrent
-  clobber — **ERROR**.
+- ✓ (DONE step 7) `record()` `mkdir`+`write_text`: a failed durable write now raises a
+  typed `RegistryError` with the path/cause (the name-collision guard going blind is
+  definitive), not a raw traceback — **ERROR**. (Concurrent-clobber locking still deferred.)
 
 ### commands/sandbox.py + sandbox_cli.py
 
 - ✗ `configure_proxy` allow-list (431–444) **and** `policy_allow_argv`
   (sandbox_cli.py:167–192): no check rejects `"**"`/`"*"`/empty egress before
   opening — the security invariant — **FATAL**.
-- ✗ `_capture_session`: `generate(apply=True)` at 1251 sits *outside* the
-  try/finally that restores `opencode.jsonc` (1252); a raise leaves the user's
-  committed config rewritten to proxy URLs — **ERROR**.
-- ✗ `_build_env_file`/`_provided_env` `Path(f).read_text()` (793, 819): missing
-  `--env-file` → raw `FileNotFoundError` — **ERROR**.
+- ✓ (DONE step 7) `_capture_session`: `generate(apply=True)` is now INSIDE the try/finally
+  that restores `opencode.jsonc`, so any mid-setup raise (generate or `captures_running`
+  `__enter__`) restores the user's committed config byte-for-byte — **ERROR**.
+- ✓ (DONE step 7) `_build_env_file`/`_provided_env` `Path(f).read_text()`: a missing/unreadable
+  `--env-file` now raises `CommandFailedError` naming the file, not a raw `FileNotFoundError` —
+  **ERROR**.
 - ⚠ `live_sandbox_names` (141) & `_sbx_policy_initialized` (158) ignore
   returncode → tool error masquerades as empty/uninitialized — **WARNING**.
 - ⚠ `seed_onboarding` corrupt `.claude.json`→`{}` then overwrite (331): silent
@@ -366,8 +375,9 @@ already correct (reference).
 - ⚠ install `ensure_model` loop aborts on first pull failure (102): no retry —
   **TRANSIENT→ERROR**; `present = installed_tags()` blind if Ollama unreachable
   (101), unlogged — **WARNING**.
-- ✗ tools `filecmp.cmp`/`shutil.copy2` (60) & provenance `write_text` (88):
-  `OSError` not in install.py's except set → raw traceback — **ERROR**.
+- ✓ (DONE step 7) tools `filecmp.cmp`/`shutil.copy2` & provenance `write_text`: an `OSError`
+  now raises `ToolInstallError` (which install.py's except set catches → the tool is reported
+  failed), not a raw traceback that escapes it — **ERROR**.
 - ⚠ `install_generic_git` clones but never runs installer under `--apply` (122):
   reports no failure → "ready" overstated — **WARNING**.
 
@@ -448,9 +458,16 @@ run-log wiring), 5 (handler-error capture), and 7 (the §5 sweep) remain.
    exist would break the gate.
 7. **Remediate §5** call sites against the taxonomy, most-severe first (FATAL
    security-invariant checks → ERROR durable-record gaps → TRANSIENT retry
-   budgets → WARNING anomalies). **FATAL tier landed** (branch `log-swallow-sweep`):
-   `loader.py` read guard, `generate.py` claurst-settings + agent-def guards,
-   `stubai/server.py` transcript-prepare guard. ERROR/TRANSIENT/WARNING tiers follow.
+   budgets → WARNING anomalies). Progress on branch `log-swallow-sweep`:
+   - **FATAL tier landed:** `loader.py` read guard, `generate.py` claurst-settings +
+     agent-def guards, `stubai/server.py` transcript-prepare guard.
+   - **ERROR tier landed:** `core/exec.py` `capture()`/`_capture_watched`
+     missing-binary → `CommandNotFoundError`; `core/registry.py` `record()` →
+     `RegistryError`; `commands/sandbox.py` `_capture_session` rewrite moved inside
+     the restore try/finally + `_build_env_file`/`_provided_env` → `CommandFailedError`;
+     `commands/tools.py` copy/provenance → `ToolInstallError`. (`capture/egress.py`
+     ERROR sites deferred to #101 — file not in this tree.)
+   - TRANSIENT and WARNING tiers follow.
 
 ## Related
 

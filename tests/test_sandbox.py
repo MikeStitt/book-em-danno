@@ -910,3 +910,51 @@ def test_codex_cloud_env_lines_cloud_key_unset_fails_loud(monkeypatch: pytest.Mo
 def test_codex_env_lines_is_empty() -> None:
     # codex reads everything from config.toml (written inline); no env-file lines.
     assert sandbox._codex_env_lines("http://host.docker.internal:11434/v1") == []
+
+
+def test_build_env_file_missing_env_file_fails_loud(tmp_path: Path) -> None:
+    # A user-supplied --env-file that doesn't exist is actionable user error, not a raw
+    # FileNotFoundError deep in temp-file assembly (policy §5, ERROR).
+    missing = str(tmp_path / "nope.env")
+    with pytest.raises(CommandFailedError, match=f"cannot read --env-file {missing}"):
+        sandbox._build_env_file([], [], [missing])
+
+
+def test_provided_env_missing_env_file_fails_loud(tmp_path: Path) -> None:
+    missing = str(tmp_path / "nope.env")
+    with pytest.raises(CommandFailedError, match=f"cannot read --env-file {missing}"):
+        sandbox._provided_env([], [missing])
+
+
+def test_capture_session_restores_config_when_setup_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # If setup raises AFTER generate() rewrites opencode.jsonc to proxy base_urls, the finally
+    # must restore the user's committed config byte-for-byte — a mid-setup failure must never
+    # leave it pointing at dead per-run proxy ports (policy §5, ERROR).
+    import shutil
+
+    example = Path(__file__).resolve().parents[1] / "danno.toml.example"
+    target = tmp_path / "proj"
+    (target / ".opencode").mkdir(parents=True)
+    shutil.copy(example, target / "danno.toml")
+    jsonc = target / ".opencode" / "opencode.jsonc"
+    original = '{"user": "config"}\n'
+    jsonc.write_text(original, encoding="utf-8")
+
+    def boom(*_a: object, **_k: object) -> None:
+        jsonc.write_text('{"REWRITTEN": "proxy urls"}\n', encoding="utf-8")  # the rewrite
+        raise RuntimeError("boom mid-setup")
+
+    monkeypatch.setattr(sandbox, "generate", boom)
+
+    with pytest.raises(RuntimeError, match="boom mid-setup"):
+        with sandbox._capture_session(
+            Runner(apply=True),
+            target,
+            harness="opencode",
+            capture_dir=tmp_path / "cap",
+            base_allow_hosts=("localhost:11434",),
+        ):
+            pass  # pragma: no cover - setup raises before the body runs
+    assert jsonc.read_text(encoding="utf-8") == original  # restored, not left rewritten

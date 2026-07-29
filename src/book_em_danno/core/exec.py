@@ -314,15 +314,21 @@ class Runner:
             return self._capture_watched(cmd, cwd=cwd, env=env, check=check, watch=self._watch)
         # `errors="replace"` for parity with the watched path (F3): telemetry wants
         # best-effort text, never a strict UnicodeDecodeError on a stray byte.
-        result = subprocess.run(
-            cmd,
-            cwd=cwd,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            errors="replace",
-        )
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=cwd,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                errors="replace",
+            )
+        except FileNotFoundError as exc:
+            # A missing binary is a definitive, actionable failure (the harness/tool isn't
+            # installed) — surface it as CommandNotFoundError, not a raw OSError traceback
+            # the caller can't tell apart from a captured non-zero exit (policy §5, ERROR).
+            raise CommandNotFoundError(f"required command not found: {cmd[0]}") from exc
         if check and result.returncode != 0:
             raise CommandFailedError(
                 f"command failed (exit {result.returncode}): {shlex.join(cmd)}"
@@ -351,17 +357,22 @@ class Runner:
         still can't unblock is abandoned with a loud warning rather than hanging. Decoding is
         best-effort (`errors="replace"`) and any unexpected reader error is surfaced in the
         main thread, never swallowed into a silent empty string."""
-        proc = subprocess.Popen(  # noqa: S603 - cmd is built from trusted internal argv
-            cmd,
-            cwd=cwd,
-            env=env,
-            stdin=subprocess.DEVNULL,  # never inherit the caller's TTY (see capture docstring)
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            errors="replace",
-            start_new_session=True,
-        )
+        try:
+            proc = subprocess.Popen(  # noqa: S603 - cmd is built from trusted internal argv
+                cmd,
+                cwd=cwd,
+                env=env,
+                stdin=subprocess.DEVNULL,  # never inherit the caller's TTY (see capture docstring)
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                errors="replace",
+                start_new_session=True,
+            )
+        except FileNotFoundError as exc:
+            # Parity with capture(): a missing binary is CommandNotFoundError, not a raw
+            # OSError (policy §5, ERROR). Caught here too so the gated path fails identically.
+            raise CommandNotFoundError(f"required command not found: {cmd[0]}") from exc
         out: list[str] = []
         err: list[str] = []
         reader_errors: list[BaseException] = []

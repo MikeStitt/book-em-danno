@@ -782,7 +782,12 @@ def _build_env_file(harness_lines: list[str], env_pairs: list[str], env_files: l
     p.chmod(0o600)
     lines: list[str] = []
     for f in env_files:
-        lines.append(Path(f).read_text(encoding="utf-8").rstrip("\n"))
+        # A user-supplied --env-file that's missing/unreadable is actionable user error, not a
+        # raw FileNotFoundError deep in temp-file assembly (policy §5, ERROR).
+        try:
+            lines.append(Path(f).read_text(encoding="utf-8").rstrip("\n"))
+        except OSError as exc:
+            raise CommandFailedError(f"cannot read --env-file {f}: {exc}") from exc
     lines.extend(env_pairs)
     lines.extend(harness_lines)
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -807,7 +812,11 @@ def _provided_env(env_pairs: list[str], env_files: list[str]) -> dict[str, str]:
     """KEY→VAL the user is injecting via --env / --env-file (later entries win)."""
     provided: dict[str, str] = {}
     for f in env_files:
-        for line in Path(f).read_text(encoding="utf-8").splitlines():
+        try:
+            text = Path(f).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise CommandFailedError(f"cannot read --env-file {f}: {exc}") from exc
+        for line in text.splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 key, val = line.split("=", 1)
@@ -1230,8 +1239,12 @@ def _capture_session(
     log_info(f"--capture: recording opencode<->backend wire traffic to {capture_dir}")
     jsonc = target_abs / ".opencode" / "opencode.jsonc"
     snapshot = jsonc.read_text(encoding="utf-8") if jsonc.is_file() else None
-    generate(cfg_for_run, target_abs, apply=True)  # rewrite baseURLs to the proxies
+    # The rewrite MUST be inside the try: if generate() (or captures_running's __enter__)
+    # raises after touching opencode.jsonc, the finally still restores the user's committed
+    # config byte-for-byte — otherwise a mid-setup failure leaves it pointing at dead per-run
+    # proxy ports (policy §5, ERROR: a raise must not corrupt the user's tracked config).
     try:
+        generate(cfg_for_run, target_abs, apply=True)  # rewrite baseURLs to the proxies
         with captures_running(targets):
             yield _CaptureWiring(allow)
     finally:

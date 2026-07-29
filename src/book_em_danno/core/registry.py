@@ -14,6 +14,10 @@ import json
 from pathlib import Path
 
 
+class RegistryError(Exception):
+    """The sandbox registry could not be persisted (fail loud, Working Rule 8)."""
+
+
 def default_path() -> Path:
     """The host registry file danno uses outside of tests."""
     return Path.home() / ".danno" / "sandboxes.json"
@@ -40,5 +44,11 @@ def record(path: Path, name: str, target: str, harness: str) -> None:
     leaves the file's content unchanged (keys are sorted on write)."""
     data = load(path)
     data[name] = {"target": target, "harness": harness}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    # A failed registry write is definitive, not ignorable: the name-collision guard goes
+    # blind until it's fixed. Surface it as a typed RegistryError with the path/cause rather
+    # than a bare OSError traceback from deep in pathlib (policy §5, ERROR).
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise RegistryError(f"cannot write sandbox registry {path} ({exc})") from exc

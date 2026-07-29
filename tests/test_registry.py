@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from book_em_danno.core import registry
 
 
@@ -34,3 +36,13 @@ def test_load_ignores_corrupt_file(tmp_path: Path) -> None:
     reg = tmp_path / "sandboxes.json"
     reg.write_text("not json{")
     assert registry.load(reg) == {}
+
+
+def test_record_unwritable_path_fails_loud(tmp_path: Path) -> None:
+    # A failed registry write is definitive (the name-collision guard goes blind), so it must
+    # surface as a typed RegistryError, not a bare OSError traceback (policy §5, ERROR). Point
+    # the registry at a path whose parent is a FILE so mkdir raises deterministically.
+    (tmp_path / "afile").write_text("i am a file, not a dir")
+    reg = tmp_path / "afile" / "sandboxes.json"
+    with pytest.raises(registry.RegistryError, match="cannot write sandbox registry"):
+        registry.record(reg, "danno-x", "/x", "opencode")

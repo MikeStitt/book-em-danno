@@ -54,13 +54,19 @@ def _copy_md_dir(runner: Runner, src: Path, dest: Path, label: str) -> None:
         return
     md_files = sorted(src.glob("*.md"))
     if runner.apply:
-        dest.mkdir(parents=True, exist_ok=True)
-        for f in md_files:
-            target = dest / f.name
-            if target.is_file() and filecmp.cmp(f, target, shallow=False):
-                continue
-            shutil.copy2(f, target)
-            log_info(f"copy {label}/{f.name}")
+        # A copy/compare OSError here would escape install.py's (ToolInstallError,
+        # CommandFailedError) except set as a raw traceback; surface it as the module's
+        # fail-loud type so the tool is reported failed, not crashed (policy §5, ERROR).
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+            for f in md_files:
+                target = dest / f.name
+                if target.is_file() and filecmp.cmp(f, target, shallow=False):
+                    continue
+                shutil.copy2(f, target)
+                log_info(f"copy {label}/{f.name}")
+        except OSError as exc:
+            raise ToolInstallError(f"cannot copy ADOS {label} defs into {dest}: {exc}") from exc
     else:
         runner.advise(
             ["cp", f"{src}/*.md", str(dest) + "/"],
@@ -83,13 +89,18 @@ def _write_provenance(ados: Path, target_abs: Path) -> None:
     except (FileNotFoundError, OSError):
         pass
     out = target_abs / ".opencode" / "ados-provenance.txt"
-    out.parent.mkdir(parents=True, exist_ok=True)
     when = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    out.write_text(
-        f"ADOS source:  {ados}\nADOS commit:  {sha}\nInstalled:    {when}\n"
-        f"Installed by: book-em-danno (danno install)\n",
-        encoding="utf-8",
-    )
+    # Same contract as _copy_md_dir: a durable-write OSError becomes a ToolInstallError so
+    # install.py records the tool failed rather than dumping a traceback (policy §5, ERROR).
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            f"ADOS source:  {ados}\nADOS commit:  {sha}\nInstalled:    {when}\n"
+            f"Installed by: book-em-danno (danno install)\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        raise ToolInstallError(f"cannot write ADOS provenance {out}: {exc}") from exc
     log_info(f"wrote {out} (ADOS {sha})")
 
 

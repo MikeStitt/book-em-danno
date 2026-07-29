@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from book_em_danno.commands import tools
 from book_em_danno.config.schema import Tool
+from book_em_danno.core.exec import Runner
 from conftest import RecordingRunner
 
 
@@ -48,3 +51,27 @@ def test_install_ados_advises_with_cwd_and_env(tmp_path: Path, monkeypatch) -> N
     assert captured["cwd"] == target
     assert isinstance(captured["env"], dict)
     assert captured["env"]["ADOS_SOURCE_DIR"] == str(ados.resolve())
+
+
+def test_copy_md_dir_write_failure_fails_loud(tmp_path: Path) -> None:
+    # A copy/mkdir OSError must surface as ToolInstallError (which install.py catches), not a
+    # raw traceback that escapes its except set (policy §5, ERROR). Force it by making the
+    # dest's parent a FILE so mkdir(parents=True) raises deterministically.
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.md").write_text("---\nmodel: x\n---\n", encoding="utf-8")
+    (tmp_path / "afile").write_text("i am a file, not a dir", encoding="utf-8")
+    dest = tmp_path / "afile" / "agent"
+    with pytest.raises(tools.ToolInstallError, match="cannot copy ADOS agent defs"):
+        tools._copy_md_dir(Runner(apply=True), src, dest, "agent")
+
+
+def test_write_provenance_write_failure_fails_loud(tmp_path: Path) -> None:
+    # Same contract for the durable provenance write.
+    ados = tmp_path / "ados"
+    ados.mkdir()
+    # target_abs/.opencode can't be created because target_abs is a FILE.
+    target_abs = tmp_path / "afile"
+    target_abs.write_text("i am a file, not a dir", encoding="utf-8")
+    with pytest.raises(tools.ToolInstallError, match="cannot write ADOS provenance"):
+        tools._write_provenance(ados, target_abs)

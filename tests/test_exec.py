@@ -143,6 +143,24 @@ def test_capture_runs_regardless_of_apply(monkeypatch: pytest.MonkeyPatch) -> No
     assert calls == [["echo", "hi"]]
 
 
+_MISSING_BIN = "danno-definitely-not-a-real-binary-xyz"
+
+
+def test_capture_missing_binary_raises_command_not_found() -> None:
+    # A missing binary must surface as CommandNotFoundError, not a raw FileNotFoundError the
+    # caller can't distinguish from a captured non-zero exit (policy §5, ERROR).
+    with pytest.raises(CommandNotFoundError, match=_MISSING_BIN):
+        Runner().capture([_MISSING_BIN, "--version"])
+
+
+def test_capture_watched_missing_binary_raises_command_not_found() -> None:
+    # The gated path (Popen) translates the same way, so the two paths fail identically.
+    runner = Runner()
+    with runner.watching(timeout_s=0.5):
+        with pytest.raises(CommandNotFoundError, match=_MISSING_BIN):
+            runner.capture([_MISSING_BIN, "--version"])
+
+
 def test_capture_uses_capture_output_and_text(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
     monkeypatch.setattr(
