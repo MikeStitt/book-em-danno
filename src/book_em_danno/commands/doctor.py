@@ -13,7 +13,9 @@ import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
+from ..config.loader import DannoConfigError, load_config
 from ..core.exec import console, log_debug
 from . import ollama, sandbox_cli
 
@@ -55,8 +57,14 @@ def _on_path(name: str) -> bool:
     return shutil.which(name) is not None
 
 
-def run_doctor(*, ollama_host_url: str = ollama.DEFAULT_HOST_URL) -> int:
-    """Run the checklist, print it, and return the count of failed required checks."""
+def run_doctor(*, ollama_host_url: str = ollama.DEFAULT_HOST_URL, target: Path = Path(".")) -> int:
+    """Run the checklist, print it, and return the count of failed required checks.
+
+    `target` is the project whose `danno.toml` is validated (the Configuration section);
+    it defaults to the cwd. An ABSENT config is a normal pre-`install` state (a dim note,
+    not a failure); a PRESENT-but-invalid one is a required FAIL — so a broken config is
+    caught here instead of exploding later at install/validate.
+    """
     tally = _Tally()
     console.print("danno doctor — preflight\n")
     console.print("Runtime (required to provision and run the sandbox):")
@@ -132,6 +140,9 @@ def run_doctor(*, ollama_host_url: str = ollama.DEFAULT_HOST_URL) -> int:
             ok=responses_ready,
         )
 
+    console.print("\nConfiguration:")
+    _check_danno_toml(tally, target)
+
     console.print()
     if tally.failed:
         console.print(
@@ -140,6 +151,26 @@ def run_doctor(*, ollama_host_url: str = ollama.DEFAULT_HOST_URL) -> int:
     else:
         console.print(f"[green]All required checks passed[/green] ({tally.warned} warning(s)).")
     return tally.failed
+
+
+def _check_danno_toml(tally: _Tally, target: Path) -> None:
+    """Validate `<target>/danno.toml` so a malformed config fails HERE, loud, instead of
+    passing doctor clean and exploding later at install/validate. Absent = a dim note (a
+    fresh project has no config until `danno install`); present-but-invalid = required FAIL
+    with the loader's typed reason as the fix."""
+    toml = target / "danno.toml"
+    if not toml.is_file():
+        console.print(
+            f"  [dim]--[/dim]    no danno.toml at {toml} yet (written by `danno install`)"
+        )
+        return
+    label = f"danno.toml loads and validates ({toml})"
+    try:
+        load_config(toml)
+    except DannoConfigError as exc:
+        _report(tally, required=True, label=label, fix=f"correct the config — {exc}", ok=False)
+        return
+    _report(tally, required=True, label=label, fix="", ok=True)
 
 
 def _ollama_has_model() -> bool:

@@ -145,9 +145,13 @@ def install(
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    target: Path = typer.Option(
+        Path("."), "--target", "-C", help="Project whose danno.toml is validated."
+    ),
+) -> None:
     """Read-only preflight: report environment readiness with copy-paste fixes."""
-    failed = doctor_cmd.run_doctor()
+    failed = doctor_cmd.run_doctor(target=target)
     if failed:
         raise typer.Exit(code=1)
 

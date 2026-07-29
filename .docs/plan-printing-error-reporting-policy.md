@@ -433,9 +433,12 @@ final failure to ERROR before re-raising (a TRANSIENT with no bound is a swallow
 - ✓ (DONE step 7) `_safe` `except Exception → False`: the cause is now `log_debug`'d so it's
   diagnosable under `-v` instead of vanishing; DEBUG not WARN because the check's own row already
   shows FAIL/WARN — **WARNING** (resolved at DEBUG).
-- ⚠ no danno.toml load/validate preflight check: malformed config passes doctor
-  clean, explodes later — **WARNING**. **Deferred**: this is an *additive* check (needs a target
-  path threaded into `run_doctor`), not a silent-swallow remediation — tracked as follow-on.
+- ✓ (DONE, follow-on PR) danno.toml load/validate **preflight**: `run_doctor(target=…)` now
+  loads `<target>/danno.toml` via `load_config` in a new "Configuration:" section — an ABSENT
+  config is a dim note (normal pre-`install` state), a PRESENT-but-invalid one is a required FAIL
+  with the loader's typed `DannoConfigError` as the fix, so a malformed config fails HERE instead
+  of exploding later at install/validate. `doctor()` gained `-C/--target`. This was an *additive*
+  check (a target path threaded into `run_doctor`), not a silent-swallow remediation.
 
 ### stubai/server.py · script.py (test harness — same shape as the proxy)
 
@@ -534,8 +537,10 @@ run-log wiring), 5 (handler-error capture), and 7 (the §5 sweep) remain.
      `write_egress_artifact` WARNs-and-returns on a failed durable write — which also makes
      `record_egress` finally-safe (no primitive raises). Rationale in the `capture/egress.py`
      §5 sub-section.
-   - **Still deferred:** `commands/doctor.py` danno.toml load/validate **preflight check** —
-     an additive check needing a target path threaded into `run_doctor`, not a swallow
+   - **DONE (follow-on PR):** `commands/doctor.py` danno.toml load/validate **preflight check** —
+     `run_doctor(target=…)` (via `doctor()`'s new `-C/--target`) loads `<target>/danno.toml` and
+     reports a "Configuration:" row: absent = dim note (normal pre-`install`), present-but-invalid
+     = required FAIL with the loader's `DannoConfigError` as the fix. Additive check, not a swallow
      remediation.
 
 ## Related
