@@ -144,6 +144,10 @@ class BenchVerdict:
     #   "no_requests" | "error" | "completed" (see `_termination`). "no_requests" = the active
     #   backend saw 0 inference requests (#105 — the model never ran; grade is workspace-only).
     #   Orthogonal to `passed`: how the cell terminated, regardless of what grading found.
+    resolved_gates: ResolvedGates | None = None  # the effective gate caps this cell ran under
+    #   (max_turns/max_tokens/timeout_s after the model > harness > global overlay). Verdict-local
+    #   so it survives a partial/interrupted run, unlike the raw `[gates]` config in provenance;
+    #   None for a cell that never ran under gates (e.g. an errored provision row) (#89 F5-A).
 
 
 def _termination(*, gate_killed: bool, backend_dark: bool, failure_class: FailureClass) -> str:
@@ -525,6 +529,7 @@ def run_bench_task(
             backend_dark=active_backend_dark,
             failure_class=verdict.failure_class,
         ),
+        resolved_gates=gates,  # the effective caps this cell ran under (None if ungated) (#89)
     )
 
 

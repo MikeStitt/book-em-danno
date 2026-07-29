@@ -17,14 +17,21 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from pathlib import Path
 
-from book_em_danno.commands import ollama
+from book_em_danno.commands import ollama, sandbox_cli
 from book_em_danno.config.schema import DannoConfig
+from book_em_danno.core.exec import Runner
 from danno_validator import harnesses
 from danno_validator.matrix import ConfigVariant
 from danno_validator.suites.config import GatesConfig
 from danno_validator.telemetry.sampler import read_memory
 
 _OLLAMA_PREFIX = "ollama/"
+
+# A harness ridden on the generic "shell" image is danno-installed at a pinned version
+# (claurst/codex — recorded via `_provenance`); anything else ships its binary in a prebuilt
+# `docker sandbox create <image>` image (opencode/claude), so danno pins no version and must
+# ask the live VM for it (`probe_harness_version`).
+_SHELL_IMAGE = "shell"
 
 
 def danno_version() -> dict:
@@ -48,12 +55,50 @@ def _git_commit() -> str | None:
     return out or None
 
 
-def harness_provenance(harness: str, config: DannoConfig) -> dict:
+def _is_image_provided(harness: str) -> bool:
+    """True for a harness whose binary ships in its prebuilt sandbox image (opencode/claude)
+    rather than being danno-installed at a pinned version (claurst/codex ride the generic
+    "shell" image). Only the former needs a live `--version` probe — the latter's version is
+    already a danno-owned constant in `_provenance` (#89 F5-B)."""
+    return harnesses.get(harness).sandbox_image != _SHELL_IMAGE
+
+
+def probe_harness_version(runner: Runner, sandbox: str, harness: str) -> str | None:
+    """Best-effort `<harness> --version` in the live sandbox VM, for an image-provided harness
+    whose binary version danno does not pin (opencode/claude — #89 F5-B).
+
+    Returns the trimmed first non-blank line of output, or None for a danno-installed harness
+    (its version is already a pinned constant, so no probe) or when the probe cannot run (the
+    sandbox is gone, the binary lacks `--version`, a non-zero exit). Never raises — a missing
+    version is a `null` field, never a run failure. opencode's version is the V5 canary: it
+    decides whether `agent.steps` is honored."""
+    if not _is_image_provided(harness):
+        return None
+    try:
+        result = runner.capture([*sandbox_cli.base(), "exec", sandbox, harness, "--version"])
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if line.strip():
+            return line.strip()
+    return None
+
+
+def harness_provenance(
+    harness: str, config: DannoConfig, *, probed_version: str | None = None
+) -> dict:
     """The danno-known version pins for the harness that ran (§7.3). opencode/claude are
     image-provided (the prebuilt sandbox ships the binary), so danno pins no version —
-    only claurst (release tag) is danno-owned. Each harness owns its pins via
-    `Harness.provenance`; this merges them under the `harness` label."""
-    return {"harness": harness, **harnesses.get(harness).provenance(config)}
+    only claurst/codex (release/npm tag) are danno-owned. Each harness owns its pins via
+    `Harness.provenance`; this merges them under the `harness` label. `probed_version`, when
+    given (the live-VM `<harness> --version` from `probe_harness_version`), adds a `version`
+    field for the image-provided harnesses that otherwise record only their name (#89 F5-B)."""
+    info = {"harness": harness, **harnesses.get(harness).provenance(config)}
+    if probed_version is not None:
+        info["version"] = probed_version
+    return info
 
 
 def _read_cpuinfo() -> dict:
@@ -147,17 +192,20 @@ def collect_provenance(
     warmup: list[dict] | None = None,
     host_url: str = ollama.DEFAULT_HOST_URL,
     gates: GatesConfig | None = None,
+    harness_version: str | None = None,
 ) -> dict:
     """Assemble the full provenance payload for a bench run (always written).
 
     `warmup` is the per-tag pre-warm record (`ollama.warm_model`) — empty when `--no-warm`
     or no local models — so a reader can tell whether the timed cells started from a warm
     model or paid a cold load. `gates` records the resolved runaway-gate config so a
-    cross-run comparison knows what caps were in force (`.docs/plan-bench-runaway-gates.md`)."""
+    cross-run comparison knows what caps were in force (`.docs/plan-bench-runaway-gates.md`).
+    `harness_version` is the live-VM `<harness> --version` probed while a sandbox was up, for
+    image-provided harnesses danno does not pin (opencode/claude — #89 F5-B)."""
     return {
         "danno": danno_version(),
         "host": host_descriptor(),
-        "harness_versions": harness_provenance(harness, config),
+        "harness_versions": harness_provenance(harness, config, probed_version=harness_version),
         "sample_interval_s": sample_interval_s,
         "warmup": warmup or [],
         "gates": gates.model_dump() if gates is not None else None,

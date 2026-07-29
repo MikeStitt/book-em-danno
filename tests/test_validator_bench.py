@@ -587,6 +587,7 @@ def test_run_aider_provisions_by_harness_name_not_sandbox_image(
             capture_port=None,
             warm=False,
             warmup=[],
+            harness_ident={},
         )
     assert seen["harness"] == harness
     assert seen["harness"] in harnesses.all_names()  # never the "shell" image
@@ -640,6 +641,7 @@ def test_run_swebench_provisions_by_harness_name_not_sandbox_image(
             capture_port=None,
             warm=False,
             warmup=[],
+            harness_ident={},
         )
     assert seen["harness"] == harness
     assert seen["harness"] in harnesses.all_names()  # never the "shell" image
@@ -1066,6 +1068,32 @@ def test_result_row_omits_gate_fields_for_a_clean_ungated_cell(tmp_path: Path) -
     assert "rounds" not in row  # ungated → no round count
     assert "gate" not in row  # no breach
     assert "survivors" not in row  # clean
+    assert "resolved_gates" not in row  # #89: ungated cell records no resolved caps
+
+
+def test_result_row_records_resolved_gates(tmp_path: Path) -> None:
+    # #89 F5-A: the effective caps the cell ran under land on its row (max_turns/max_tokens/
+    # timeout_s), so the row is self-describing even when a harness/model override changed
+    # them from the raw `[gates]` config recorded once in provenance. A disabled gate (None)
+    # is recorded faithfully, not dropped.
+    from danno_validator.oracle import FailureClass
+    from danno_validator.suites.base import BenchVerdict
+    from danno_validator.suites.config import ResolvedGates
+
+    v = BenchVerdict(
+        task_id="python/proverb",
+        suite="aider",
+        passed=True,
+        verdict=_gate_verdict(FailureClass.PASS, "ok"),
+        tool_calls=1,
+        tokens=100,
+        cost=0.0,
+        latency_s=3.0,
+        model="ollama/stub",
+        resolved_gates=ResolvedGates(max_turns=8, max_tokens=None, timeout_s=600.0),
+    )
+    row = bench._result_row(v, num_ctx_by_model={}, out_dir=tmp_path, capture_dir=None)
+    assert row["resolved_gates"] == {"max_turns": 8, "max_tokens": None, "timeout_s": 600.0}
 
 
 def test_run_bench_dry_run_does_not_provision(tmp_path: pytest.TempPathFactory) -> None:

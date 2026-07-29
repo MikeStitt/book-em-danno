@@ -61,7 +61,11 @@ from danno_validator.suites.run import (
     temp_checkout_dir,
 )
 from danno_validator.suites.swebench import load_swebench_tasks
-from danno_validator.telemetry.provenance import collect_provenance, write_provenance
+from danno_validator.telemetry.provenance import (
+    collect_provenance,
+    probe_harness_version,
+    write_provenance,
+)
 from danno_validator.telemetry.report import (
     load as load_reports,
 )
@@ -138,6 +142,21 @@ def _sandbox_name(target: Path, suffix: str) -> str:
     digest = hashlib.sha1(f"{base}-{suffix}".encode()).hexdigest()[:8]
     short = re.sub(r"[^A-Za-z0-9]+", "-", suffix).strip("-")[:16].strip("-")
     return f"danno-bench-{short}-{digest}"
+
+
+def _record_harness_version(
+    runner: Runner, sandbox: str, harness: str, into: dict[str, str]
+) -> None:
+    """Probe `<harness> --version` from the live VM ONCE per run and stash it in `into`, for
+    provenance (#89 F5-B). Called right after `install_harness`, while a sandbox is up — the
+    sandboxes are torn down per-suite before provenance is collected, so the version must be
+    captured here. No-op once recorded, or when the probe returns None (a danno-pinned harness,
+    or the probe could not run)."""
+    if "version" in into:
+        return
+    version = probe_harness_version(runner, sandbox, harness)
+    if version is not None:
+        into["version"] = version
 
 
 def _teardown(runner: Runner, name: str, *, keep: bool) -> None:
@@ -337,6 +356,7 @@ def _run_aider(
     capture_port: int | None,
     warm: bool,
     warmup: list[dict],
+    harness_ident: dict[str, str],
     on_verdict: VerdictSink | None = None,
 ) -> list[BenchVerdict]:
     ap = cfg.aider_polyglot
@@ -353,6 +373,7 @@ def _run_aider(
     # registry lookup for harnesses whose image != name (claurst/codex ride `shell`).
     sb.provision(runner, name, workspace, harness=opts.harness, allow_hosts=allow_hosts)
     install_harness(runner, name, opts.harness, config)
+    _record_harness_version(runner, name, opts.harness, harness_ident)
     install_toolchains(runner, name, languages)
     present = doctor_toolchains(runner, name, languages)
     missing = [lang for lang, ok in present.items() if not ok]
@@ -410,6 +431,7 @@ def _run_swebench(
     capture_port: int | None,
     warm: bool,
     warmup: list[dict],
+    harness_ident: dict[str, str],
     on_verdict: VerdictSink | None = None,
 ) -> list[BenchVerdict]:
     sw = cfg.swebench
@@ -422,6 +444,7 @@ def _run_swebench(
         log_info(f"[bench] swebench {task.id} — provision {opts.harness} sandbox '{name}'")
         sb.provision(runner, name, workspace, harness=opts.harness, allow_hosts=allow_hosts)
         install_harness(runner, name, opts.harness, config)
+        _record_harness_version(runner, name, opts.harness, harness_ident)
         try:
             try:
                 task.provision(runner, name, workspace)
@@ -561,6 +584,16 @@ def _result_row(
         # The Gate-1 inference-round count, distinct from tool_calls (a runaway tool-loop is
         # one turn of many rounds); grading is excluded from it.
         row["rounds"] = v.rounds
+    if v.resolved_gates is not None:
+        # The effective caps THIS cell ran under (model > harness > global overlay), so a row
+        # is self-describing even when a harness/model override changed them from the raw
+        # `[gates]` config recorded once in provenance. Verdict-local → survives partial runs (#89).
+        g = v.resolved_gates
+        row["resolved_gates"] = {
+            "max_turns": g.max_turns,
+            "max_tokens": g.max_tokens,
+            "timeout_s": g.timeout_s,
+        }
     if v.gate is not None:
         # The full breach the watchdog recorded, not just the slug in `verdict`.
         row["gate"] = {"gate": v.gate.gate, "observed": v.gate.observed, "limit": v.gate.limit}
@@ -843,6 +876,10 @@ def run_bench(
     # `_warm_variant`). The per-warm records land in provenance so the report states the
     # run's cold-start posture.
     warmup: list[dict] = []
+    # The image-provided harness's live-VM `<harness> --version`, probed once while a sandbox is
+    # up (the sandboxes are torn down per-suite before provenance is collected). Empty for a
+    # danno-pinned harness (claurst/codex) — its version is already a constant in `_provenance`.
+    harness_ident: dict[str, str] = {}
 
     # One chmod-600 env-file PER model variant: shared base lines (the HUT's loop-ceiling
     # knobs, opencode's OLLAMA_BASE_URL, danno.toml [env], --env/--env-file) plus each cloud
@@ -872,6 +909,7 @@ def run_bench(
             capture_port=capture_port,
             warm=opts.warm,
             warmup=warmup,
+            harness_ident=harness_ident,
             on_verdict=journal.append,
         )
         report.verdicts += _run_swebench(
@@ -888,6 +926,7 @@ def run_bench(
             capture_port=capture_port,
             warm=opts.warm,
             warmup=warmup,
+            harness_ident=harness_ident,
             on_verdict=journal.append,
         )
         completed = True
@@ -918,6 +957,7 @@ def run_bench(
         sample_interval_s=opts.sample_interval if opts.sample else None,
         warmup=warmup,
         gates=bench_cfg.gates,
+        harness_version=harness_ident.get("version"),
     )
     write_provenance(out_dir, provenance)
     report.results_json = _write_results(
