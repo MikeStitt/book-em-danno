@@ -47,32 +47,64 @@ def snapshot_egress_log(runner: Runner, sandbox: str) -> dict | None:
     `{allowed_hosts, blocked_hosts}` dict.
 
     Host-side, so it does not exec into (or perturb) the sandbox and works whether or not
-    the VM is still running. Returns `None` — never raises — on the docker backend (no
-    equivalent), when the probe cannot run or exits non-zero, or when the output is not a
-    JSON object. A missing egress log is a null artifact, never a run failure (Working
-    Rule 8 is served by `warn_on_blocked`, not by aborting the run).
+    the VM is still running. A missing egress log is a null artifact, never a run failure —
+    Working Rule 8 is served by `warn_on_blocked`, not by aborting the run — so every path
+    returns `None` rather than raising. But **absent and failed are different facts** (policy
+    §5): the docker backend has no such log and returns `None` **silently**, while a probe
+    that could not run, exited non-zero, or produced non-object / unparseable output is a
+    genuine anomaly during a `--capture` run — the security audit the operator asked for
+    silently went missing — and each **WARNs** (greppably) before returning `None`.
     """
     argv = sandbox_cli.policy_log_argv(sandbox)
     if argv is None:
-        return None
+        return None  # docker backend: no egress log exists — legitimately absent, not a failure
     try:
         result = runner.capture(argv)
-    except OSError:
+    except OSError as exc:
+        log_warn(
+            f"egress: could not run the reachability probe for {sandbox!r}; omitting it from "
+            f"egress.json ({exc})"
+        )
         return None
     if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "(no output)"
+        log_warn(
+            f"egress: `sbx policy log` exited {result.returncode} for {sandbox!r}; omitting it "
+            f"from egress.json ({detail})"
+        )
         return None
     try:
         data = json.loads(result.stdout)
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError) as exc:
+        log_warn(
+            f"egress: reachability log for {sandbox!r} was unparseable JSON; omitting it from "
+            f"egress.json ({exc})"
+        )
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        log_warn(
+            f"egress: reachability log for {sandbox!r} was not a JSON object; omitting it from "
+            "egress.json"
+        )
+        return None
+    return data
 
 
 def warn_on_blocked(sandbox: str, snapshot: dict) -> None:
     """Fail loud (Working Rule 8): a captured run that silently hit an egress block is a
     sandbox-leg defect, not a clean result — name the blocked hosts on stderr."""
     raw = snapshot.get("blocked_hosts")
-    blocked = [b for b in raw if isinstance(b, dict)] if isinstance(raw, list) else []
+    if raw is None:
+        return  # no blocked_hosts key: legitimately no blocks recorded — silent (absent ≠ failed)
+    if not isinstance(raw, list):
+        # A non-list here would otherwise read as "hit no blocks" and hide a real egress block
+        # (the exact failure this audit exists to catch) — surface the malformed shape (policy §5).
+        log_warn(
+            f"egress: sandbox {sandbox!r} reported a non-list blocked_hosts "
+            f"({type(raw).__name__}); cannot confirm it hit no egress blocks — see egress.json."
+        )
+        return
+    blocked = [b for b in raw if isinstance(b, dict)]
     if not blocked:
         return
     hosts = ", ".join(sorted({str(b.get("host", "?")) for b in blocked}))
@@ -102,9 +134,18 @@ def write_egress_artifact(
     if not snapshots:
         return None
     payload = {"run_start": run_start, "note": EGRESS_NOTE, "sandboxes": snapshots}
-    capture_dir.mkdir(parents=True, exist_ok=True)
     path = capture_dir / "egress.json"
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    try:
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        # The egress log is a companion audit, never a command's data product (that is already
+        # durably written by the time we get here). A failed write must not crash an otherwise-
+        # good run — nor, in bench's teardown `finally`, mask the real exception — so WARN and
+        # drop it rather than raise (policy §5, WARNING). This keeps `record_egress` safe to call
+        # from a `finally`: none of its primitives raise.
+        log_warn(f"egress: could not write the reachability log to {path} ({exc})")
+        return None
     log_info(f"egress: wrote reachability log for {len(snapshots)} sandbox(es) -> {path}")
     return path
 

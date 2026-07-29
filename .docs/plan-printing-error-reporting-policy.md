@@ -307,21 +307,30 @@ already correct (reference).
 
 ### capture/egress.py — biggest silent-failure cluster
 
-> **Deferred to when #101 merges.** `capture/egress.py` was introduced by #101 (the
-> sbx egress-reachability log) on a sibling branch; it is NOT in this keystone-based
-> `log-swallow-sweep` tree, so its call sites can't be remediated here. Fold this
-> cluster in once #101 and the sweep converge. Likewise `commands/sandbox.py`
-> `record_egress` (#101) below.
+> **DONE step 7** (after #101 merged into `main` and `main` merged back into
+> `log-swallow-sweep`). `capture/egress.py` came from #101; the sweep and #101 have now
+> converged, so the whole cluster is remediated here. **Severity reconciled to the #101
+> contract:** the egress log is a *companion audit artifact*, explicitly "a null artifact,
+> never a run failure" (its docstring), and the fail-loud on the security concern is
+> `warn_on_blocked`. So the probe-read failures land at **WARNING**, not the ERROR/TRANSIENT
+> the pre-#101 draft guessed: marking a whole bench/validate run failed (ERROR = a failed
+> step/verdict) over a missing *audit* would be wrong when the run's real product is intact,
+> and a retry loop (TRANSIENT) is disproportionate for a host-side daemon-cache read. The
+> governing distinction is still enforced: **absent stays silent, failed WARNs.**
 
-- ⚠ `except OSError: return None` (58–61): probe never ran — **TRANSIENT→ERROR**.
-- ✗ `returncode != 0 → return None`, `stderr` discarded (62–63): the audit
-  definitively failed — **ERROR**.
-- ⚠ `json.loads` except / non-dict → None (64–68): malformed sbx output —
-  **WARNING**.
-- ⚠ `warn_on_blocked` non-list → `[]` (76): could hide real egress blocks —
-  **WARNING**.
-- ✗ `mkdir` / `write_text` (105–107): raw traceback on the durable audit write —
-  **ERROR**.
+- ✓ (DONE step 7) `snapshot_egress_log`: the docker backend (no such log) returns `None`
+  **silently** — legitimately absent — while every genuine failure now WARNs (greppable)
+  before returning `None`: `except OSError` (probe never ran), `returncode != 0` (now
+  surfacing the exit code **and** the previously-discarded `stderr`), unparseable JSON, and
+  well-formed-but-non-object JSON — **WARNING** (absent ≠ failed).
+- ✓ (DONE step 7) `warn_on_blocked`: an absent `blocked_hosts` key stays silent (no blocks
+  recorded), but a **non-list** `blocked_hosts` — which the old `isinstance(raw, list)` guard
+  silently collapsed to `[]`, hiding a real block — now WARNs the malformed shape — **WARNING**.
+- ✓ (DONE step 7) `write_egress_artifact` `mkdir`/`write_text`: a failed durable write of the
+  companion audit now WARNs and returns `None` instead of raising a raw traceback — the run's
+  data product is already written, so the audit must not crash it (and this keeps
+  `record_egress` safe to call from bench's teardown `finally`) — **WARNING** (was ERROR in the
+  draft; downgraded for the same companion-artifact reason).
 
 ### core/exec.py
 
@@ -361,8 +370,11 @@ already correct (reference).
 - ✓ (DONE step 7) `seed_onboarding` corrupt-`.claude.json` clobber now WARNs the data loss (vs
   the silent absent-file path); provision missing-`opencode.jsonc` is now a real `log_warn`, not
   `log_info` with a hand-rolled `[yellow]WARN[/yellow]` — **WARNING**.
-- ⚠ `record_egress` unguarded in `finally` (1246–1260): its raise masks the real
-  exception — **WARNING**. **Deferred to when #101 merges** (record_egress is #101, not in tree).
+- ✓ (DONE step 7) `record_egress` unguarded in `finally`: resolved at the primitive level
+  rather than by wrapping the call — `snapshot_egress_log` never raises and
+  `write_egress_artifact` now WARNs-and-returns instead of raising, so `record_egress` can no
+  longer mask the real exception when invoked from a `finally` — **WARNING** (see
+  `capture/egress.py` above).
 
 ### commands/ollama.py — probes conflate transient with definitive
 
@@ -489,12 +501,14 @@ run-log wiring), 5 (handler-error capture), and 7 (the §5 sweep) remain.
      missing-binary → `CommandNotFoundError`; `core/registry.py` `record()` →
      `RegistryError`; `commands/sandbox.py` `_capture_session` rewrite moved inside
      the restore try/finally + `_build_env_file`/`_provided_env` → `CommandFailedError`;
-     `commands/tools.py` copy/provenance → `ToolInstallError`. (`capture/egress.py`
-     ERROR sites deferred to #101 — file not in this tree.)
+     `commands/tools.py` copy/provenance → `ToolInstallError`. (The `capture/egress.py`
+     draft-ERROR sites were reconciled to WARNING once #101 merged — see the egress sub-bullet.)
    - **TRANSIENT tier landed** + the **retry helper** (`core.exec.retry_transient`) built
      with its first real call sites (no speculative abstraction): `commands/ollama.py`
      `verify_responds`/`tool_call_probe` retry-then-escalate; `ensure_model` retries a failed
-     pull. (`capture/egress.py` TRANSIENT probe deferred to #101.)
+     pull. (The `capture/egress.py` draft-TRANSIENT probe was reconciled to WARNING once #101
+     merged — a host-side daemon-cache read of a companion audit doesn't warrant a retry loop;
+     see the egress sub-bullet.)
    - **WARNING tier landed** — the "distinguish absent from failed, then count/greppably
      log" pass: `capture/usage.py` unparseable SSE/NDJSON usage chunk → WARN (vs a silent
      usage-less chunk); `core/registry.py` `load()` corrupt/non-object file → WARN (vs a
@@ -510,10 +524,19 @@ run-log wiring), 5 (handler-error capture), and 7 (the §5 sweep) remain.
      `commands/install.py` unreachable-Ollama-hides-presence → WARN; `commands/tools.py`
      `install_generic_git` cloned-not-installed-under-`--apply` → WARN; `config/schema.py`
      explicitly-set `default_agent` not in `[agents]` → WARN; `commands/doctor.py` `_safe`
-     swallowed cause → DEBUG (the row already shows FAIL/WARN). Deferred: `commands/doctor.py`
-     danno.toml load/validate **preflight check** — that's an additive check needing a target
-     path threaded into `run_doctor`, not a swallow remediation; and every `capture/egress.py`
-     WARNING site + `commands/sandbox.py` `record_egress` → to when #101 merges (not in tree).
+     swallowed cause → DEBUG (the row already shows FAIL/WARN).
+   - **egress tier landed** (after #101 merged to `main` and `main` merged back into
+     `log-swallow-sweep`): the whole `capture/egress.py` cluster + `commands/sandbox.py`
+     `record_egress`, all reconciled to **WARNING** per the companion-audit contract.
+     `snapshot_egress_log` keeps the docker backend silent (absent) but WARNs every probe
+     failure (OSError / non-zero-exit-now-with-stderr / unparseable / non-object JSON);
+     `warn_on_blocked` WARNs a malformed non-list `blocked_hosts` (was silently `[]`);
+     `write_egress_artifact` WARNs-and-returns on a failed durable write — which also makes
+     `record_egress` finally-safe (no primitive raises). Rationale in the `capture/egress.py`
+     §5 sub-section.
+   - **Still deferred:** `commands/doctor.py` danno.toml load/validate **preflight check** —
+     an additive check needing a target path threaded into `run_doctor`, not a swallow
+     remediation.
 
 ## Related
 

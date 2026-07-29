@@ -1,8 +1,9 @@
 """Unit tests for the sandbox egress reachability artifact (`capture.egress`, issue #101).
 
 Hermetic: a stub Runner returns canned `sbx policy log --json` output, so nothing shells out
-to a real daemon. Docker-backend and probe-failure paths return `None` WITHOUT any exec — that
-is also what keeps the wiring safe under the fast suite's `DANNO_SANDBOX_CLI=docker` pin."""
+to a real daemon. The docker backend returns `None` WITHOUT any exec (the fast-suite safety
+net under the `DANNO_SANDBOX_CLI=docker` pin); the sbx probe-failure paths do exec and then
+WARN before returning `None` — absent vs failed are distinct facts (policy §5)."""
 
 from __future__ import annotations
 
@@ -25,17 +26,22 @@ _LOG = {
 class _LogRunner:
     """Minimal Runner stub: records exec'd commands, returns canned `policy log` JSON."""
 
-    def __init__(self, *, stdout: str, returncode: int = 0, raises: bool = False) -> None:
+    def __init__(
+        self, *, stdout: str, returncode: int = 0, raises: bool = False, stderr: str = ""
+    ) -> None:
         self._stdout = stdout
         self._returncode = returncode
         self._raises = raises
+        self._stderr = stderr
         self.commands: list[list[str]] = []
 
     def capture(self, cmd: list[str], **kw: object) -> CaptureResult:
         self.commands.append(cmd)
         if self._raises:
             raise OSError("sandbox gone")
-        return CaptureResult(cmd=cmd, returncode=self._returncode, stdout=self._stdout, stderr="")
+        return CaptureResult(
+            cmd=cmd, returncode=self._returncode, stdout=self._stdout, stderr=self._stderr
+        )
 
 
 def _sbx(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -50,24 +56,42 @@ def test_snapshot_execs_policy_log_and_parses_json(monkeypatch: pytest.MonkeyPat
     assert runner.commands == [["sbx", "policy", "log", "box", "--type", "network", "--json"]]
 
 
-def test_snapshot_docker_backend_returns_none_without_exec(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_snapshot_docker_backend_returns_none_silently_without_exec(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     # docker has no host-side egress audit → None, and crucially NO exec (the fast-suite safety
     # net: wiring that reaches this under the DANNO_SANDBOX_CLI=docker pin never shells out).
+    # This is legitimately-ABSENT, distinct from a probe failure, so it stays SILENT (policy §5).
     monkeypatch.setenv("DANNO_SANDBOX_CLI", "docker")
     runner = _LogRunner(stdout="should-not-be-read")
     assert egress.snapshot_egress_log(runner, "box") is None  # type: ignore[arg-type]
     assert runner.commands == []
+    assert capsys.readouterr().err == ""  # absent ≠ failed: no warning
 
 
-def test_snapshot_tolerates_failure_and_non_json(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_snapshot_probe_failures_warn_before_returning_none(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Under sbx a probe that could-not-run / exited-non-zero / returned unparseable or
+    # non-object output is a genuine anomaly during a --capture run (the audit the operator
+    # asked for silently went missing) — each must WARN (greppable) before returning None,
+    # NOT swallow like the docker-backend absent case (policy §5). RichHandler wraps, so
+    # normalize whitespace before substring-matching.
     _sbx(monkeypatch)
-    # non-zero exit → None, never a raise
-    assert egress.snapshot_egress_log(_LogRunner(stdout="{}", returncode=1), "box") is None  # type: ignore[arg-type]
-    # exec cannot even launch → None, never a raise
-    assert egress.snapshot_egress_log(_LogRunner(stdout="", raises=True), "box") is None  # type: ignore[arg-type]
-    # garbage / non-object JSON → None
-    assert egress.snapshot_egress_log(_LogRunner(stdout="not json"), "box") is None  # type: ignore[arg-type]
-    assert egress.snapshot_egress_log(_LogRunner(stdout="[1,2]"), "box") is None  # type: ignore[arg-type]
+
+    def _warns(runner: egress.Runner, needle: str) -> None:
+        assert egress.snapshot_egress_log(runner, "box") is None
+        err = " ".join(capsys.readouterr().err.split())
+        assert "[WARNING]" in err and "box" in err and needle in err
+
+    # non-zero exit → surfaces the exit code + stderr detail
+    _warns(_LogRunner(stdout="", returncode=1, stderr="daemon down"), "daemon down")  # type: ignore[arg-type]
+    # exec cannot even launch (OSError)
+    _warns(_LogRunner(stdout="", raises=True), "could not run")  # type: ignore[arg-type]
+    # garbage JSON
+    _warns(_LogRunner(stdout="not json"), "unparseable JSON")  # type: ignore[arg-type]
+    # well-formed JSON that is not an object
+    _warns(_LogRunner(stdout="[1,2]"), "not a JSON object")  # type: ignore[arg-type]
 
 
 def test_warn_on_blocked_names_hosts(capsys: pytest.CaptureFixture[str]) -> None:
@@ -79,6 +103,35 @@ def test_warn_on_blocked_names_hosts(capsys: pytest.CaptureFixture[str]) -> None
 def test_warn_on_blocked_silent_when_clean(capsys: pytest.CaptureFixture[str]) -> None:
     egress.warn_on_blocked("box", {"allowed_hosts": [], "blocked_hosts": []})
     assert capsys.readouterr().err == ""
+
+
+def test_warn_on_blocked_silent_when_key_absent(capsys: pytest.CaptureFixture[str]) -> None:
+    # No blocked_hosts key at all = legitimately no blocks recorded — stays silent (absent case).
+    egress.warn_on_blocked("box", {"allowed_hosts": []})
+    assert capsys.readouterr().err == ""
+
+
+def test_warn_on_blocked_warns_on_malformed_non_list(capsys: pytest.CaptureFixture[str]) -> None:
+    # A non-list blocked_hosts would otherwise read as "no blocks" and hide a real egress block —
+    # the malformed shape must WARN, not be swallowed (policy §5).
+    egress.warn_on_blocked("box", {"blocked_hosts": "oops-not-a-list"})
+    err = " ".join(capsys.readouterr().err.split())
+    assert "[WARNING]" in err and "non-list blocked_hosts" in err and "box" in err
+
+
+def test_write_egress_artifact_warns_on_unwritable_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A failed durable write of the companion audit must not raise (it would crash an otherwise-
+    # good run / mask a teardown exception) — it WARNs and returns None (policy §5). Point the
+    # capture dir under a FILE so mkdir raises deterministically.
+    (tmp_path / "afile").write_text("i am a file, not a dir")
+    out = egress.write_egress_artifact(
+        {"box": _LOG}, capture_dir=tmp_path / "afile" / "cap", run_start="t"
+    )
+    assert out is None
+    err = " ".join(capsys.readouterr().err.split())
+    assert "[WARNING]" in err and "could not write the reachability log" in err
 
 
 def test_record_egress_writes_uniform_artifact(
