@@ -112,6 +112,41 @@ def test_transient_level_registered(capsys: pytest.CaptureFixture[str]) -> None:
     assert "[TRANSIENT] intermittent DNS blip" in capsys.readouterr().err
 
 
+def test_run_log_mirrors_leveled_stream_and_detaches(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A run home's danno.log keeps DEBUG-and-up even while the console stays at INFO,
+    # WITHOUT disturbing the console verbosity configure_logging installed.
+    log_mod.configure_logging(verbosity=log_mod.Verbosity.QUIET)
+    run_dir = tmp_path / "run"
+    with log_mod.run_log(run_dir / "danno.log") as path:
+        assert path == run_dir / "danno.log"
+        log_info("inside the run")  # QUIET console hides INFO...
+        log_err("boom")
+    log_info("after the run")  # ...and this lands in no run log at all
+
+    console_err = capsys.readouterr().err
+    assert "inside the run" not in console_err  # console verbosity preserved (QUIET)
+    assert "[ERROR] boom" in console_err
+
+    contents = (run_dir / "danno.log").read_text(encoding="utf-8")
+    assert "[INFO] inside the run" in contents  # file keeps DEBUG-and-up regardless
+    assert "[ERROR] boom" in contents
+    assert "after the run" not in contents  # handler detached on block exit
+
+
+def test_run_log_isolates_consecutive_run_homes(tmp_path: Path) -> None:
+    # Two sequential sweeps in one process each get their OWN durable log.
+    with log_mod.run_log(tmp_path / "a" / "danno.log"):
+        log_info("run A event")
+    with log_mod.run_log(tmp_path / "b" / "danno.log"):
+        log_info("run B event")
+    a = (tmp_path / "a" / "danno.log").read_text(encoding="utf-8")
+    b = (tmp_path / "b" / "danno.log").read_text(encoding="utf-8")
+    assert "run A event" in a and "run B event" not in a
+    assert "run B event" in b and "run A event" not in b
+
+
 @pytest.mark.parametrize("allow_hosts", [(), ("**",), ("*",), ("",), ("   ",), ("ok", "**")])
 def test_egress_guard_rejects_open_allow_lists(allow_hosts: tuple[str, ...]) -> None:
     with pytest.raises(SandboxSecurityError):

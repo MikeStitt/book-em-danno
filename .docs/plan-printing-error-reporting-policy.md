@@ -424,9 +424,13 @@ run-log wiring), 5 (handler-error capture), and 7 (the §5 sweep) remain.
    (in the §4E follow-on PR).
 3. ✅ **Verbosity (keystone):** `-q/--quiet` + `-v/--verbose` gate the console
    threshold via `configure_logging`; the file log always captures DEBUG-and-up.
-4. **File sink for long-running contexts:** `captures/<run>/danno.log` for bench /
-   proxy / stub (the keystone lands the `--log-file` capability; auto-opening the
-   run log inside those homes is this step).
+4. ✅ **File sink for long-running contexts:** `core.log.run_log(path)` — a
+   context manager that attaches a DEBUG-and-up `[LEVEL] msg` file mirror ON TOP of
+   the console handler (console verbosity untouched) and detaches + closes it on
+   block exit, so consecutive sweeps in one process each get their own log. Wired
+   into the `validate` sweep (`<out_dir>/danno.log`, `run.py`) and the `bench`
+   sweep (`<out_dir>/danno.log`, `suites/bench.py`), scoped to the real-run body
+   (a `--dry-run` opens no log).
 5. **Handler-error capture:** `handle_error` overrides on `capture/proxy.py` and
    `stubai/server.py` → recorded + counted, never bare stderr.
 6. **Enforcement (§4E follow-on PR):** enable ruff `T20`; annotate the legitimate

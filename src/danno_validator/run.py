@@ -38,7 +38,7 @@ from book_em_danno.capture.wiring import (
 from book_em_danno.commands import sandbox as sb
 from book_em_danno.commands import sandbox_cli
 from book_em_danno.config.schema import DannoConfig
-from book_em_danno.core.exec import CommandFailedError, Runner, log_info, log_warn
+from book_em_danno.core.exec import CommandFailedError, Runner, log_info, log_warn, run_log
 from danno_validator import harnesses
 from danno_validator.baseline import BASELINE_MODEL, run_baseline
 from danno_validator.events import ValidateEvent
@@ -299,126 +299,130 @@ def run_validate(
     if opts.dry_run:
         return ValidateResult(plan=plan, dry_run=True)
 
-    level1, level2 = _levels(opts.max_level)
+    # A durable run log for this sweep: `<out_dir>/danno.log` mirrors the leveled
+    # stream (DEBUG-and-up) so a completed/failed run stays diagnosable from disk
+    # without a -v re-run (policy step 4). Scoped to the run home, not the process.
+    with run_log(plan.out_dir / "danno.log"):
+        level1, level2 = _levels(opts.max_level)
 
-    # `--capture`: rewrite redirectable backends' base_urls at recording proxies and
-    # open their ports in the sandbox egress. Off → original config + default egress.
-    cfg_for_run, capture_targets, allow_hosts = _setup_capture(config, opts, plan)
+        # `--capture`: rewrite redirectable backends' base_urls at recording proxies and
+        # open their ports in the sandbox egress. Off → original config + default egress.
+        cfg_for_run, capture_targets, allow_hosts = _setup_capture(config, opts, plan)
 
-    reporter.phase(f"prepare workspace  {plan.workspace}")
-    prepare_workspace(runner, plan.workspace, cfg_for_run)
+        reporter.phase(f"prepare workspace  {plan.workspace}")
+        prepare_workspace(runner, plan.workspace, cfg_for_run)
 
-    # The proxies must be up for every harness request; start them before provisioning
-    # and tear them down after the last turn (a no-op context when capture is off).
-    with captures_running(capture_targets):
-        # `opts.harness` selects the harness-under-test for the sweep — always a dialer
-        # (claude is the separate `--baseline` reference, provisioned below). The
-        # registry owns each dialer's sandbox image and post-provision install: opencode
-        # is a prebuilt image with nothing to install; claurst runs in a `shell` VM
-        # and installs post-provision. opencode is driven by run_sweep's built-in
-        # read-write run-agent ("build", the per-level default), so it injects no
-        # `make_run_turn`; other dialers inject their registry `TurnFn` factory.
-        harness = harnesses.get(opts.harness)
-        reporter.phase(f"provision {opts.harness} sandbox  {plan.sweep_sandbox}")
-        # `provision` takes the harness NAME (resolves the docker image internally); passing
-        # `.sandbox_image` breaks the registry lookup for claurst/codex (image `shell` != name).
-        sb.provision(
-            runner,
-            plan.sweep_sandbox,
-            plan.workspace,
-            harness=opts.harness,
-            allow_hosts=allow_hosts,
-            registry_path=None,
-        )
-        if opts.harness != DEFAULT_HARNESS:
-            reporter.phase(f"install {opts.harness}  {plan.sweep_sandbox}")
-            harness.install(runner, plan.sweep_sandbox, config)
-        # Credentials for swept cloud configs: bound into every harness exec via
-        # --env-file, removed after the sweep (the secret never lingers on disk).
-        sweep_env_file = _build_sweep_env_file(config, opts, plan.workspace)
-        make_run_turn = None if opts.harness == DEFAULT_HARNESS else harness.turn_fn
-        try:
-            results = run_sweep(
-                runner,
-                plan.sweep_sandbox,
-                config=cfg_for_run,
-                workspace_root=plan.workspace,
-                only=opts.only,
-                reset=opts.reset,
-                level1=level1,
-                level2=level2,
-                env_file=sweep_env_file,
-                make_run_turn=make_run_turn,
-                judge=judge,
-                on_event=reporter.event,
-            )
-        finally:
-            if sweep_env_file is not None:
-                sweep_env_file.unlink(missing_ok=True)
-
-        if opts.baseline and plan.baseline_sandbox is not None:
-            reporter.phase(f"provision claude sandbox  {plan.baseline_sandbox}")
+        # The proxies must be up for every harness request; start them before provisioning
+        # and tear them down after the last turn (a no-op context when capture is off).
+        with captures_running(capture_targets):
+            # `opts.harness` selects the harness-under-test for the sweep — always a dialer
+            # (claude is the separate `--baseline` reference, provisioned below). The
+            # registry owns each dialer's sandbox image and post-provision install: opencode
+            # is a prebuilt image with nothing to install; claurst runs in a `shell` VM
+            # and installs post-provision. opencode is driven by run_sweep's built-in
+            # read-write run-agent ("build", the per-level default), so it injects no
+            # `make_run_turn`; other dialers inject their registry `TurnFn` factory.
+            harness = harnesses.get(opts.harness)
+            reporter.phase(f"provision {opts.harness} sandbox  {plan.sweep_sandbox}")
+            # `provision` takes the harness NAME (resolves the docker image internally); passing
+            # `.sandbox_image` breaks the registry lookup for claurst/codex (image `shell` != name).
             sb.provision(
                 runner,
-                plan.baseline_sandbox,
+                plan.sweep_sandbox,
                 plan.workspace,
-                harness="claude",
+                harness=opts.harness,
                 allow_hosts=allow_hosts,
                 registry_path=None,
             )
-            results.append(
-                run_baseline(
+            if opts.harness != DEFAULT_HARNESS:
+                reporter.phase(f"install {opts.harness}  {plan.sweep_sandbox}")
+                harness.install(runner, plan.sweep_sandbox, config)
+            # Credentials for swept cloud configs: bound into every harness exec via
+            # --env-file, removed after the sweep (the secret never lingers on disk).
+            sweep_env_file = _build_sweep_env_file(config, opts, plan.workspace)
+            make_run_turn = None if opts.harness == DEFAULT_HARNESS else harness.turn_fn
+            try:
+                results = run_sweep(
                     runner,
-                    plan.baseline_sandbox,
+                    plan.sweep_sandbox,
+                    config=cfg_for_run,
                     workspace_root=plan.workspace,
-                    model=opts.baseline_model,
+                    only=opts.only,
                     reset=opts.reset,
                     level1=level1,
                     level2=level2,
+                    env_file=sweep_env_file,
+                    make_run_turn=make_run_turn,
                     judge=judge,
                     on_event=reporter.event,
                 )
+            finally:
+                if sweep_env_file is not None:
+                    sweep_env_file.unlink(missing_ok=True)
+
+            if opts.baseline and plan.baseline_sandbox is not None:
+                reporter.phase(f"provision claude sandbox  {plan.baseline_sandbox}")
+                sb.provision(
+                    runner,
+                    plan.baseline_sandbox,
+                    plan.workspace,
+                    harness="claude",
+                    allow_hosts=allow_hosts,
+                    registry_path=None,
+                )
+                results.append(
+                    run_baseline(
+                        runner,
+                        plan.baseline_sandbox,
+                        workspace_root=plan.workspace,
+                        model=opts.baseline_model,
+                        reset=opts.reset,
+                        level1=level1,
+                        level2=level2,
+                        judge=judge,
+                        on_event=reporter.event,
+                    )
+                )
+
+        _, index = write_sweep_report(results, plan.out_dir)
+        menu_path: Path | None = None
+        if opts.menu:
+            menu_path = write_menu(
+                config,
+                results,
+                opts.menu_path or plan.out_dir / "menu.danno.toml",
+                verified=now.strftime("%Y-%m-%d"),
             )
-
-    _, index = write_sweep_report(results, plan.out_dir)
-    menu_path: Path | None = None
-    if opts.menu:
-        menu_path = write_menu(
-            config,
+        record = run_record(
             results,
-            opts.menu_path or plan.out_dir / "menu.danno.toml",
-            verified=now.strftime("%Y-%m-%d"),
+            config_path=plan.config_path,
+            declared_models=plan.declared_models,
+            run_meta=_run_meta(plan, opts),
+            generated_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            danno_version=version,
+            requested_baseline_model=opts.baseline_model,
         )
-    record = run_record(
-        results,
-        config_path=plan.config_path,
-        declared_models=plan.declared_models,
-        run_meta=_run_meta(plan, opts),
-        generated_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        danno_version=version,
-        requested_baseline_model=opts.baseline_model,
-    )
-    results_json = write_results_json(record, plan.out_dir / "results.json")
+        results_json = write_results_json(record, plan.out_dir / "results.json")
 
-    if not opts.keep_sandboxes:
-        reporter.phase("tear down sandboxes")
-        _teardown(runner, plan.sweep_sandbox)
-        if opts.baseline and plan.baseline_sandbox is not None:
-            _teardown(runner, plan.baseline_sandbox)
+        if not opts.keep_sandboxes:
+            reporter.phase("tear down sandboxes")
+            _teardown(runner, plan.sweep_sandbox)
+            if opts.baseline and plan.baseline_sandbox is not None:
+                _teardown(runner, plan.baseline_sandbox)
 
-    swept = [s for s in results if s.variant.model_name != BASELINE_MODEL]
-    strict_failed = opts.strict and any(not _config_ok(s, opts.max_level) for s in swept)
-    out = ValidateResult(
-        plan=plan,
-        dry_run=False,
-        results=results,
-        index=index,
-        menu_path=menu_path,
-        results_json=results_json,
-        strict_failed=strict_failed,
-    )
-    reporter.summary(out)
-    return out
+        swept = [s for s in results if s.variant.model_name != BASELINE_MODEL]
+        strict_failed = opts.strict and any(not _config_ok(s, opts.max_level) for s in swept)
+        out = ValidateResult(
+            plan=plan,
+            dry_run=False,
+            results=results,
+            index=index,
+            menu_path=menu_path,
+            results_json=results_json,
+            strict_failed=strict_failed,
+        )
+        reporter.summary(out)
+        return out
 
 
 def _run_meta(plan: ValidatePlan, opts: ValidateOptions) -> dict[str, object]:

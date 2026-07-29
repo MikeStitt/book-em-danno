@@ -18,6 +18,8 @@ budget is spent) and ``FATAL`` (an alias for ``CRITICAL``, displayed as ``FATAL`
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from enum import Enum
 from pathlib import Path
 
@@ -121,6 +123,34 @@ def configure_logging(
         file_handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
         setattr(file_handler, _MANAGED, True)
         logger.addHandler(file_handler)
+
+
+@contextmanager
+def run_log(path: Path) -> Iterator[Path]:
+    """Attach a durable DEBUG-and-up file mirror of the leveled log stream for the
+    duration of a long-running run home (a ``bench``/``validate`` sweep's ``out_dir``),
+    then detach and close it. Yields ``path``.
+
+    Layered ON TOP of whatever console handler :func:`configure_logging` installed, so
+    the caller's ``-v``/``-q`` console verbosity is untouched — this only *adds* a second
+    sink. The file keeps everything (DEBUG-and-up, plain greppable ``[LEVEL] msg`` lines)
+    so a sweep stays diagnosable from ``<out_dir>/danno.log`` without re-running under
+    ``-v``. Unlike ``--log-file`` (a whole-process mirror), this is scoped to the block:
+    the handler is removed and the file closed on exit so a subsequent run in the same
+    process writes to its OWN run home, not a stale one. Marked managed so a later
+    :func:`configure_logging` also reclaims it.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(path, encoding="utf-8")
+    handler.setLevel(logging.DEBUG)  # the durable run log keeps everything
+    handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+    setattr(handler, _MANAGED, True)
+    logger.addHandler(handler)
+    try:
+        yield path
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
 
 
 def log_info(msg: str) -> None:

@@ -44,6 +44,7 @@ from .log import log_fatal as log_fatal
 from .log import log_info as log_info
 from .log import log_transient as log_transient
 from .log import log_warn as log_warn
+from .log import run_log as run_log
 
 # stdout is the DATA channel: a command's parseable product (`--version`, a managed-file
 # diff, the doctor report, validate's results grid). Operational logs go through the
