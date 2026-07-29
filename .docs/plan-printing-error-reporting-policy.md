@@ -271,7 +271,13 @@ channel rule lands in this one class.)
 | --- | --- | --- | --- |
 | report.py:632 | merged markdown report | stdout | keep bare (Unix-filter product); `# noqa: T201` |
 | report.py:635 | `wrote <path>` diagnostic | stderr + file | **convert to `log_info`** (after stderr routing lands) |
-| level2.py:123,125 | generated fizzbuzz test output | N/A — sandbox-side | keep bare; runs under plain `python3` in the VM; `# noqa: T201` |
+| level2.py:123,125 | generated fizzbuzz test output | N/A — sandbox-side | **no change** — these are inside a triple-quoted test-source string, so ruff's AST-based T20 never flags them (a `# noqa` there would corrupt the generated VM test); the §1.3 grep matched string content, T20 does not |
+
+As-built (§4E PR): enabling `T20` repo-wide (`ninja check` runs `ruff check .`)
+also surfaced `scripts/portability/probe.py` — a std-lib-only operator diagnostic
+whose `print`s ARE its stdout report and which deliberately cannot import danno's
+logger. T20's target is the `src/` package, so that script carries a scoped
+`per-file-ignores` entry, not per-line `# noqa`s.
 
 ---
 
