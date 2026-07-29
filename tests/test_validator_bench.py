@@ -293,9 +293,9 @@ def test_codex_matrix_drops_cloud_model_from_implicit_sweep(
     codex = harnesses.get("codex")
     variants = codex.model_matrix(cfg, None)
     assert [v.model_name for v in variants] == ["qwen"]
-    # loud, not silent: the skipped cloud row is named with its reason (via log_warn → stdout).
-    out = capsys.readouterr().out
-    assert "nemo" in out and "codex" in out
+    # loud, not silent: the skipped cloud row is named with its reason (via log_warn → stderr).
+    err = capsys.readouterr().err
+    assert "nemo" in err and "codex" in err
 
 
 def test_codex_matrix_explicit_only_cloud_model_fails_loud() -> None:
@@ -419,8 +419,8 @@ def test_requires_wire_gates_chat_only_harness(capsys: pytest.CaptureFixture[str
     cfg = _responses_only_ollama_config()
     assert [v.model_name for v in harnesses.get("opencode").model_matrix(cfg, None)] == ["qwen"]
     assert harnesses.get("claurst").model_matrix(cfg, None) == []
-    out = capsys.readouterr().out
-    assert "responses" in out and "claurst" in out
+    err = capsys.readouterr().err
+    assert "responses" in err and "claurst" in err
 
 
 def test_requires_wire_explicit_only_chat_only_harness_fails_loud() -> None:

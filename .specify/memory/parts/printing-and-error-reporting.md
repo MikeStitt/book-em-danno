@@ -14,8 +14,10 @@ channel split.
 ## The five severity levels
 
 Every reported condition is exactly one of these. They map onto the syslog /
-stdlib-`logging` model (so a future move to `logging.getLogger("danno")` is a
-drop-in) with one danno-specific tier, **TRANSIENT**.
+stdlib-`logging` model — the mechanism **is** a `logging.getLogger("danno")` in
+[`core/log.py`](../../../src/book_em_danno/core/log.py) — with one danno-specific
+tier, **TRANSIENT** (level 35, between `WARNING` and `ERROR`); **FATAL** is
+`CRITICAL` (50) displayed as `FATAL`.
 
 - **FATAL** — an unrecoverable precondition for the whole command is unmet: an
   invalid `danno.toml`, a missing required binary, or a **security-invariant
@@ -57,14 +59,23 @@ This is the enforceable core of Fail Loud for code:
 
 ## One standard mechanism
 
-- Use the shared reporting helpers in [`core/exec.py`](../../../src/book_em_danno/core/exec.py)
-  (`log_info` / `log_warn` / `log_err`, plus `log_debug`; a `FATAL` and a
-  `TRANSIENT` path are part of the taxonomy above). No module invents its own
-  `print` / `Console` / `echo` path for logging.
-- The mechanism is the drop-in for stdlib `logging` + rich's `RichHandler`; the
-  level names above are chosen to match so the migration stays mechanical.
+- The machinery lives in [`core/log.py`](../../../src/book_em_danno/core/log.py):
+  a stdlib `logging.Logger` fanning to a rich `RichHandler` on stderr and, under
+  `--log-file`, a plain file handler. Callers pass **plain** text through the
+  helpers `log_info` / `log_warn` / `log_transient` / `log_err` / `log_fatal` /
+  `log_debug`; each handler's formatter adds the `[LEVEL]` tag (coloured on the
+  console, greppable in the file) and the message body is markup-escaped so a
+  bracket in a path/IP (`[::1]`) is never eaten by rich's parser. The helpers are
+  re-exported from [`core/exec.py`](../../../src/book_em_danno/core/exec.py) so
+  existing `from book_em_danno.core.exec import log_warn` imports are unchanged.
+  No module invents its own `print` / `Console` / `echo` path for logging.
+- The **TRANSIENT *retry* helper** (the retry-with-escalation-budget loop) is
+  deliberately **not** built yet — it lands with its first real call site in the
+  remediation sweep (no speculative abstraction); `log_transient` records the
+  first-occurrence warning today.
 - **Emitting a command's data product is the one sanctioned exception** and uses
-  an explicit stdout writer, never the logger (see the channel split).
+  the explicit stdout writer `core.exec.console`, never the logger (see the
+  channel split).
 
 ## Channel separation (split by purpose, not mechanism)
 
@@ -73,8 +84,12 @@ This is the enforceable core of Fail Loud for code:
   the merged bench markdown. It NEVER carries a log level, and its bytes are
   identical at every verbosity.
 - **stderr = live log channel.** Progress, lifecycle, WARNING, ERROR, FATAL —
-  shown as it happens.
-- **file = durable log channel.** A mirror of the stderr stream (see below).
+  shown as it happens. Non-leveled stderr **chrome** (the advise `$ cmd` echo, the
+  validator's rich progress UI) shares this channel via `core.log.err_console` but
+  carries no `[LEVEL]` tag.
+- **file = durable log channel.** A mirror of the **leveled** stream (see below).
+  The stderr chrome is *not* file-mirrored — its durable form is the run's own data
+  artifacts (the validator's JSON/report, the bench captures), not the log file.
 
 ## File logging
 
@@ -90,7 +105,9 @@ The standard mechanism MUST support a file sink. File logging is:
   flag covers the opt-in.
 
 The file log always captures DEBUG-and-up regardless of console verbosity, so a
-failure stays diagnosable without re-running under `-v`.
+failure stays diagnosable without re-running under `-v`. The keystone lands the
+`--log-file` capability; auto-opening a run log inside the bench/proxy run-homes
+is tracked as follow-on in the DoR.
 
 ## Verbosity
 
@@ -107,7 +124,9 @@ escalation to ERROR always shows.
 ## Enforcement
 
 - Ruff **flake8-print (`T20`)** bans bare `print` in `src/`; the few legitimate
-  data/sandbox prints carry `# noqa: T201` with a reason.
+  data/sandbox prints carry `# noqa: T201` with a reason. (Enabling `T20` is landed
+  with the bare-print cleanup PR, not the keystone — turning it on before those
+  `# noqa`s exist would break the gate; tracked in the DoR.)
 - In review, an `except` for an operational error must show where the failure is
   recorded/counted, and a retry path must name its escalation budget.
 

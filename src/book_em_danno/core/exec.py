@@ -30,6 +30,24 @@ from typing import Protocol
 
 from rich.console import Console
 
+# The leveled reporting mechanism lives in `.log`; re-exported here because most of the
+# tree imports the `log_*` helpers `from book_em_danno.core.exec`. Explicit `as` aliases
+# mark these as intentional re-exports (not unused imports).
+from .log import FATAL as FATAL
+from .log import TRANSIENT as TRANSIENT
+from .log import Verbosity as Verbosity
+from .log import configure_logging as configure_logging
+from .log import err_console as err_console
+from .log import log_debug as log_debug
+from .log import log_err as log_err
+from .log import log_fatal as log_fatal
+from .log import log_info as log_info
+from .log import log_transient as log_transient
+from .log import log_warn as log_warn
+
+# stdout is the DATA channel: a command's parseable product (`--version`, a managed-file
+# diff, the doctor report, validate's results grid). Operational logs go through the
+# `log_*` helpers above (stderr + optional file); never mix a `[LEVEL]` onto this console.
 console = Console()
 
 # How often the runaway-gate watchdog polls the tally + wall clock while a harness cell
@@ -40,29 +58,23 @@ _WATCH_INTERVAL_S = 0.25
 _READER_JOIN_S = 5.0
 
 
-def log_info(msg: str) -> None:
-    console.print(f"[INFO] {msg}")
-
-
-def log_warn(msg: str) -> None:
-    console.print(f"[yellow][WARN][/yellow] {msg}")
-
-
-def log_err(msg: str) -> None:
-    console.print(f"[red][ERROR][/red] {msg}")
-
-
-def log_debug(msg: str, *, verbose: bool) -> None:
-    if verbose:
-        console.print(f"[dim][DEBUG] {msg}[/dim]")
-
-
 class CommandNotFoundError(Exception):
     """A required external command is not on PATH (fail loud, Working Rule 8)."""
 
 
 class CommandFailedError(Exception):
     """An advised command was executed under --apply and exited non-zero."""
+
+
+class SandboxSecurityError(Exception):
+    """A sandbox isolation invariant would be violated (fail loud, FATAL).
+
+    danno's PURPOSE is isolating the AI from the host/LAN, so weakening egress or
+    isolation is a BLOCKING defect, never a deferred hardening — the command MUST
+    abort. Raised, e.g., when an egress allow-list would be empty or a wildcard
+    (`"**"`/`"*"`), which would open the sandbox to the whole internet. See the
+    `sandbox-security-contract-fail-loud` invariant.
+    """
 
 
 @dataclass
@@ -235,7 +247,7 @@ class Runner:
         traceback.
         """
         log_info(why)
-        console.print(f"  $ {shlex.join(cmd)}")
+        err_console.print(f"  $ {shlex.join(cmd)}")
         if self.apply:
             self._exec(cmd, cwd=cwd, env=env)
         return cmd
@@ -263,7 +275,7 @@ class Runner:
         not escalated to an error (it is logged at debug under --verbose).
         """
         log_info(why)
-        console.print(f"  $ {shlex.join(cmd)}")
+        err_console.print(f"  $ {shlex.join(cmd)}")
         self._exec(cmd, cwd=cwd, env=env, check=check)
         return cmd
 

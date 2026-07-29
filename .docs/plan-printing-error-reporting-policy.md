@@ -398,20 +398,35 @@ already correct (reference).
 
 ## 6. Rollout sequencing
 
-1. **Policy (this commit):** the part + the Constitution pointer + this DoR.
-   Docs-only; no behavior change.
-2. **Logger facade + channels:** at the `exec.py:33` chokepoint add a
-   `Console(stderr=True)` and a file sink behind `log_*`; add `log_fatal`;
-   introduce the `TRANSIENT` level (35). Route `log_warn`/`log_err`/advise echoes
-   to stderr; leave data-channel prints on stdout. Move the ~13 ConsoleReporter
-   progress lines to the log channel. **Then** convert `telemetry/report.py:635`.
-3. **Verbosity:** add `-q/--quiet`; make the console threshold follow it; the file
-   log always captures DEBUG-and-up.
+**As-built status (2026-07-29):** step 1 shipped as docs (commit `8c09068`).
+Steps 2–3 shipped as the **keystone** (new `core/log.py` on stdlib `logging` +
+`RichHandler`; `log_fatal`/`log_transient`; `TRANSIENT`=35; `--verbose`/`--quiet`/
+`--log-file` wired; the FATAL egress guard at `policy_allow_argv`; and the
+`core/exec.py` `log_warn`/`log_err`/advise-echo reroute to stderr) **minus** the
+validator ConsoleReporter split (step 2's "~13 progress lines" — DoR §4D) and the
+bare-print cleanup + `T20` (§4E / step 6), which land as **two follow-on PRs**
+stacked on the keystone (splitting keeps each diff reviewable). Steps 4 (auto
+run-log wiring), 5 (handler-error capture), and 7 (the §5 sweep) remain.
+
+1. ✅ **Policy:** the part + the Constitution pointer + this DoR. Docs-only.
+2. ✅ **Logger facade + channels (keystone):** at the `exec.py` chokepoint the
+   `log_*` helpers now delegate to `core/log.py` — a `Console(stderr=True)`
+   RichHandler + an optional file sink; `log_fatal` added; the `TRANSIENT` level
+   (35) introduced. `log_warn`/`log_err`/advise echoes route to stderr; data-channel
+   prints stay on stdout. **Follow-on PR (§4D):** move the ~13 ConsoleReporter
+   progress lines to the log channel. **Then** convert `telemetry/report.py:635`
+   (in the §4E follow-on PR).
+3. ✅ **Verbosity (keystone):** `-q/--quiet` + `-v/--verbose` gate the console
+   threshold via `configure_logging`; the file log always captures DEBUG-and-up.
 4. **File sink for long-running contexts:** `captures/<run>/danno.log` for bench /
-   proxy / stub; `--log-file` for interactive commands.
+   proxy / stub (the keystone lands the `--log-file` capability; auto-opening the
+   run log inside those homes is this step).
 5. **Handler-error capture:** `handle_error` overrides on `capture/proxy.py` and
    `stubai/server.py` → recorded + counted, never bare stderr.
-6. **Enforcement:** enable ruff `T20`; annotate the two legitimate bare prints.
+6. **Enforcement (§4E follow-on PR):** enable ruff `T20`; annotate the legitimate
+   bare prints (`report.py:632`, `level2.py:123,125`) + convert `report.py:635`.
+   Deferred out of the keystone because turning `T20` on before those `# noqa`s
+   exist would break the gate.
 7. **Remediate §5** call sites against the taxonomy, most-severe first (FATAL
    security-invariant checks → ERROR durable-record gaps → TRANSIENT retry
    budgets → WARNING anomalies).

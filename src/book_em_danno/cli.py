@@ -24,8 +24,12 @@ from .core.exec import (
     CommandFailedError,
     CommandNotFoundError,
     Runner,
+    SandboxSecurityError,
+    Verbosity,
+    configure_logging,
     console,
     log_err,
+    log_fatal,
     log_warn,
 )
 
@@ -64,8 +68,29 @@ def main(
         callback=_version_callback,
         is_eager=True,
     ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Show DEBUG-level log output on stderr."
+    ),
+    quiet: bool = typer.Option(
+        False, "--quiet", "-q", help="Suppress INFO log output; show WARNING and up only."
+    ),
+    log_file: Path = typer.Option(
+        None,
+        "--log-file",
+        help="Also mirror the full log (DEBUG and up) to this file.",
+    ),
 ) -> None:
-    pass
+    """Configure the log channel from the global verbosity/`--log-file` options.
+
+    stdout stays the data channel; the leveled log goes to stderr (and the file
+    when `--log-file` is set). `-v`/`-q` gate the console threshold only — the file
+    always captures DEBUG and up.
+    """
+    if verbose and quiet:
+        log_err("--verbose and --quiet are mutually exclusive.")
+        raise typer.Exit(code=2)
+    verbosity = Verbosity.VERBOSE if verbose else Verbosity.QUIET if quiet else Verbosity.DEFAULT
+    configure_logging(verbosity=verbosity, log_file=log_file)
 
 
 def _load(config_path: Path) -> DannoConfig:
@@ -78,9 +103,12 @@ def _load(config_path: Path) -> DannoConfig:
 
 def _guard(action: Callable[[], object]) -> None:
     """Run a Tier-2 action, turning a failed/missing external command into a clean
-    exit 4 instead of a traceback."""
+    exit 4 instead of a traceback. A sandbox-isolation breach is FATAL (exit 5)."""
     try:
         action()
+    except SandboxSecurityError as exc:
+        log_fatal(str(exc))
+        raise typer.Exit(code=5) from exc
     except (CommandFailedError, CommandNotFoundError) as exc:
         log_err(str(exc))
         raise typer.Exit(code=4) from exc
@@ -105,6 +133,9 @@ def install(
     runner = Runner(apply=apply, verbose=verbose)
     try:
         install_cmd.run_install(cfg, target, runner, ados_repo=ados_repo)
+    except SandboxSecurityError as exc:
+        log_fatal(str(exc))
+        raise typer.Exit(code=5) from exc
     except (install_cmd.InstallError, NotImplementedError, ValueError) as exc:
         log_err(str(exc))
         raise typer.Exit(code=3) from exc
