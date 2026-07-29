@@ -347,8 +347,12 @@ def test_watchdog_on_kill_not_called_without_a_breach() -> None:
     assert called == []
 
 
-def test_watchdog_on_kill_failure_is_suppressed() -> None:
-    # A reaper that raises must not mask the breach (best-effort cleanup).
+def test_watchdog_on_kill_failure_warns_but_keeps_breach(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A reaper that raises must not mask the breach — but "best-effort" is not "silent": a failed
+    # reap can leave the harness burning VM CPU, so it WARNs (greppable) rather than swallowing,
+    # then still surfaces the breach (policy §5, WARNING).
     def boom() -> None:
         raise RuntimeError("reap failed")
 
@@ -356,6 +360,8 @@ def test_watchdog_on_kill_failure_is_suppressed() -> None:
     with runner.watching(timeout_s=0.4, on_kill=boom) as watch:
         runner.capture(_SLEEP)
     assert watch.breach is not None  # breach still recorded despite the reaper error
+    err = " ".join(capsys.readouterr().err.split())
+    assert "[WARNING]" in err and "post-kill reaper failed" in err
 
 
 def test_watching_context_restores_normal_capture(monkeypatch: pytest.MonkeyPatch) -> None:

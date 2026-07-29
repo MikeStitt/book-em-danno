@@ -143,10 +143,17 @@ def install_generic_git(runner: Runner, tool: Tool, target_abs: Path) -> None:
         ["git", "clone", tool.source, str(dest)],
         why=f"clone tool '{tool.name}' from {tool.source} into a temp dir",
     )
-    log_info(
+    hint = (
         f"after clone, run {tool.name}'s installer per its README; for install_to="
         f"'{tool.install_to}' it lands in the {tool.install_to}."
     )
+    if runner.apply:
+        # Under --apply the caller expects the tool INSTALLED, but this fallback only clones and
+        # leaves the installer to a manual step — so a clean provision would overstate "ready".
+        # WARN the gap (policy §5) so it isn't read as a completed install; advise mode is info.
+        log_warn(f"tool '{tool.name}' was only cloned, not installed — {hint}")
+    else:
+        log_info(hint)
 
 
 def _is_git_source(source: str) -> bool:

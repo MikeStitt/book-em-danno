@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -785,6 +786,37 @@ def test_seed_onboarding_does_not_clobber(tmp_path: Path) -> None:
     proj = data["projects"]["/work/proj"]
     assert proj["hasTrustDialogAccepted"] is False  # existing trust value not clobbered
     assert proj["keep"] == 1  # unrelated per-project key preserved
+
+
+def test_seed_onboarding_corrupt_file_warns_and_overwrites(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A present-but-corrupt .claude.json is about to be OVERWRITTEN with our seed — that silently
+    # discards whatever it held, so the clobber must WARN (greppable), unlike a legitimately
+    # absent file (test_seed_onboarding_creates_and_merges, which is silent) — policy §5.
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".claude.json").write_text("{corrupt json,,,")
+    sandbox.seed_onboarding(home, Path("/work/proj"))
+    data = json.loads((home / ".claude.json").read_text())  # rewritten with a clean seed
+    assert data["hasCompletedOnboarding"] is True
+    err = " ".join(capsys.readouterr().err.split())
+    assert "[WARNING]" in err and "unreadable and will be overwritten" in err
+
+
+def test_live_sandbox_names_nonzero_returncode_warns(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A non-zero `ls` means the name set is UNRELIABLE, not empty — callers use it as the
+    # name-collision guard, so silently returning an incomplete set could let a create clobber
+    # an existing sandbox. WARN the anomaly (policy §5, WARNING).
+    def failed_run(*a: object, **k: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="boom")
+
+    monkeypatch.setattr(sandbox.subprocess, "run", failed_run)
+    assert sandbox.live_sandbox_names() == set()
+    err = " ".join(capsys.readouterr().err.split())
+    assert "[WARNING]" in err and "may be incomplete" in err
 
 
 # --- agent-home: ls -------------------------------------------------------------

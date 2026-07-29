@@ -25,6 +25,30 @@ def test_generic_git_clones_into_temp_dir(tmp_path: Path) -> None:
     assert not dest.is_relative_to(tmp_path)  # nor the target
 
 
+def test_generic_git_under_apply_warns_only_cloned(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Under --apply the caller expects the tool INSTALLED, but this fallback only clones and
+    # leaves the installer to a manual step — a clean provision would overstate "ready", so it
+    # must WARN the gap, not narrate it as INFO (policy §5, WARNING).
+    r = RecordingRunner()
+    r.apply = True  # exercise the --apply branch without executing (advise is recorded, not run)
+    tool = Tool(name="some-tool", source="https://github.com/x/some-tool", install_to="sandbox")
+    tools.install_generic_git(r, tool, tmp_path)
+    err = " ".join(capsys.readouterr().err.split())
+    assert "[WARNING]" in err and "only cloned, not installed" in err
+
+
+def test_generic_git_advise_mode_is_info_not_warn(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # In advise mode nothing was promised to be installed, so the follow-up is INFO, not WARN.
+    r = RecordingRunner()  # apply=False
+    tool = Tool(name="some-tool", source="https://github.com/x/some-tool", install_to="sandbox")
+    tools.install_generic_git(r, tool, tmp_path)
+    assert "[WARNING]" not in capsys.readouterr().err
+
+
 def test_install_ados_advises_with_cwd_and_env(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     # The ADOS --local step must carry cwd=target and ADOS_SOURCE_DIR so it runs
     # in the right place under --apply (the why= string promises this).

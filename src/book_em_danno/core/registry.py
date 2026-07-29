@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .exec import log_warn
+
 
 class RegistryError(Exception):
     """The sandbox registry could not be persisted (fail loud, Working Rule 8)."""
@@ -24,14 +26,21 @@ def default_path() -> Path:
 
 
 def load(path: Path) -> dict[str, dict[str, str]]:
-    """Read the registry; an absent or unreadable file is an empty registry."""
+    """Read the registry. An *absent* file is legitimately an empty registry (silent). A
+    *present* file that won't read or parse — or whose top level isn't an object — is an
+    anomaly, not an empty registry: treating it as empty silently defeats the name-collision
+    guard, so WARN (greppable) before falling back to empty (policy §5, WARNING)."""
     if not path.is_file():
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as exc:
+        log_warn(f"sandbox registry {path} is unreadable, treating as empty ({exc})")
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        log_warn(f"sandbox registry {path} is not a JSON object, treating as empty")
+        return {}
+    return data
 
 
 def lookup(path: Path, name: str) -> dict[str, str] | None:

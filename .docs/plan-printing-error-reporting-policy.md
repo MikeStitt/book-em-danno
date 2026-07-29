@@ -301,8 +301,9 @@ already correct (reference).
 
 ### capture/usage.py
 
-- ⚠ `_sse_chunk_usage` / `_ndjson_line_usage` `JSONDecodeError→None` (129–143):
-  absent == unparseable; distinguish + count the unparseable — **WARNING**.
+- ✓ (DONE step 7) `_sse_chunk_usage` / `_ndjson_line_usage` `JSONDecodeError→None`: an
+  unparseable chunk now WARNs (greppable) before being ignored, so a corrupt stream is no
+  longer indistinguishable from a well-formed usage-less chunk (which stays silent) — **WARNING**.
 
 ### capture/egress.py — biggest silent-failure cluster
 
@@ -327,14 +328,17 @@ already correct (reference).
 - ✓ (DONE step 7) `capture()` `subprocess.run` & `_capture_watched` `Popen`: a missing
   binary (`FileNotFoundError`) now translates to `CommandNotFoundError` on BOTH paths
   (parity), not a raw `OSError` the caller can't tell from a non-zero exit — **ERROR**.
-- ⚠ win32 `taskkill check=False` (148), `killpg` suppress (158), `on_kill` reaper
-  `suppress(Exception)` (400), reader re-raise only if `breach is None` (416):
-  post-kill degradations go silent — **WARNING**.
+- ✓ (DONE step 7) post-kill degradations no longer go silent: the `on_kill` reaper failure
+  and a reader crash *during a gated kill* (previously dropped because `breach is not None`)
+  now WARN (breach still surfaces); win32 `taskkill /T` non-zero and `killpg` `PermissionError`
+  (group-kill downgraded to child-only) WARN too — **WARNING**. (The reaper + reader paths are
+  unit-tested; the win32/`PermissionError` paths are platform/permission-gated, logged not tested.)
 
 ### core/registry.py
 
-- ⚠ `load()` `except (JSONDecodeError, OSError): return {}` (26–30): corrupt
-  registry == empty, defeats the name-collision guard — **WARNING**.
+- ✓ (DONE step 7) `load()` now distinguishes an ABSENT file (silently empty) from a present
+  file that won't read/parse or isn't a JSON object (WARN, then empty) — a corrupt registry no
+  longer silently defeats the name-collision guard — **WARNING**.
 - ✓ (DONE step 7) `record()` `mkdir`+`write_text`: a failed durable write now raises a
   typed `RegistryError` with the path/cause (the name-collision guard going blind is
   definitive), not a raw traceback — **ERROR**. (Concurrent-clobber locking still deferred.)
@@ -350,13 +354,15 @@ already correct (reference).
 - ✓ (DONE step 7) `_build_env_file`/`_provided_env` `Path(f).read_text()`: a missing/unreadable
   `--env-file` now raises `CommandFailedError` naming the file, not a raw `FileNotFoundError` —
   **ERROR**.
-- ⚠ `live_sandbox_names` (141) & `_sbx_policy_initialized` (158) ignore
-  returncode → tool error masquerades as empty/uninitialized — **WARNING**.
-- ⚠ `seed_onboarding` corrupt `.claude.json`→`{}` then overwrite (331): silent
-  clobber — **WARNING**; provision missing-`opencode.jsonc` warns via `log_info`
-  w/ hand-rolled `[yellow]WARN[/yellow]` (486): mis-leveled — **WARNING**.
+- ✓ (DONE step 7) `live_sandbox_names` now WARNs a non-zero `ls` (the name-collision guard's
+  input is unreliable, not empty). `_sbx_policy_initialized` logs its stderr at DEBUG, NOT WARN:
+  a non-zero exit there is the *designed* "not initialized" signal that fires on every fresh
+  host, so a WARN would false-fire — **WARNING** (policy: don't manufacture a false alarm).
+- ✓ (DONE step 7) `seed_onboarding` corrupt-`.claude.json` clobber now WARNs the data loss (vs
+  the silent absent-file path); provision missing-`opencode.jsonc` is now a real `log_warn`, not
+  `log_info` with a hand-rolled `[yellow]WARN[/yellow]` — **WARNING**.
 - ⚠ `record_egress` unguarded in `finally` (1246–1260): its raise masks the real
-  exception — **WARNING**.
+  exception — **WARNING**. **Deferred to when #101 merges** (record_egress is #101, not in tree).
 
 ### commands/ollama.py — probes conflate transient with definitive
 
@@ -372,8 +378,11 @@ final failure to ERROR before re-raising (a TRANSIENT with no bound is a swallow
 - ✓ (DONE step 7) `ensure_model` pull: a failed `ollama pull` is retried (TRANSIENT) under
   `--apply` and escalates to ERROR + raises on persistent failure; an advise-only run returns
   on the first call (no execution to retry) — **TRANSIENT→ERROR**.
-- ⚠ `installed_tags` swallows `JSONDecodeError`→`set()` (50): malformed == no
-  models — **WARNING**.
+- ✓ (DONE step 7) `installed_tags` now splits the except: an unreachable Ollama (URLError/OSError)
+  stays a silent empty set (the caller advises the pull), but a `JSONDecodeError` — Ollama
+  answered with a non-JSON body — WARNs, so "malformed" no longer masquerades as "no models" —
+  **WARNING**. (`announce_lan_exposure` also re-leveled from `log_info`+`[yellow]WARN[/yellow]`
+  to a real `log_warn`.)
 - ✓ `warm_model` URLError→`log_warn` "non-fatal" (195): the fail-soft-with-log
   model to copy.
 
@@ -381,13 +390,17 @@ final failure to ERROR before re-raising (a TRANSIENT with no bound is a swallow
 
 - ✓ (DONE step 7) install `ensure_model` loop: the retry now lives in `ensure_model`
   itself (via `retry_transient`), so the loop no longer aborts the whole provision on a
-  transient first-pull blip — **TRANSIENT→ERROR**. (`present = installed_tags()` blind if
-  Ollama unreachable (101), unlogged — **WARNING**, still open.)
+  transient first-pull blip — **TRANSIENT→ERROR**.
+- ✓ (DONE step 7) `present = installed_tags()` blind if Ollama unreachable (101): install now
+  WARNs when there ARE models to pull but `present` is empty AND Ollama is unreachable — the
+  skip-if-present optimization silently degrading to "advise every pull" no longer looks
+  deliberate — **WARNING**.
 - ✓ (DONE step 7) tools `filecmp.cmp`/`shutil.copy2` & provenance `write_text`: an `OSError`
   now raises `ToolInstallError` (which install.py's except set catches → the tool is reported
   failed), not a raw traceback that escapes it — **ERROR**.
-- ⚠ `install_generic_git` clones but never runs installer under `--apply` (122):
-  reports no failure → "ready" overstated — **WARNING**.
+- ✓ (DONE step 7) `install_generic_git` clones but never runs the installer: under `--apply`
+  the caller expects the tool INSTALLED, so a clone-only fallback now WARNs (a clean provision
+  no longer overstates "ready"); advise mode stays INFO (nothing was promised) — **WARNING**.
 
 ### config/loader.py · schema.py · generate.py
 
@@ -399,15 +412,18 @@ final failure to ERROR before re-raising (a TRANSIENT with no bound is a swallow
   discarding it — **WARNING**/data-loss.
 - ✓ (DONE step 7) `generate.py` `scan_agent_frontmatter` agent `.md` `read_text` now
   `log_warn`s an unreadable def and records it present-but-keyless — **WARNING**.
-- ⚠ `schema.py` `default_agent` (default `"pm"`) never validated to exist —
-  **WARNING**.
+- ✓ (DONE step 7) `schema.py` `default_agent`: an EXPLICITLY-set default that names none of the
+  agents this config defines now WARNs (likely a typo) — soft, not a hard error, since a built-in
+  or markdown-defined agent may supply it; the implicit `"pm"` built-in stays silent — **WARNING**.
 
 ### commands/doctor.py
 
-- ⚠ `_safe` `except Exception → False` (155): swallows the cause even under `-v` —
-  **WARNING** (`log_debug` the exception).
-- ✗ no danno.toml load/validate preflight check: malformed config passes doctor
-  clean, explodes later — **WARNING**.
+- ✓ (DONE step 7) `_safe` `except Exception → False`: the cause is now `log_debug`'d so it's
+  diagnosable under `-v` instead of vanishing; DEBUG not WARN because the check's own row already
+  shows FAIL/WARN — **WARNING** (resolved at DEBUG).
+- ⚠ no danno.toml load/validate preflight check: malformed config passes doctor
+  clean, explodes later — **WARNING**. **Deferred**: this is an *additive* check (needs a target
+  path threaded into `run_doctor`), not a silent-swallow remediation — tracked as follow-on.
 
 ### stubai/server.py · script.py (test harness — same shape as the proxy)
 
@@ -479,7 +495,25 @@ run-log wiring), 5 (handler-error capture), and 7 (the §5 sweep) remain.
      with its first real call sites (no speculative abstraction): `commands/ollama.py`
      `verify_responds`/`tool_call_probe` retry-then-escalate; `ensure_model` retries a failed
      pull. (`capture/egress.py` TRANSIENT probe deferred to #101.)
-   - WARNING tier follows.
+   - **WARNING tier landed** — the "distinguish absent from failed, then count/greppably
+     log" pass: `capture/usage.py` unparseable SSE/NDJSON usage chunk → WARN (vs a silent
+     usage-less chunk); `core/registry.py` `load()` corrupt/non-object file → WARN (vs a
+     silent absent file); `core/exec.py` post-kill degradations — reaper failure + reader
+     crash-during-a-gated-kill → WARN, and `taskkill /T` non-zero / `killpg` `PermissionError`
+     downgrade → WARN (the last two are win32/permission-gated, so logged but not unit-tested);
+     `commands/sandbox.py` `live_sandbox_names` non-zero `ls` → WARN, `_sbx_policy_initialized`
+     stderr → DEBUG (a non-zero exit there is the *designed* "uninitialized" signal, so a WARN
+     would false-fire on every fresh host), `seed_onboarding` corrupt `.claude.json`-clobber →
+     WARN, provision missing-`opencode.jsonc` re-leveled `log_info`+`[yellow]WARN[/yellow]` →
+     real `log_warn`; `commands/ollama.py` `installed_tags` unparseable body → WARN (vs a
+     silent unreachable), `announce_lan_exposure` re-leveled to a real `log_warn`;
+     `commands/install.py` unreachable-Ollama-hides-presence → WARN; `commands/tools.py`
+     `install_generic_git` cloned-not-installed-under-`--apply` → WARN; `config/schema.py`
+     explicitly-set `default_agent` not in `[agents]` → WARN; `commands/doctor.py` `_safe`
+     swallowed cause → DEBUG (the row already shows FAIL/WARN). Deferred: `commands/doctor.py`
+     danno.toml load/validate **preflight check** — that's an additive check needing a target
+     path threaded into `run_doctor`, not a swallow remediation; and every `capture/egress.py`
+     WARNING site + `commands/sandbox.py` `record_egress` → to when #101 merges (not in tree).
 
 ## Related
 

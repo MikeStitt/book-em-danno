@@ -116,3 +116,43 @@ def test_ensure_model_advise_only_does_not_retry() -> None:
     r = RecordingRunner()
     assert ollama.ensure_model(r, "qwen") == ["ollama", "pull", "qwen"]
     assert r.commands == [["ollama", "pull", "qwen"]]  # recorded exactly once
+
+
+def test_installed_tags_unparseable_body_warns_and_is_empty(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Ollama answered but with non-JSON — that is malformed upstream, NOT "no models pulled".
+    # It must WARN (greppable) before falling back to empty, else a redundant pull is advised
+    # as if deliberate (policy §5, WARNING).
+    monkeypatch.setattr(
+        ollama.urllib.request, "urlopen", lambda *a, **k: io.BytesIO(b"<html>not json</html>")
+    )
+    assert ollama.installed_tags() == set()
+    err = " ".join(capsys.readouterr().err.split())
+    assert "[WARNING]" in err and "unparseable JSON" in err
+
+
+def test_installed_tags_unreachable_is_silent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # An unreachable Ollama is a legitimately-absent tag list (caller advises the pull) — the
+    # empty set is expected, NOT an anomaly, so it stays silent (distinct from the corrupt case).
+    def dead_urlopen(*a: object, **k: object) -> io.BytesIO:
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(ollama.urllib.request, "urlopen", dead_urlopen)
+    assert ollama.installed_tags() == set()
+    assert capsys.readouterr().err == ""
+
+
+def test_announce_lan_exposure_is_a_real_warning(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A public-interface Ollama bind is a real security anomaly, so it emits a genuine WARNING —
+    # not INFO carrying a hand-rolled `[yellow]WARN[/yellow]` tag the formatter would double-tag
+    # and `-q` could not suppress independently (policy §5).
+    monkeypatch.setattr(ollama, "lan_exposure_warning", lambda **k: "Host Ollama is public")
+    ollama.announce_lan_exposure()
+    err = " ".join(capsys.readouterr().err.split())
+    assert "[WARNING]" in err and "Host Ollama is public" in err
+    assert "[yellow]WARN[/yellow]" not in err  # no hand-rolled tag leaks through

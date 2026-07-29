@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..core.exec import log_warn
+
 # Request-path suffixes that mark an agent-loop inference round (as opposed to discovery /
 # health traffic). The round-count sensor (Gate 1) keys on THIS, not on whether the
 # response carried a `usage` block, so claurst-local Ollama-native traffic — which reports
@@ -127,9 +129,14 @@ def extract_usage(body: Any) -> dict[str, int | None] | None:
 
 
 def _sse_chunk_usage(data: str) -> dict[str, int | None] | None:
+    # An unparseable chunk is NOT the same fact as a well-formed chunk that carries no usage
+    # (which legitimately returns None). A malformed streaming payload is a genuine anomaly
+    # the operator should see, so WARN it (greppable) before treating it as usage-less —
+    # otherwise a corrupt stream silently reports zero tokens (policy §5).
     try:
         chunk = json.loads(data)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        log_warn(f"capture: unparseable SSE usage chunk ignored ({exc}): {data[:120]!r}")
         return None
     usage = chunk_usage(chunk) if isinstance(chunk, dict) else None
     return normalize_usage(usage) if usage is not None else None
@@ -138,7 +145,8 @@ def _sse_chunk_usage(data: str) -> dict[str, int | None] | None:
 def _ndjson_line_usage(line: str) -> dict[str, int | None] | None:
     try:
         obj = json.loads(line)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        log_warn(f"capture: unparseable NDJSON usage line ignored ({exc}): {line[:120]!r}")
         return None
     return ollama_usage(obj) if isinstance(obj, dict) else None
 

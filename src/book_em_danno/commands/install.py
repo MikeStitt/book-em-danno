@@ -98,8 +98,17 @@ def run_install(
     _emit_config(cfg, target_abs, runner)
 
     log_info("step 2/5 — Ollama models")
+    wanted = _ollama_tags(cfg)
     present = ollama.installed_tags()
-    for tag in _ollama_tags(cfg):
+    if wanted and not present and not ollama.reachable():
+        # An empty `present` from an unreachable Ollama is NOT "nothing is pulled" — we simply
+        # can't tell, so the skip-if-present optimization silently degrades to advising a pull
+        # for every model. Surface why (policy §5, WARNING) rather than let it look deliberate.
+        log_warn(
+            "Ollama is unreachable — cannot check which models are already pulled; "
+            "every model below will be (advised for) pull"
+        )
+    for tag in wanted:
         # Ollama stores a bare tag as `<tag>:latest`; normalize before comparing.
         canonical = tag if ":" in tag else f"{tag}:latest"
         if canonical in present:

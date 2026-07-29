@@ -194,7 +194,7 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
     to stop). Fall back to killing just the child if taskkill is unavailable or the tree is gone."""
     if sys.platform == "win32":
         try:
-            subprocess.run(  # noqa: S603, S607 - fixed argv, pid is our own child
+            done = subprocess.run(  # noqa: S603, S607 - fixed argv, pid is our own child
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -203,10 +203,26 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
         except OSError:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
+        else:
+            # returncode 128 == "process not found" (already gone: a no-op, not a failure).
+            # Any other non-zero means the tree kill did NOT take, so a runaway grandchild may
+            # still be burning CPU — the gate's whole purpose — WARN it (policy §5), don't drop.
+            if done.returncode not in (0, 128):
+                log_warn(f"watchdog: taskkill /T on pid {proc.pid} exited {done.returncode}")
         return
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()  # group already gone; reap just the child if it lingers
+    except PermissionError:
+        # We couldn't signal the whole group — fall back to the child alone, but that leaves
+        # any grandchildren in the group alive. That's a real degradation of the reaper, so
+        # WARN it (policy §5) instead of pretending the kill fully took.
+        log_warn(
+            f"watchdog: could not SIGKILL process group for pid {proc.pid} (permission); "
+            f"killed the child only — grandchildren may survive"
+        )
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
 
@@ -437,10 +453,17 @@ class Runner:
                     _kill_process_group(proc)
                     proc.wait()
                     if watch.on_kill is not None:
-                        # Reap the in-VM harness (the host kill doesn't propagate). Never let
-                        # a reaper failure mask the breach — this is best-effort cleanup.
-                        with contextlib.suppress(Exception):
+                        # Reap the in-VM harness (the host kill doesn't propagate). Never let a
+                        # reaper failure mask the breach — but "best-effort" is not "silent": a
+                        # failed reap can leave the harness burning VM CPU, so WARN it (policy §5)
+                        # instead of swallowing, then carry on surfacing the breach.
+                        try:
                             watch.on_kill()
+                        except Exception as exc:  # noqa: BLE001 - cleanup must not mask the breach
+                            log_warn(
+                                f"watchdog: post-kill reaper failed ({exc}); the in-VM harness "
+                                f"may still be running after: {shlex.join(cmd)}"
+                            )
                     break
         for reader in readers:
             reader.join(timeout=_READER_JOIN_S)
@@ -454,6 +477,14 @@ class Runner:
             )
         if reader_errors and watch.breach is None:
             raise reader_errors[0]  # surface an unexpected reader crash like the unwatched path
+        if reader_errors and watch.breach is not None:
+            # A gate kill is the dominant outcome (we return `watch.breach`), so a reader crash
+            # can't be raised without masking it — but it's still a real anomaly that shortened
+            # the transcript, so WARN rather than drop it silently (policy §5).
+            log_warn(
+                f"watchdog: output reader crashed during a gated kill ({reader_errors[0]}); "
+                f"transcript may be truncated for: {shlex.join(cmd)}"
+            )
         result = CaptureResult(cmd, proc.returncode, out[0] if out else "", err[0] if err else "")
         # A gate kill is an expected outcome (the caller reads `watch.breach`), never a
         # CommandFailedError; only a genuine non-gate non-zero exit escalates under `check`.

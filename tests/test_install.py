@@ -40,6 +40,8 @@ def test_install_orchestration_order(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(ollama, "lan_exposure_warning", lambda **k: None)
     # Deterministic: pretend no models are present so every tag is pulled.
     monkeypatch.setattr(ollama, "installed_tags", lambda **k: set())
+    # Reachable-but-empty (not unreachable), so the presence check is trusted, not warned.
+    monkeypatch.setattr(ollama, "reachable", lambda **k: True)
     # Keep agent-home + registry off real host state (tmp_path has no danno.toml,
     # so the default per-project home is mounted — same as `sandbox start`).
     home_root = tmp_path / "agent-home"
@@ -105,6 +107,7 @@ def test_install_fails_loud_when_a_tool_fails(
     # the sandbox is provisioned.
     monkeypatch.setattr(ollama, "lan_exposure_warning", lambda **k: None)
     monkeypatch.setattr(ollama, "installed_tags", lambda **k: set())
+    monkeypatch.setattr(ollama, "reachable", lambda **k: True)
 
     def _boom(*a: object, **k: object) -> None:
         raise tools.ToolInstallError("kaboom")
@@ -116,6 +119,22 @@ def test_install_fails_loud_when_a_tool_fails(
     with pytest.raises(install.InstallError, match="ados"):
         install.run_install(cfg, tmp_path, r)
     assert not any("docker sandbox create" in c for c in r.joined())  # aborted pre-sandbox
+
+
+def test_install_warns_when_ollama_unreachable_hides_presence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # An empty `present` from an UNREACHABLE Ollama is not "nothing is pulled" — we can't tell,
+    # so the skip-if-present optimization silently degrades to advising every pull. Surface why
+    # (policy §5, WARNING) rather than let it look deliberate.
+    monkeypatch.setattr(ollama, "lan_exposure_warning", lambda **k: None)
+    monkeypatch.setattr(ollama, "installed_tags", lambda **k: set())
+    monkeypatch.setattr(ollama, "reachable", lambda **k: False)
+    monkeypatch.setattr(sandbox, "_agent_home_root", lambda: tmp_path / "agent-home")
+    monkeypatch.setattr(registry, "default_path", lambda: tmp_path / "sandboxes.json")
+    install.run_install(_config(), tmp_path, RecordingRunner())
+    err = " ".join(capsys.readouterr().err.split())
+    assert "[WARNING]" in err and "Ollama is unreachable" in err
 
 
 def test_install_missing_target_fails_loud() -> None:

@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Mapping
 
-from ..core.exec import CommandFailedError, Runner, log_info, log_warn, retry_transient
+from ..core.exec import CommandFailedError, Runner, log_warn, retry_transient
 
 # Transient network failures worth a retry before we trust a probe's negative verdict: a
 # connection blip / timeout, not a parsed-but-negative body (that's a real answer, not a blip).
@@ -56,8 +56,16 @@ def installed_tags(host_url: str = DEFAULT_HOST_URL, *, timeout: float = 2.0) ->
     unreachable — best-effort, so the caller falls back to advising the pull."""
     try:
         with urllib.request.urlopen(f"{host_url}/api/tags", timeout=timeout) as resp:
-            body = json.loads(resp.read())
-    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+            raw = resp.read()
+    except (urllib.error.URLError, OSError):
+        return set()  # Ollama unreachable: a legitimately-absent tag list, caller advises pull
+    try:
+        body = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        # Ollama answered but the body isn't JSON — that's malformed upstream, NOT "no models
+        # installed". Reading it as an empty set would silently advise a redundant pull, so WARN
+        # the anomaly (policy §5) before falling back.
+        log_warn(f"ollama /api/tags returned unparseable JSON, treating as no tags ({exc})")
         return set()
     return {m["name"] for m in body.get("models", []) if "name" in m}
 
@@ -363,4 +371,7 @@ def announce_lan_exposure(*, port: int = 11434) -> None:
     """Print the LAN-exposure warning if one applies (shared by sandbox + doctor)."""
     msg = lan_exposure_warning(port=port)
     if msg:
-        log_info(f"[yellow]WARN[/yellow] {msg}")
+        # A public-interface Ollama bind is a genuine security anomaly the operator should see,
+        # so it is a real WARNING — not INFO wearing a hand-rolled `[yellow]WARN[/yellow]` tag
+        # that the formatter would double-tag and `-q` could not suppress independently (§5).
+        log_warn(msg)

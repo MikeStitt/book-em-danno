@@ -14,7 +14,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ..core.exec import console
+from ..core.exec import console, log_debug
 from . import ollama, sandbox_cli
 
 MIN_PYTHON = (3, 13)
@@ -153,7 +153,11 @@ def _ollama_has_model() -> bool:
 
 
 def _safe(pred: Callable[[], bool]) -> bool:
+    # A check that raises is reported as a (non-crashing) FAIL/WARN row, but the CAUSE must not
+    # vanish — keep it diagnosable under `-v` instead of swallowing it whole (policy §5). DEBUG,
+    # not WARN: the row itself already tells the operator the check didn't pass.
     try:
         return pred()
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - doctor must survive any one check's failure
+        log_debug(f"doctor check raised, treating as not-ok ({exc!r})")
         return False
