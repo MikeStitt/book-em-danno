@@ -43,14 +43,15 @@ def _invoke(project: Path, *args: str) -> object:
 def test_dry_run_prints_plan_and_exits_zero(project: Path) -> None:
     result = _invoke(project, "--dry-run")
     assert result.exit_code == 0
-    assert "danno validate — plan" in result.stdout
-    assert "gptoss" in result.stdout and "gemma" in result.stdout
+    # The plan preamble is progress narration → stderr (channel split §4D).
+    assert "danno validate — plan" in result.stderr
+    assert "gptoss" in result.stderr and "gemma" in result.stderr
 
 
 def test_dry_run_only_subset_shown(project: Path) -> None:
     result = _invoke(project, "--dry-run", "--only", "gptoss")
     assert result.exit_code == 0
-    assert "sweeping" in result.stdout
+    assert "sweeping" in result.stderr  # plan preamble → stderr
 
 
 def test_unknown_only_fails_loud(project: Path) -> None:
