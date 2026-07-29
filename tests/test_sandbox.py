@@ -218,6 +218,46 @@ def test_provision_opencode_does_not_install_claurst(
     assert not any("claurst" in c for c in r.joined())
 
 
+# --- harness-arg validation at the provision/create boundary (issue #109) ---
+
+
+@pytest.mark.parametrize(
+    ("harness", "image"),
+    [("opencode", "opencode"), ("claude", "claude"), ("claurst", "shell"), ("codex", "shell")],
+)
+def test_docker_image_resolves_harness_name_to_its_image(harness: str, image: str) -> None:
+    # Name==image for the prebuilt harnesses; the binary-installed ones (claurst/codex) ride the
+    # `shell` image. Locked so a name≠image harness can't silently regress its image mapping.
+    assert sandbox._docker_image(harness) == image
+
+
+def test_docker_image_rejects_non_harness_arg_naming_the_set() -> None:
+    # Passing a resolved IMAGE string (e.g. "shell") where a harness NAME is expected must fail
+    # loud with the registered-name set, not a cryptic KeyError deep in the stack (issue #109).
+    with pytest.raises(ValueError, match="unknown harness 'shell'. Valid harnesses:"):
+        sandbox._docker_image("shell")
+
+
+def test_create_rejects_non_harness_arg_before_side_effects(tmp_path: Path) -> None:
+    # The boundary validates up front: a bad `harness` fails loud before `create` records any
+    # command on the runner.
+    r = RecordingRunner()
+    with pytest.raises(ValueError, match="unknown harness 'shell'. Valid harnesses:"):
+        sandbox.create(r, "danno-x", tmp_path, "shell")
+    assert r.joined() == []
+
+
+def test_provision_rejects_non_harness_arg_before_side_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Same up-front rejection through `provision`: no LAN warning, no create, no runner command.
+    monkeypatch.setattr(ollama, "lan_exposure_warning", lambda **kw: None)
+    r = RecordingRunner()
+    with pytest.raises(ValueError, match="unknown harness 'shell'. Valid harnesses:"):
+        sandbox.provision(r, "probe", tmp_path, harness="shell")
+    assert r.joined() == []
+
+
 def test_launch_claurst_relay_free_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
     r = RecordingRunner()
     sandbox.launch(r, "probe", Path("/repo"), harness="claurst", model="ollama/gemma4:26b")
@@ -534,6 +574,86 @@ def test_start_launches_existing_without_apply(
     sandbox.start(r, "probe", tmp_path)
     assert len(r.commands) == 1  # only the launch, no create/proxy/stop
     _assert_launch_cmd(r.commands[0], "probe", "opencode", repo=sandbox.container_path(tmp_path))
+
+
+def _stub_capture_collaborators(
+    monkeypatch: pytest.MonkeyPatch, *, via_relay: bool = False
+) -> list[tuple[list[str], Path, str]]:
+    """Neuter `_capture_session`'s heavy collaborators and record `record_egress` calls.
+
+    The proxy/config machinery is I/O; we only care that the session snapshots the egress
+    log with the sandbox NAME and a session-start `run_start`. Returns the call log
+    `[(sandboxes, capture_dir, run_start)]` that the returned assertions read.
+    """
+    from contextlib import nullcontext
+
+    class _H:
+        supports_capture = True
+        capture_via_relay = via_relay
+
+    monkeypatch.setattr("danno_validator.harnesses.get", lambda name: _H())
+    monkeypatch.setattr(sandbox, "load_config", lambda p: DannoConfig())
+    monkeypatch.setattr(sandbox, "plan_capture", lambda cfg, cd: (cfg, ["t"]))
+    monkeypatch.setattr(sandbox, "uncaptured_cloud_refs", lambda cfg: [])
+    monkeypatch.setattr(sandbox, "capture_allow_hosts", lambda targets, base: ("localhost:11434",))
+    monkeypatch.setattr(sandbox, "generate", lambda *a, **k: None)
+    monkeypatch.setattr(sandbox, "captures_running", lambda targets: nullcontext())
+    monkeypatch.setattr(sandbox, "_claurst_relay_capture_port", lambda targets: 9999)
+    calls: list[tuple[list[str], Path, str]] = []
+    monkeypatch.setattr(
+        sandbox,
+        "record_egress",
+        lambda runner, sandboxes, *, capture_dir, run_start: calls.append(
+            (list(sandboxes), capture_dir, run_start)
+        ),
+    )
+    return calls
+
+
+@pytest.mark.parametrize("via_relay", [False, True])
+def test_capture_session_snapshots_egress_with_name_and_run_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, via_relay: bool
+) -> None:
+    # #101: both capture paths (opencode config-rewrite and claurst relay) snapshot the
+    # sandbox's egress log on exit, keyed by the sandbox NAME with a run_start stamped before
+    # the session (so a reader can filter `last_seen >= run_start`).
+    calls = _stub_capture_collaborators(monkeypatch, via_relay=via_relay)
+    r = RecordingRunner()
+    r.apply = True
+    with sandbox._capture_session(
+        r,
+        "danno-box",
+        tmp_path,
+        harness="claurst" if via_relay else "opencode",
+        capture_dir=tmp_path / "cap",
+        base_allow_hosts=("localhost:11434",),
+    ) as wiring:
+        assert wiring.allow_hosts == ("localhost:11434",)
+    assert len(calls) == 1
+    sandboxes, capture_dir, run_start = calls[0]
+    assert sandboxes == ["danno-box"]
+    assert capture_dir == tmp_path / "cap"
+    assert run_start  # a non-empty ISO timestamp stamped at session start
+
+
+def test_capture_session_off_snapshots_no_egress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No `--capture` (capture_dir=None): the session is a pass-through and must not touch the
+    # egress log — the artifact is a capture-only durability aid.
+    calls = _stub_capture_collaborators(monkeypatch)
+    r = RecordingRunner()
+    r.apply = True
+    with sandbox._capture_session(
+        r,
+        "danno-box",
+        tmp_path,
+        harness="opencode",
+        capture_dir=None,
+        base_allow_hosts=("localhost:11434",),
+    ) as wiring:
+        assert wiring.allow_hosts == ("localhost:11434",)
+    assert calls == []
 
 
 def test_rebuild_stops_and_removes_without_force_flag(
@@ -979,10 +1099,13 @@ def test_capture_session_restores_config_when_setup_raises(
         raise RuntimeError("boom mid-setup")
 
     monkeypatch.setattr(sandbox, "generate", boom)
+    # The finally also snapshots egress (#101); neuter it so this test isolates config restore.
+    monkeypatch.setattr(sandbox, "record_egress", lambda *a, **k: None)
 
     with pytest.raises(RuntimeError, match="boom mid-setup"):
         with sandbox._capture_session(
             Runner(apply=True),
+            "danno-box",
             target,
             harness="opencode",
             capture_dir=tmp_path / "cap",

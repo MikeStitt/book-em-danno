@@ -171,3 +171,21 @@ def test_persist_true_still_writes_and_summarizes(tmp_path: Path) -> None:
     assert cap_file.is_file()
     assert len(read_captures(cap_file)) == 2  # request + response
     assert len(summaries) == 1 and summaries[0].usage is not None
+
+
+def test_persist_true_no_traffic_leaves_no_file(tmp_path: Path) -> None:
+    # Lazy create (issue #112): a persisting proxy that receives ZERO requests must leave no
+    # file on disk — `captures/` then reflects real traffic rather than one 0-byte file per
+    # idle sensor proxy (the idle local-Ollama proxy on a cloud cell is the motivating case).
+    cap_file = tmp_path / "sub" / "cap.jsonl"  # neither this nor its parent may be created
+    cfg = CaptureProxyConfig(
+        upstream="http://127.0.0.1:1",  # never dialed — no request flows through the proxy
+        capture_file=cap_file,
+        port=_free_port(),
+        persist=True,
+    )
+    with capture_proxy(cfg):
+        pass  # stand the proxy up and tear it down without sending a single request
+
+    assert not cap_file.exists()
+    assert not cap_file.parent.exists()

@@ -125,10 +125,13 @@ def test_provenance_records_the_gates(tmp_path: Path) -> None:
         )
     assert proc.returncode == 0, proc.stderr
     provenance = json.loads((out / "provenance.json").read_text(encoding="utf-8"))
-    # The gates block is recorded today (bb93333). F5 follow-up: per-cell RESOLVED gates on
-    # each verdict row + the harness VERSION — assert those once F5 lands.
+    # The raw `[gates]` config is recorded once (bb93333) as declared intent...
     assert "gates" in provenance, "provenance must record the runaway-gate caps"
     assert provenance["gates"].get("max_turns") == 5
+    # ...and F5-B: the image-provided opencode's live-VM `opencode --version` is recorded (it is
+    # the V5 canary — its runner version decides whether `agent.steps` is honored).
+    assert provenance["harness_versions"]["harness"] == "opencode"
+    assert provenance["harness_versions"].get("version"), "opencode --version must be probed"
     # End-to-end gate observability on the bench.json row for this clean, gated cell: the
     # survivor probe ran against the REAL sandbox (returned clean → no `survivors`), the
     # Gate-1 round count is recorded (one Finish round), and it reads as a completed cell with
@@ -140,6 +143,9 @@ def test_provenance_records_the_gates(tmp_path: Path) -> None:
     assert row["rounds"] >= 1  # populated with real inference rounds (exact count is an
     #   opencode internal this drift file deliberately does not pin); grading is excluded.
     assert "gate" not in row and "survivors" not in row  # clean cell, no leaked harness
+    # F5-A: the RESOLVED caps this cell ran under are on its row (the global [gates] here, since
+    # there is no harness/model override) — self-describing, not only in provenance.
+    assert row["resolved_gates"] == {"max_turns": 5, "max_tokens": 2_000_000, "timeout_s": 300.0}
 
 
 @pytest.mark.skipif(OLLAMA_DOWN or not model_present("gemma4:26b"), reason="no live Ollama model")

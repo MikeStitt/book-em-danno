@@ -12,6 +12,7 @@ import pytest
 from book_em_danno.commands import sandbox as sb
 from book_em_danno.config.schema import DannoConfig, Model, OllamaBackend
 from book_em_danno.core.exec import CaptureResult, CommandFailedError, Runner
+from danno_validator import harnesses
 from danno_validator import judge as judge_mod
 from danno_validator import run as run_mod
 from danno_validator.driver import OpencodeTurn
@@ -136,10 +137,20 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> dict:
     full `run_validate` never touches a real Docker daemon — the gate runs on hosts
     without one.
     """
-    calls: dict = {"provision": [], "teardown": [], "sweep_kwargs": {}, "baseline": 0}
+    calls: dict = {
+        "provision": [],
+        "provision_harness": [],
+        "teardown": [],
+        "sweep_kwargs": {},
+        "baseline": 0,
+    }
+
+    def _provision(r: object, name: str, ws: object, **kw: object) -> None:
+        calls["provision"].append(name)
+        calls["provision_harness"].append(kw.get("harness"))  # #108: assert it's a harness NAME
 
     monkeypatch.setattr(run_mod, "prepare_workspace", lambda runner, ws, config: ws)
-    monkeypatch.setattr(sb, "provision", lambda r, name, ws, **kw: calls["provision"].append(name))
+    monkeypatch.setattr(sb, "provision", _provision)
     monkeypatch.setattr(run_mod, "_teardown", lambda r, name: calls["teardown"].append(name))
     monkeypatch.setattr(sb, "harness_env", lambda *a, **k: ["TOKEN=x"])
 
@@ -253,6 +264,41 @@ def test_capture_rewrites_config_and_opens_proxy_ports(
     assert any(h != "localhost:11434" and h.startswith("localhost:") for h in allow)
 
 
+def test_capture_records_egress_before_teardown(
+    patched: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #101: under --capture, the sweep sandbox's egress reachability log is snapshotted while
+    # the VM is alive — BEFORE teardown — with run_start stamped from `now` (so a reader can
+    # filter last_seen >= run_start).
+    order: list[tuple] = []
+    monkeypatch.setattr(
+        run_mod,
+        "record_egress",
+        lambda runner, sandboxes, *, capture_dir, run_start: order.append(
+            ("egress", list(sandboxes), capture_dir, run_start)
+        ),
+    )
+    monkeypatch.setattr(run_mod, "_teardown", lambda r, name: order.append(("teardown", name)))
+
+    result = _run(_opts(tmp_path, only=["gptoss"], capture=True))
+
+    assert [o[0] for o in order] == ["egress", "teardown"]  # snapshot strictly before teardown
+    _, sandboxes, capture_dir, run_start = order[0]
+    assert result.plan.sweep_sandbox in sandboxes
+    assert capture_dir == result.plan.out_dir / "captures"
+    assert run_start == NOW.isoformat()
+
+
+def test_no_capture_skips_egress(
+    patched: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Egress is a --capture artifact: with capture off, no snapshot is taken at all.
+    called: list[object] = []
+    monkeypatch.setattr(run_mod, "record_egress", lambda *a, **k: called.append(1))
+    _run(_opts(tmp_path, only=["gptoss"]))
+    assert called == []
+
+
 def test_only_passes_through_and_unknown_fails_loud(patched: dict, tmp_path: Path) -> None:
     _run(_opts(tmp_path, only=["gptoss"]))
     assert patched["sweep_kwargs"]["only"] == ["gptoss"]
@@ -265,6 +311,43 @@ def test_baseline_provisions_claude_and_appends_row(patched: dict, tmp_path: Pat
     assert patched["baseline"] == 1
     assert any("validate-claude" in n for n in patched["provision"])
     assert result.results[-1].variant.model_name == "claude-code"
+
+
+@pytest.mark.parametrize("harness", ["claurst", "codex"])
+def test_sweep_provisions_by_harness_name_not_sandbox_image(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, harness: str
+) -> None:
+    # #108: the b1fcfea guard, extended to run.py's sweep caller (run.py:325) — `sb.provision`
+    # takes the harness NAME and resolves the image internally, so claurst/codex (which ride
+    # the "shell" image) must be passed by name, never by image. Stop at the provision call so
+    # the real (docker-touching) install never runs.
+    seen: dict[str, object] = {}
+
+    class _StopEarly(Exception):
+        pass
+
+    def fake_provision(r, name, ws, **kw):  # type: ignore[no-untyped-def]
+        seen["harness"] = kw.get("harness")
+        raise _StopEarly
+
+    monkeypatch.setattr(run_mod, "prepare_workspace", lambda *a, **k: None)
+    monkeypatch.setattr(sb, "provision", fake_provision)
+    with pytest.raises(_StopEarly):
+        _run(_opts(tmp_path, only=["gptoss"], harness=harness))
+    assert seen["harness"] == harness
+    assert seen["harness"] in harnesses.all_names()  # never the "shell" image
+
+
+def test_every_provision_caller_passes_a_registered_harness_name(
+    patched: dict, tmp_path: Path
+) -> None:
+    # #108: end-to-end over BOTH run.py callers — the sweep leg (run.py:325) and the baseline
+    # leg (run.py:361, a literal "claude"). Every value handed to `sb.provision` must be a
+    # registered harness name, so neither caller can regress to passing an image string.
+    _run(_opts(tmp_path, only=["gptoss"], baseline=True))
+    assert patched["provision_harness"]  # both legs provisioned
+    assert all(h in harnesses.all_names() for h in patched["provision_harness"])
+    assert "claude" in patched["provision_harness"]  # the baseline leg
 
 
 def test_baseline_missing_token_fails_before_provisioning(

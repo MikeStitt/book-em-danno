@@ -62,6 +62,7 @@ This is the big one, and it **mostly already exists** — it's just not wired in
 | 3.2 | **per-permutation namespacing** | one transcript file per `(agent,model,task)` | 🟢 | Extend the capture filename with the permutation key so rows don't collide. |
 | 3.3 | **HTTP round-trip trace** | connection lifecycle, upstream status, byte counts (not bodies) | ✅ | Relay already does this via `DANNO_RELAY_LOG` env (`driver.py:_OLLAMA_RELAY_SOURCE`); claurst+occ only. Good for diagnosing hangs; §3.1 supersedes it for content. |
 | 3.4 | **prompt/response artifacts saved beside `bench.json`** | human-readable `.md`/`.txt` dump per turn | 🟡 | Post-process the §3.1 JSONL into readable transcripts for review. |
+| 3.5 | **egress reachability log (`egress.json`)** ⭐ | every host each sandbox *tried* to reach — allowed **or** blocked — aggregated per host (`since`→`last_seen`, `count_since`) | ✅ | The complementary **L3/L4 host-side audit** to §3.1's L7 content (issue #101). Snapshotted from `sbx policy log <name> --type network --json` (`capture/egress.py`) on every persisted `--capture` run — `bench`, `validate`, `sandbox start`/`shell` — as one uniform `<capture_dir>/egress.json`. Catches what the wire capture can't: a **blocked** connection never produces a request body, so only this log shows an attempted phone-home. A run that silently hit a block **warns loudly** (Working Rule 8). sbx-only (docker has no equivalent → file omitted); aggregated per host + keyed per sandbox (not per cell); records `run_start` so a reused sandbox's log is isolable with `last_seen >= run_start`. |
 
 **Note:** because agents use the OpenAI `/v1` path, the capture proxy's response
 bodies contain `usage` → §3 is also the cheapest route to §1.1/1.3/1.4/2.3.
@@ -112,7 +113,7 @@ Cheap metadata that makes cross-run comparison honest.
 |---|---|---|---|---|
 | 7.1 | resolved model id + digest | exact model bytes (`/api/tags` digest) | 🟢 | Pin *which* build of a tag ran. |
 | 7.2 | model params | quantization, `num_ctx`, param count | 🟢 | `/api/show`. |
-| 7.3 | agent + fork versions | occ SHA, claurst/opencode versions, danno commit | 🟢 | Already known at provision time; just record it. |
+| 7.3 | agent + fork versions | occ SHA, claurst/opencode versions, danno commit | 🟢 | danno-installed harnesses (claurst/codex) pin a known version; image-provided ones (opencode/claude) are probed live via `<harness> --version` in the VM while a sandbox is up (#89 F5-B) → `harness_versions.version`. |
 | 7.4 | host descriptor | CPU model, core count, GPU model, driver, total VRAM | 🟢 | One-shot at run start (`nvidia-smi -q`, `/proc/cpuinfo`, `psutil`). |
 
 ---

@@ -23,10 +23,12 @@ import urllib.parse
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import ValidationError
 
+from ..capture.egress import record_egress
 from ..capture.wiring import (
     CaptureTarget,
     capture_allow_hosts,
@@ -378,6 +380,10 @@ def create(
     otherwise) and a loud warning fires if `name` already maps elsewhere.
     Idempotent under --apply: an already-existing sandbox is left in place.
     """
+    image = _docker_image(harness)  # resolve + validate the harness up front, before any side
+    #   effect (sbx policy init, registry write): a non-registered `harness` arg (e.g. a resolved
+    #   image string like "shell") fails loud here naming the valid set, not deep in the command
+    #   (issue #109).
     ensure_policy_initialized(runner)  # sbx needs a one-time global policy init before create
 
     if registry_path is not None:
@@ -388,7 +394,7 @@ def create(
                 f"for {target_abs} would collide — pass --name to disambiguate."
             )
 
-    cmd = [*sandbox_cli.base(), "create", "--name", name, _docker_image(harness), str(target_abs)]
+    cmd = [*sandbox_cli.base(), "create", "--name", name, image, str(target_abs)]
     if home is not None:
         cmd.append(str(home))
 
@@ -485,6 +491,9 @@ def provision(
     on next start). Does NOT launch the TUI — that's `start`."""
     from danno_validator import harnesses  # local: avoids import cycle
 
+    harnesses.get(harness)  # validate the harness up front (fail loud, naming the valid set)
+    #   before any side effect — a non-registered arg must not print the LAN warning or create
+    #   a sandbox before it's rejected (issue #109).
     ollama.announce_lan_exposure()
     if (
         harnesses.get(harness).reads_generated_config
@@ -1205,6 +1214,7 @@ def _claurst_relay_capture_port(targets: Sequence[CaptureTarget]) -> int:
 @contextmanager
 def _capture_session(
     runner: Runner,
+    name: str,
     target_abs: Path,
     *,
     harness: str,
@@ -1246,14 +1256,22 @@ def _capture_session(
             f"{', '.join(uncap)}"
         )
     allow = capture_allow_hosts(targets, base_allow_hosts)
+    # #101: stamp run start BEFORE the session so a reader can isolate this run's egress with
+    # `last_seen >= run_start` (the sandbox is stable-named and its sbx log persists across
+    # reuse). Snapshotted on exit, when the sandbox is provisioned and still alive (start/shell
+    # never tear it down).
+    run_start = datetime.now(UTC).isoformat()
     if h.capture_via_relay:
         # claurst reads neither opencode.jsonc nor the egress proxy the way opencode does;
         # instead it dials host Ollama relay-free via `OLLAMA_HOST`. Point that at the Ollama
         # recording proxy (no opencode.jsonc rewrite) so its wire traffic is captured.
         relay_port = _claurst_relay_capture_port(targets)
         log_info(f"--capture: recording {harness}<->Ollama wire traffic to {capture_dir}")
-        with captures_running(targets):
-            yield _CaptureWiring(allow, relay_port)
+        try:
+            with captures_running(targets):
+                yield _CaptureWiring(allow, relay_port)
+        finally:
+            record_egress(runner, [name], capture_dir=capture_dir, run_start=run_start)
         return
     log_info(f"--capture: recording opencode<->backend wire traffic to {capture_dir}")
     jsonc = target_abs / ".opencode" / "opencode.jsonc"
@@ -1271,6 +1289,7 @@ def _capture_session(
             jsonc.write_text(snapshot, encoding="utf-8")  # restore the user's config exactly
         elif jsonc.is_file():
             jsonc.unlink()
+        record_egress(runner, [name], capture_dir=capture_dir, run_start=run_start)
 
 
 def start(
@@ -1301,7 +1320,12 @@ def start(
     `model` is the resolved, locality-checked claurst `-m ollama/<tag>` (claurst-only;
     see `resolve_model_for_harness`); it reaches the harness command via `launch`."""
     with _capture_session(
-        runner, target_abs, harness=harness, capture_dir=capture_dir, base_allow_hosts=allow_hosts
+        runner,
+        name,
+        target_abs,
+        harness=harness,
+        capture_dir=capture_dir,
+        base_allow_hosts=allow_hosts,
     ) as cap:
         _ensure_provisioned(
             runner,
@@ -1379,7 +1403,12 @@ def shell(
     as `start` would wire the harness. The ONLY difference is the container command —
     `bash` instead of the harness binary."""
     with _capture_session(
-        runner, target_abs, harness=harness, capture_dir=capture_dir, base_allow_hosts=allow_hosts
+        runner,
+        name,
+        target_abs,
+        harness=harness,
+        capture_dir=capture_dir,
+        base_allow_hosts=allow_hosts,
     ) as cap:
         _ensure_provisioned(
             runner,
