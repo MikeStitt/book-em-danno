@@ -264,6 +264,41 @@ def test_capture_rewrites_config_and_opens_proxy_ports(
     assert any(h != "localhost:11434" and h.startswith("localhost:") for h in allow)
 
 
+def test_capture_records_egress_before_teardown(
+    patched: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #101: under --capture, the sweep sandbox's egress reachability log is snapshotted while
+    # the VM is alive — BEFORE teardown — with run_start stamped from `now` (so a reader can
+    # filter last_seen >= run_start).
+    order: list[tuple] = []
+    monkeypatch.setattr(
+        run_mod,
+        "record_egress",
+        lambda runner, sandboxes, *, capture_dir, run_start: order.append(
+            ("egress", list(sandboxes), capture_dir, run_start)
+        ),
+    )
+    monkeypatch.setattr(run_mod, "_teardown", lambda r, name: order.append(("teardown", name)))
+
+    result = _run(_opts(tmp_path, only=["gptoss"], capture=True))
+
+    assert [o[0] for o in order] == ["egress", "teardown"]  # snapshot strictly before teardown
+    _, sandboxes, capture_dir, run_start = order[0]
+    assert result.plan.sweep_sandbox in sandboxes
+    assert capture_dir == result.plan.out_dir / "captures"
+    assert run_start == NOW.isoformat()
+
+
+def test_no_capture_skips_egress(
+    patched: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Egress is a --capture artifact: with capture off, no snapshot is taken at all.
+    called: list[object] = []
+    monkeypatch.setattr(run_mod, "record_egress", lambda *a, **k: called.append(1))
+    _run(_opts(tmp_path, only=["gptoss"]))
+    assert called == []
+
+
 def test_only_passes_through_and_unknown_fails_loud(patched: dict, tmp_path: Path) -> None:
     _run(_opts(tmp_path, only=["gptoss"]))
     assert patched["sweep_kwargs"]["only"] == ["gptoss"]

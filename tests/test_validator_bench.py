@@ -588,6 +588,7 @@ def test_run_aider_provisions_by_harness_name_not_sandbox_image(
             warm=False,
             warmup=[],
             harness_ident={},
+            egress_logs={},
         )
     assert seen["harness"] == harness
     assert seen["harness"] in harnesses.all_names()  # never the "shell" image
@@ -642,6 +643,7 @@ def test_run_swebench_provisions_by_harness_name_not_sandbox_image(
             warm=False,
             warmup=[],
             harness_ident={},
+            egress_logs={},
         )
     assert seen["harness"] == harness
     assert seen["harness"] in harnesses.all_names()  # never the "shell" image
@@ -782,6 +784,49 @@ def test_bench_interrupted_leg_finalizes_partial_results(
     assert payload["partial"] is True  # clearly flagged partial
     assert [r["task"] for r in payload["results"]] == ["t1", "t2", "t3"]
     assert (out / "report.md").is_file()  # partial human report written too
+
+
+def test_bench_writes_egress_artifact_from_accumulated_logs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # #101: run_bench writes <capture_dir>/egress.json from the per-sandbox snapshots the suite
+    # runners accumulate as each sandbox is torn down (here injected by a fake aider leg).
+    # Persisted under --save-captures (the default), alongside the wire capture.
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-abc")
+
+    def fake_aider(runner, cfg, opts, *, egress_logs, on_verdict=None, **kw):  # type: ignore[no-untyped-def]
+        egress_logs["danno-bench-aider-x"] = {"allowed_hosts": [], "blocked_hosts": []}
+        return []
+
+    monkeypatch.setattr(bench, "_run_aider", fake_aider)
+    monkeypatch.setattr(bench, "_run_swebench", lambda *a, on_verdict=None, **k: [])
+    opts = bench.BenchOptions(target=tmp_path, harness="claude", out_dir=tmp_path / "out")
+    bench.run_bench(_config(), BenchmarksConfig(), opts, Runner())
+
+    egress = json.loads((tmp_path / "out" / "captures" / "egress.json").read_text(encoding="utf-8"))
+    assert list(egress["sandboxes"]) == ["danno-bench-aider-x"]
+    assert egress["note"]  # documents the L3/L4 aggregated-audit limits
+    assert egress["run_start"]  # stamped so a reader can filter last_seen >= run_start
+
+
+def test_bench_no_save_captures_writes_no_egress_artifact(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # --no-save-captures persists nothing on disk — the egress artifact included — even though the
+    # gate proxy still runs. Symmetric with the wire capture's no-persist behaviour.
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-abc")
+
+    def fake_aider(runner, cfg, opts, *, egress_logs, on_verdict=None, **kw):  # type: ignore[no-untyped-def]
+        egress_logs["box"] = {"allowed_hosts": []}
+        return []
+
+    monkeypatch.setattr(bench, "_run_aider", fake_aider)
+    monkeypatch.setattr(bench, "_run_swebench", lambda *a, on_verdict=None, **k: [])
+    opts = bench.BenchOptions(
+        target=tmp_path, harness="claude", out_dir=tmp_path / "out", save_captures=False
+    )
+    bench.run_bench(_config(), BenchmarksConfig(), opts, Runner())
+    assert not (tmp_path / "out" / "captures" / "egress.json").exists()
 
 
 def test_run_bench_harnesses_merges_from_disk_when_a_leg_is_killed(

@@ -233,6 +233,19 @@ opencode's `anthropic/*` models *or* the `claude` harness — because both use f
 Anthropic endpoints danno doesn't currently redirect. A captured run that touches
 either **warns loudly** naming exactly what it skipped.
 
+**Egress reachability log (`egress.json`).** The JSONL above is the L7 *content* of the
+traffic danno's proxy can see. Alongside it every persisted `--capture` run (on the `sbx`
+backend) also writes one `<capture_dir>/egress.json` — the complementary **host-side
+L3/L4 audit** from `sbx policy log`: every host each sandbox *tried* to reach, allowed or
+blocked, aggregated per host (`since`→`last_seen`, `count_since`). It answers "did the
+sandbox phone anywhere it shouldn't have?" — which the wire capture *cannot*, because a
+blocked connection never produces a request body. A captured run that silently hit an
+egress **block** warns loudly, naming the hosts (a sandbox-leg defect, never a clean
+result). It is aggregated per host (no per-request timestamps or HTTP status — that is the
+JSONL) and keyed per sandbox (not per bench cell); the daemon log persists across sandbox
+reuse, so the artifact records `run_start` to isolate this run with `last_seen >= run_start`.
+Legacy `docker sandbox` has no equivalent, so the file is simply omitted there.
+
 `sandbox start`/`shell` need `--apply` (the per-run proxy ports must be opened in the
 sandbox egress) and restore your `opencode.jsonc` afterward.
 

@@ -575,6 +575,86 @@ def test_start_launches_existing_without_apply(
     _assert_launch_cmd(r.commands[0], "probe", "opencode", repo=sandbox.container_path(tmp_path))
 
 
+def _stub_capture_collaborators(
+    monkeypatch: pytest.MonkeyPatch, *, via_relay: bool = False
+) -> list[tuple[list[str], Path, str]]:
+    """Neuter `_capture_session`'s heavy collaborators and record `record_egress` calls.
+
+    The proxy/config machinery is I/O; we only care that the session snapshots the egress
+    log with the sandbox NAME and a session-start `run_start`. Returns the call log
+    `[(sandboxes, capture_dir, run_start)]` that the returned assertions read.
+    """
+    from contextlib import nullcontext
+
+    class _H:
+        supports_capture = True
+        capture_via_relay = via_relay
+
+    monkeypatch.setattr("danno_validator.harnesses.get", lambda name: _H())
+    monkeypatch.setattr(sandbox, "load_config", lambda p: DannoConfig())
+    monkeypatch.setattr(sandbox, "plan_capture", lambda cfg, cd: (cfg, ["t"]))
+    monkeypatch.setattr(sandbox, "uncaptured_cloud_refs", lambda cfg: [])
+    monkeypatch.setattr(sandbox, "capture_allow_hosts", lambda targets, base: ("localhost:11434",))
+    monkeypatch.setattr(sandbox, "generate", lambda *a, **k: None)
+    monkeypatch.setattr(sandbox, "captures_running", lambda targets: nullcontext())
+    monkeypatch.setattr(sandbox, "_claurst_relay_capture_port", lambda targets: 9999)
+    calls: list[tuple[list[str], Path, str]] = []
+    monkeypatch.setattr(
+        sandbox,
+        "record_egress",
+        lambda runner, sandboxes, *, capture_dir, run_start: calls.append(
+            (list(sandboxes), capture_dir, run_start)
+        ),
+    )
+    return calls
+
+
+@pytest.mark.parametrize("via_relay", [False, True])
+def test_capture_session_snapshots_egress_with_name_and_run_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, via_relay: bool
+) -> None:
+    # #101: both capture paths (opencode config-rewrite and claurst relay) snapshot the
+    # sandbox's egress log on exit, keyed by the sandbox NAME with a run_start stamped before
+    # the session (so a reader can filter `last_seen >= run_start`).
+    calls = _stub_capture_collaborators(monkeypatch, via_relay=via_relay)
+    r = RecordingRunner()
+    r.apply = True
+    with sandbox._capture_session(
+        r,
+        "danno-box",
+        tmp_path,
+        harness="claurst" if via_relay else "opencode",
+        capture_dir=tmp_path / "cap",
+        base_allow_hosts=("localhost:11434",),
+    ) as wiring:
+        assert wiring.allow_hosts == ("localhost:11434",)
+    assert len(calls) == 1
+    sandboxes, capture_dir, run_start = calls[0]
+    assert sandboxes == ["danno-box"]
+    assert capture_dir == tmp_path / "cap"
+    assert run_start  # a non-empty ISO timestamp stamped at session start
+
+
+def test_capture_session_off_snapshots_no_egress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No `--capture` (capture_dir=None): the session is a pass-through and must not touch the
+    # egress log — the artifact is a capture-only durability aid.
+    calls = _stub_capture_collaborators(monkeypatch)
+    r = RecordingRunner()
+    r.apply = True
+    with sandbox._capture_session(
+        r,
+        "danno-box",
+        tmp_path,
+        harness="opencode",
+        capture_dir=None,
+        base_allow_hosts=("localhost:11434",),
+    ) as wiring:
+        assert wiring.allow_hosts == ("localhost:11434",)
+    assert calls == []
+
+
 def test_rebuild_stops_and_removes_without_force_flag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

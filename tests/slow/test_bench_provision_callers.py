@@ -73,6 +73,8 @@ def test_run_swebench_provisions_and_installs_through_real_caller(
             capture_port=None,
             warm=False,
             warmup=[],
+            harness_ident={},
+            egress_logs={},
         )
         # zero variants → zero rows; the point is that create+install did not raise.
         assert verdicts == []

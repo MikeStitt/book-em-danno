@@ -28,6 +28,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from pathlib import Path
 
+from book_em_danno.capture.egress import record_egress
 from book_em_danno.capture.wiring import (
     CaptureTarget,
     capture_allow_hosts,
@@ -237,6 +238,11 @@ def _build_judge(judge: bool, judge_model: str | None = None) -> JudgeFn | None:
     return make_judge(client, model=judge_model or DEFAULT_JUDGE_MODEL)
 
 
+def _capture_dir(opts: ValidateOptions, plan: ValidatePlan) -> Path:
+    """Where `--capture` artifacts (wire JSONL + the #101 `egress.json`) land."""
+    return opts.capture_dir or (plan.out_dir / "captures")
+
+
 def _setup_capture(
     config: DannoConfig, opts: ValidateOptions, plan: ValidatePlan
 ) -> tuple[DannoConfig, list[CaptureTarget], tuple[str, ...]]:
@@ -248,7 +254,7 @@ def _setup_capture(
     refs (`anthropic/*`, no base_url lever) and the Claude Code baseline."""
     if not opts.capture:
         return config, [], sb.DEFAULT_ALLOW_HOSTS
-    capture_dir = opts.capture_dir or (plan.out_dir / "captures")
+    capture_dir = _capture_dir(opts, plan)
     cfg_for_run, targets = plan_capture(config, capture_dir)
     log_info(f"--capture: recording opencode<->backend wire traffic to {capture_dir}")
     uncap = uncaptured_cloud_refs(config)
@@ -400,6 +406,20 @@ def run_validate(
     )
     results_json = write_results_json(record, plan.out_dir / "results.json")
 
+    # #101: snapshot each sandbox's egress reachability log (host-side sbx audit) while the
+    # VMs are still alive — BEFORE teardown, and regardless of --keep-sandboxes. Only under
+    # --capture, alongside the wire JSONL; a no-op on the docker backend.
+    if opts.capture:
+        egress_sandboxes = [plan.sweep_sandbox]
+        if opts.baseline and plan.baseline_sandbox is not None:
+            egress_sandboxes.append(plan.baseline_sandbox)
+        record_egress(
+            runner,
+            egress_sandboxes,
+            capture_dir=_capture_dir(opts, plan),
+            run_start=now.isoformat(),
+        )
+
     if not opts.keep_sandboxes:
         reporter.phase("tear down sandboxes")
         _teardown(runner, plan.sweep_sandbox)
@@ -436,7 +456,7 @@ def _run_meta(plan: ValidatePlan, opts: ValidateOptions) -> dict[str, object]:
         "judge": {"enabled": opts.judge, "requested_model": opts.judge_model},
         "capture": {
             "enabled": opts.capture,
-            "dir": str(opts.capture_dir or (plan.out_dir / "captures")) if opts.capture else None,
+            "dir": str(_capture_dir(opts, plan)) if opts.capture else None,
         },
     }
 

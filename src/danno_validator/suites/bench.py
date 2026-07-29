@@ -20,6 +20,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+from book_em_danno.capture.egress import accumulate_egress, write_egress_artifact
 from book_em_danno.capture.wiring import (
     CaptureBinding,
     capture_allow_hosts,
@@ -357,6 +358,7 @@ def _run_aider(
     warm: bool,
     warmup: list[dict],
     harness_ident: dict[str, str],
+    egress_logs: dict[str, dict],
     on_verdict: VerdictSink | None = None,
 ) -> list[BenchVerdict]:
     ap = cfg.aider_polyglot
@@ -412,6 +414,11 @@ def _run_aider(
             )
     finally:
         remove_checkout(checkout)
+        # #101: snapshot this sandbox's egress log while it is still alive, BEFORE teardown
+        # (host-side sbx audit; persisted only when captures are). Accumulated across suites
+        # and written once by run_bench.
+        if capture is not None and capture.persist:
+            accumulate_egress(runner, name, egress_logs)
         _teardown(runner, name, keep=opts.keep_sandboxes)
     return verdicts
 
@@ -432,6 +439,7 @@ def _run_swebench(
     warm: bool,
     warmup: list[dict],
     harness_ident: dict[str, str],
+    egress_logs: dict[str, dict],
     on_verdict: VerdictSink | None = None,
 ) -> list[BenchVerdict]:
     sw = cfg.swebench
@@ -491,6 +499,9 @@ def _run_swebench(
                 if on_verdict is not None:
                     on_verdict(v)
         finally:
+            # #101: snapshot egress before teardown (see _run_aider) — one row per swe sandbox.
+            if capture is not None and capture.persist:
+                accumulate_egress(runner, name, egress_logs)
             _teardown(runner, name, keep=opts.keep_sandboxes)
     return verdicts
 
@@ -880,6 +891,10 @@ def run_bench(
     # up (the sandboxes are torn down per-suite before provenance is collected). Empty for a
     # danno-pinned harness (claurst/codex) — its version is already a constant in `_provenance`.
     harness_ident: dict[str, str] = {}
+    # #101: per-sandbox egress reachability snapshots, accumulated as each suite's sandbox is
+    # torn down (the log must be read while the VM is alive) and written once as a single
+    # <capture_dir>/egress.json below — the host-side L3/L4 companion to the wire capture.
+    egress_logs: dict[str, dict] = {}
 
     # One chmod-600 env-file PER model variant: shared base lines (the HUT's loop-ceiling
     # knobs, opencode's OLLAMA_BASE_URL, danno.toml [env], --env/--env-file) plus each cloud
@@ -910,6 +925,7 @@ def run_bench(
             warm=opts.warm,
             warmup=warmup,
             harness_ident=harness_ident,
+            egress_logs=egress_logs,
             on_verdict=journal.append,
         )
         report.verdicts += _run_swebench(
@@ -927,12 +943,20 @@ def run_bench(
             warm=opts.warm,
             warmup=warmup,
             harness_ident=harness_ident,
+            egress_logs=egress_logs,
             on_verdict=journal.append,
         )
         completed = True
     finally:
         for env_file in {p for p in env_files.values() if p is not None}:
             env_file.unlink(missing_ok=True)
+        # #101: write the accumulated egress artifact whether the run completed or was killed
+        # mid-loop (durability parity with the journal); a no-op under --no-save-captures or on
+        # the docker backend. capture is always non-None in bench (always-on gate proxy).
+        if opts.save_captures and capture is not None:
+            write_egress_artifact(
+                egress_logs, capture_dir=capture.capture_dir, run_start=now.isoformat()
+            )
         if not completed:
             # Killed/errored mid-loop: turn the durable journal into a partial bench.json +
             # report before the exception propagates, so the leg's graded cells survive.
