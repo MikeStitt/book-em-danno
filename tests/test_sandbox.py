@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -1068,13 +1069,14 @@ def test_build_env_file_missing_env_file_fails_loud(tmp_path: Path) -> None:
     # A user-supplied --env-file that doesn't exist is actionable user error, not a raw
     # FileNotFoundError deep in temp-file assembly (policy §5, ERROR).
     missing = str(tmp_path / "nope.env")
-    with pytest.raises(CommandFailedError, match=f"cannot read --env-file {missing}"):
+    # `match` is a regex: a Windows path (C:\Users\…) injects invalid escapes, so escape it.
+    with pytest.raises(CommandFailedError, match=re.escape(f"cannot read --env-file {missing}")):
         sandbox._build_env_file([], [], [missing])
 
 
 def test_provided_env_missing_env_file_fails_loud(tmp_path: Path) -> None:
     missing = str(tmp_path / "nope.env")
-    with pytest.raises(CommandFailedError, match=f"cannot read --env-file {missing}"):
+    with pytest.raises(CommandFailedError, match=re.escape(f"cannot read --env-file {missing}")):
         sandbox._provided_env([], [missing])
 
 
