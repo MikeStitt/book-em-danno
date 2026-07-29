@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -193,7 +194,8 @@ def test_non_utf8_file_fails_loud(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(
-    os.geteuid() == 0, reason="root bypasses file-mode permission checks, so the read won't fail"
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="Windows chmod can't deny a read, and root bypasses file-mode checks",
 )
 def test_unreadable_file_fails_loud(tmp_path: Path) -> None:
     # A permission-denied read is an OSError; it too must surface as a DannoConfigError.

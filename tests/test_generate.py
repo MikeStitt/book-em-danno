@@ -560,8 +560,11 @@ def test_scan_agent_frontmatter_unreadable_def_warns_but_continues(
     # Non-UTF-8 bytes make read_text(encoding="utf-8") raise UnicodeDecodeError deterministically.
     (agents_dir / "bad.md").write_bytes(b"\xff\xfe not utf-8")
     found = scan_agent_frontmatter(tmp_path)
-    err = capsys.readouterr().err
-    assert "cannot read agent def" in err and "bad.md" in err
+    err = " ".join(capsys.readouterr().err.split())
+    # A narrow CI terminal makes RichHandler char-fold the long tmp path across lines, so the
+    # filename isn't a contiguous substring of the raw output; strip whitespace to rejoin it.
+    assert "cannot read agent def" in err
+    assert "bad.md" in err.replace(" ", "")
     assert found["bad"] == set()  # present but keyless
     assert "model" in found["good"]  # readable sibling still scanned
 
