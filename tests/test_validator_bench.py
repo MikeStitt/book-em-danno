@@ -464,8 +464,8 @@ def test_claurst_matrix_skips_unreachable_backend_model(
     cfg = _unmapped_cloud_config()
     variants = harnesses.get("claurst").model_matrix(cfg, None)
     assert [v.model_name for v in variants] == ["qwen"]  # o4 skipped, qwen kept
-    out = capsys.readouterr().out
-    assert "can't reach" in out and "o4" in out and "host.docker.internal" in out
+    err = capsys.readouterr().err
+    assert "can't reach" in err and "o4" in err and "host.docker.internal" in err
 
 
 def test_claurst_matrix_explicit_only_unreachable_fails_loud() -> None:
