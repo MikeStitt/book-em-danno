@@ -434,14 +434,14 @@ def test_reap_harness_killed_is_quiet(capsys: pytest.CaptureFixture[str]) -> Non
     # pkill exit 0 = matched+signalled: the reap worked, no warning.
     r = _ReapRunner(unwatched=CaptureResult(["x"], 0, "", ""))
     assert base._reap_harness(r, "box") == "killed"  # type: ignore[arg-type]
-    assert "[WARN]" not in capsys.readouterr().out
+    assert "[WARNING]" not in capsys.readouterr().err
 
 
 def test_reap_harness_no_match_is_quiet(capsys: pytest.CaptureFixture[str]) -> None:
     # pkill exit 1 with no stderr = nothing to kill (harness already exited): expected, quiet.
     r = _ReapRunner(unwatched=CaptureResult(["x"], 1, "", ""))
     assert base._reap_harness(r, "box") == "no-match"  # type: ignore[arg-type]
-    assert "[WARN]" not in capsys.readouterr().out
+    assert "[WARNING]" not in capsys.readouterr().err
 
 
 def test_reap_harness_transport_failure_is_loud_and_tagged(
@@ -452,8 +452,8 @@ def test_reap_harness_transport_failure_is_loud_and_tagged(
     r = _ReapRunner(unwatched_exc=FileNotFoundError("sbx not found"))
     tag = base._reap_harness(r, "box")  # type: ignore[arg-type]
     assert tag.startswith("exec-failed:")
-    out = capsys.readouterr().out
-    assert "[WARN]" in out and "reap could not run" in out
+    err = capsys.readouterr().err
+    assert "[WARNING]" in err and "reap could not run" in err
 
 
 def test_reap_harness_pkill_error_is_loud_and_tagged(
@@ -463,8 +463,8 @@ def test_reap_harness_pkill_error_is_loud_and_tagged(
     r = _ReapRunner(unwatched=CaptureResult(["x"], 2, "", "pkill: bad usage"))
     tag = base._reap_harness(r, "box")  # type: ignore[arg-type]
     assert tag.startswith("error:")
-    out = capsys.readouterr().out
-    assert "[WARN]" in out and "could not confirm" in out
+    err = capsys.readouterr().err
+    assert "[WARNING]" in err and "could not confirm" in err
 
 
 def test_surviving_harness_pids_clean_ran(tmp_path: Path) -> None:
@@ -517,8 +517,8 @@ def test_run_bench_task_survivor_probe_failure_records_unknown(
     assert v.survivors_unknown is True
     assert v.survivors is None  # UNKNOWN, not a verified-clean ()
     assert v.reap == "exec-failed:OSError"  # the failed reap is recorded on the row
-    out = capsys.readouterr().out
-    assert "[WARN]" in out and "survivor probe could not run" in out
+    err = capsys.readouterr().err
+    assert "[WARNING]" in err and "survivor probe could not run" in err
 
 
 # --- #105: a 0-request active backend must fail loud, never grade to a silent pass ------------
@@ -572,8 +572,8 @@ def test_run_bench_task_zero_request_active_backend_fails_loud(
     assert v.termination == "no_requests"  # marked, not "completed"
     assert v.verdict.failure_class is FailureClass.ERROR  # not a clean-pass verdict
     assert v.passed is True  # ground truth preserved, but the row is not a silent green
-    out = capsys.readouterr().out
-    assert "[WARN]" in out and "0 inference requests" in out and "ollama" in out
+    err = capsys.readouterr().err
+    assert "[WARNING]" in err and "0 inference requests" in err and "ollama" in err
 
 
 def test_run_bench_task_active_backend_with_traffic_is_not_flagged(
