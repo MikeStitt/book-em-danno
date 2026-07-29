@@ -41,6 +41,11 @@ from danno_validator.telemetry.wire_metrics import (
     write_transcript,
 )
 
+# A per-cell sink the suite runners call the moment each cell is graded, so a verdict is
+# durable (journaled to disk) before the next cell starts — a kill then loses at most the
+# in-flight cell, not the whole leg (#113). Optional everywhere; `None` = no journaling.
+VerdictSink = Callable[["BenchVerdict"], None]
+
 
 @dataclass(frozen=True)
 class GradeResult:
