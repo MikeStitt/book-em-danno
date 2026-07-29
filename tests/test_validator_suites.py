@@ -320,6 +320,40 @@ def test_run_bench_task_gate_timeout_kills_and_classifies(
     assert v.gate.limit == 0.3
     assert v.rounds == 0  # gated but no inference round reached the (absent) proxy
     assert v.survivors == ()  # probe stubbed: no leaked harness
+    # #89 F5-A: the row carries the effective caps it ran under, verdict-local.
+    assert v.resolved_gates == ResolvedGates(max_turns=None, max_tokens=None, timeout_s=0.3)
+
+
+def test_run_bench_task_records_resolved_gates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #89 F5-A: the resolved caps a cell ran under are attached to its verdict (so a row is
+    # self-describing and survives a partial run); an UNGATED cell carries None.
+    monkeypatch.setattr(
+        base, "_surviving_harness_pids", lambda runner, sandbox: base.SurvivorProbe(True, ())
+    )
+    gates = ResolvedGates(max_turns=8, max_tokens=1_000_000, timeout_s=600.0)
+    v = base.run_bench_task(
+        Runner(),
+        "box",
+        task=_FakeTask(_passed=True),
+        suite="aider",
+        workspace=tmp_path,
+        model="ollama/x",
+        run_turn=_run_turn_returning(_FakeTurn()),
+        gates=gates,
+    )
+    assert v.resolved_gates == gates
+    ungated = base.run_bench_task(
+        Runner(),
+        "box",
+        task=_FakeTask(_passed=True),
+        suite="aider",
+        workspace=tmp_path,
+        model="ollama/x",
+        run_turn=_run_turn_returning(_FakeTurn()),
+    )
+    assert ungated.resolved_gates is None
 
 
 def test_run_bench_task_rounds_snapshot_excludes_grading(

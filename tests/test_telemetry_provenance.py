@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from book_em_danno.commands import ollama
+from book_em_danno.commands import ollama, sandbox_cli
 from book_em_danno.config.schema import DannoConfig, Model, OllamaBackend
 from danno_validator.matrix import ConfigVariant
 from danno_validator.telemetry import provenance
@@ -130,6 +130,87 @@ def test_harness_provenance_records_danno_owned_pins() -> None:
     assert claurst_info["claurst_version"]  # the pinned release tag
     # opencode is image-provided: no danno-owned version pin
     assert provenance.harness_provenance("opencode", _config()) == {"harness": "opencode"}
+
+
+def test_harness_provenance_adds_probed_version() -> None:
+    # #89 F5-B: a live-VM `<harness> --version` fills the `version` field for an image-provided
+    # harness that otherwise records only its name.
+    info = provenance.harness_provenance("opencode", _config(), probed_version="opencode 1.16.2")
+    assert info == {"harness": "opencode", "version": "opencode 1.16.2"}
+
+
+class _VersionRunner:
+    """A minimal Runner stub: records the exec'd command and returns a canned `--version`."""
+
+    def __init__(self, *, stdout: str = "", returncode: int = 0, raises: bool = False) -> None:
+        self._stdout = stdout
+        self._returncode = returncode
+        self._raises = raises
+        self.commands: list[list[str]] = []
+
+    def capture(self, cmd: list[str], **kw: object):  # type: ignore[no-untyped-def]
+        self.commands.append(cmd)
+        if self._raises:
+            raise OSError("sandbox gone")
+        from book_em_danno.core.exec import CaptureResult
+
+        return CaptureResult(cmd=cmd, returncode=self._returncode, stdout=self._stdout, stderr="")
+
+
+def test_probe_harness_version_execs_and_trims_for_image_harness() -> None:
+    # #89 F5-B: opencode is image-provided → probe `opencode --version` in the VM, return the
+    # first non-blank line trimmed.
+    runner = _VersionRunner(stdout="opencode 1.16.2\n")
+    got = provenance.probe_harness_version(runner, "danno-bench-box", "opencode")  # type: ignore[arg-type]
+    assert got == "opencode 1.16.2"
+    assert runner.commands == [
+        [*sandbox_cli.base(), "exec", "danno-bench-box", "opencode", "--version"]
+    ]
+
+
+def test_probe_harness_version_skips_danno_pinned_harness() -> None:
+    # claurst/codex ride the "shell" image and are danno-installed at a pinned version — no probe
+    # (and no VM exec) needed.
+    for harness in ("claurst", "codex"):
+        runner = _VersionRunner(stdout="should-not-be-read")
+        assert provenance.probe_harness_version(runner, "box", harness) is None  # type: ignore[arg-type]
+        assert runner.commands == []  # never execs
+
+
+def test_probe_harness_version_none_on_failed_probe() -> None:
+    # A non-zero exit (no `--version` subcommand, sandbox trouble) → None, never a raise.
+    assert (
+        provenance.probe_harness_version(
+            _VersionRunner(returncode=1, stdout="usage: ..."),  # type: ignore[arg-type]
+            "box",
+            "opencode",
+        )
+        is None
+    )
+    # An exec that cannot even launch (sandbox gone) → None, never a raise.
+    assert (
+        provenance.probe_harness_version(_VersionRunner(raises=True), "box", "opencode")  # type: ignore[arg-type]
+        is None
+    )
+
+
+def test_collect_provenance_carries_harness_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(provenance, "host_descriptor", lambda: {})
+    monkeypatch.setattr(provenance, "danno_version", lambda: {"version": None, "commit": None})
+    monkeypatch.setattr(
+        provenance, "model_provenance", lambda ref, host=ollama.DEFAULT_HOST_URL: {}
+    )
+    variants = [
+        ConfigVariant(model_name="qwen", model_ref="ollama/qwen3:latest", description="qwen")
+    ]
+    payload = provenance.collect_provenance(
+        _config(),
+        variants,
+        harness="opencode",
+        sample_interval_s=None,
+        harness_version="opencode 1.16.2",
+    )
+    assert payload["harness_versions"] == {"harness": "opencode", "version": "opencode 1.16.2"}
 
 
 def test_collect_and_write_provenance(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

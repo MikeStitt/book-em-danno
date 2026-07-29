@@ -11,7 +11,7 @@ from danno_validator.telemetry import provenance as prov
 def test_collect_provenance_records_resolved_gates(monkeypatch: pytest.MonkeyPatch) -> None:
     # Stub the host/harness probes so this is a pure serialization check (no subprocess).
     monkeypatch.setattr(prov, "host_descriptor", lambda: {})
-    monkeypatch.setattr(prov, "harness_provenance", lambda harness, config: {})
+    monkeypatch.setattr(prov, "harness_provenance", lambda harness, config, **kw: {})
     monkeypatch.setattr(prov, "danno_version", lambda: {})
     gates = GatesConfig(max_turns=40, harness={"opencode": GateLimits(max_turns=30)})
     payload = prov.collect_provenance(
@@ -27,7 +27,7 @@ def test_collect_provenance_records_resolved_gates(monkeypatch: pytest.MonkeyPat
 
 def test_collect_provenance_gates_none_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(prov, "host_descriptor", lambda: {})
-    monkeypatch.setattr(prov, "harness_provenance", lambda harness, config: {})
+    monkeypatch.setattr(prov, "harness_provenance", lambda harness, config, **kw: {})
     monkeypatch.setattr(prov, "danno_version", lambda: {})
     payload = prov.collect_provenance(
         config=None,  # type: ignore[arg-type]

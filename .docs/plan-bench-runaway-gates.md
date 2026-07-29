@@ -294,8 +294,9 @@ New `BenchVerdict.verdict` values (extend the oracle's turn classification):
 `runaway` (Gate 1), `over-budget` (Gate 2), `timeout` (Gate 3). Each records **which
 gate fired at what value**, keeps the **partial transcript** (the wire up to the kill),
 and renders a **loud** report row (Working Rule 8 — a killed cell is never silently a
-pass/fail). Provenance records the **resolved** gate values per cell so a cross-run
-comparison knows what caps were in force.
+pass/fail). The **resolved** per-cell gate values land on each `bench.json` row
+(`resolved_gates`, #89 F5-A) so a cross-run comparison knows the caps each cell ran under;
+`provenance.json` keeps the raw `[gates]` config as declared intent.
 
 ## 7. Open decisions
 

@@ -112,7 +112,7 @@ Cheap metadata that makes cross-run comparison honest.
 |---|---|---|---|---|
 | 7.1 | resolved model id + digest | exact model bytes (`/api/tags` digest) | 🟢 | Pin *which* build of a tag ran. |
 | 7.2 | model params | quantization, `num_ctx`, param count | 🟢 | `/api/show`. |
-| 7.3 | agent + fork versions | occ SHA, claurst/opencode versions, danno commit | 🟢 | Already known at provision time; just record it. |
+| 7.3 | agent + fork versions | occ SHA, claurst/opencode versions, danno commit | 🟢 | danno-installed harnesses (claurst/codex) pin a known version; image-provided ones (opencode/claude) are probed live via `<harness> --version` in the VM while a sandbox is up (#89 F5-B) → `harness_versions.version`. |
 | 7.4 | host descriptor | CPU model, core count, GPU model, driver, total VRAM | 🟢 | One-shot at run start (`nvidia-smi -q`, `/proc/cpuinfo`, `psutil`). |
 
 ---
