@@ -20,7 +20,14 @@ import os
 import shutil
 from pathlib import Path
 
+from ..core.exec import SandboxSecurityError
+
 _ENV = "DANNO_SANDBOX_CLI"
+
+# Egress allow-list tokens that would defeat the sandbox: an empty list disables the
+# Ollama hole (a config bug we must not silently ship), and a wildcard opens the host,
+# LAN, and cloud metadata to the AI. Rejected FATAL at the chokepoint below.
+_FORBIDDEN_ALLOW_HOSTS = frozenset({"**", "*"})
 
 # SBX-TRANSITION(docker-sandbox-deprecation): explicit backend chosen by the CLI
 # layer from `[sandbox].cli` / `--sandbox-cli` (flag>env>config resolved there).
@@ -166,7 +173,25 @@ def policy_allow_argv(name: str, allow_hosts: tuple[str, ...]) -> list[str]:
       (default-deny + curated dev/AI hosts; see `ensure_policy_initialized`).
       Enforcement is via the host HTTP(S) proxy; a denied host returns 403.
     - legacy `docker sandbox`: `network proxy N --policy allow --allow-host H…`.
+
+    FATAL-guards the allow-list: an empty list, a blank/whitespace entry, or a
+    wildcard (`"**"`/`"*"`) would open the sandbox beyond the intended Ollama hole,
+    so it aborts with `SandboxSecurityError` rather than provisioning a porous VM
+    (the `sandbox-security-contract-fail-loud` invariant).
     """
+    if not allow_hosts:
+        raise SandboxSecurityError(
+            "Refusing to configure sandbox egress with an EMPTY allow-list: the AI would "
+            "have no route to Ollama, or (worse, if a caller later defaults it open) an "
+            "unrestricted one. Supply the explicit Ollama host:port."
+        )
+    for host in allow_hosts:
+        if not host.strip() or host.strip() in _FORBIDDEN_ALLOW_HOSTS:
+            raise SandboxSecurityError(
+                f"Refusing to allow sandbox egress to {host!r}: a blank or wildcard host "
+                "exposes the host, LAN, and cloud metadata to the AI, defeating danno's "
+                "isolation contract. Allow ONLY the explicit Ollama host:port."
+            )
     if resolve_backend() == "sbx":
         return ["sbx", "policy", "allow", "network", "--sandbox", name, ",".join(allow_hosts)]
     cmd = ["docker", "sandbox", "network", "proxy", name, "--policy", "allow"]

@@ -43,26 +43,27 @@ def _invoke(project: Path, *args: str) -> object:
 def test_dry_run_prints_plan_and_exits_zero(project: Path) -> None:
     result = _invoke(project, "--dry-run")
     assert result.exit_code == 0
-    assert "danno validate — plan" in result.stdout
-    assert "gptoss" in result.stdout and "gemma" in result.stdout
+    # The plan preamble is progress narration → stderr (channel split §4D).
+    assert "danno validate — plan" in result.stderr
+    assert "gptoss" in result.stderr and "gemma" in result.stderr
 
 
 def test_dry_run_only_subset_shown(project: Path) -> None:
     result = _invoke(project, "--dry-run", "--only", "gptoss")
     assert result.exit_code == 0
-    assert "sweeping" in result.stdout
+    assert "sweeping" in result.stderr  # plan preamble → stderr
 
 
 def test_unknown_only_fails_loud(project: Path) -> None:
     result = _invoke(project, "--dry-run", "--only", "nope")
     assert result.exit_code == 3
-    assert "nope" in result.stdout
+    assert "nope" in result.stderr  # errors go to the stderr log channel
 
 
 def test_html_is_rejected_up_front(project: Path) -> None:
     result = _invoke(project, "--dry-run", "--html")
     assert result.exit_code == 3
-    assert "--html is not yet wired" in result.stdout
+    assert "--html is not yet wired" in result.stderr  # errors go to the stderr log channel
 
 
 def test_missing_config_exits_two(tmp_path: Path) -> None:
@@ -77,4 +78,5 @@ def test_baseline_without_token_fails_before_running(
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     result = _invoke(project, "--dry-run", "--baseline")
     assert result.exit_code == 4
-    assert "setup-token" in result.stdout or "ANTHROPIC_API_KEY" in result.stdout
+    # errors go to the stderr log channel
+    assert "setup-token" in result.stderr or "ANTHROPIC_API_KEY" in result.stderr

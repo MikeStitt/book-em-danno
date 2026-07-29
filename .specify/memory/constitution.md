@@ -155,6 +155,21 @@ thin pointers — change a rule **here**, not in those pointers.
 
 See [`documentation.md`](parts/documentation.md) for where to put different kinds of docs.
 
+### Printing & Error Reporting
+
+danno has a **printing and error-reporting policy** — the code-level form of
+*Fail Loud* (Working Rule 8). Every reported condition is exactly one of five
+severity levels — **FATAL**, **ERROR**, **TRANSIENT** (an intermittent,
+retry-safe failure that escalates to ERROR once it exceeds its budget),
+**WARNING**, **INFO** — and **none of them may be swallowed silently** (no
+`except: pass`, no error returned as the same sentinel a legitimate empty would
+return). All reporting goes through **one standard mechanism**, with a strict
+channel split: **stdout** carries only a command's parseable data product,
+**stderr** the live operational log, and a **file** sink mirrors it where the log
+would otherwise be lost. The full policy — levels, the no-silent-swallow rule,
+the channel and verbosity model, file logging, and enforcement — lives in
+[`parts/printing-and-error-reporting.md`](parts/printing-and-error-reporting.md).
+
 ### Plan-File Etiquette
 
 Plan files (`~/.claude/plans/*.md` and equivalent session-scoped planning
@@ -199,6 +214,7 @@ in `scratch/`. This exception is named explicitly so future contributors don't
 | ADOS install/adjust + Ollama model cfg | [`parts/ados-ollama.md`](parts/ados-ollama.md)                           |
 | Hooks / CI / changelog / cwd-flags     | [`parts/shared.md`](parts/shared.md)                                     |
 | Writing tests                          | [`parts/testing.md`](parts/testing.md)                                   |
+| Printing / logging / error handling    | [`parts/printing-and-error-reporting.md`](parts/printing-and-error-reporting.md) |
 | Amending the constitution itself       | [`parts/constitution-maintenance.md`](parts/constitution-maintenance.md) |
 
 ## Governance
@@ -210,4 +226,4 @@ in `scratch/`. This exception is named explicitly so future contributors don't
   [`parts/constitution-maintenance.md`](parts/constitution-maintenance.md).
   Read that part before changing this file or any other part.
 
-**Version**: 2.2.0 | **Ratified**: 2026-06-05 | **Last amended**: 2026-06-22
+**Version**: 2.3.0 | **Ratified**: 2026-06-05 | **Last amended**: 2026-07-29

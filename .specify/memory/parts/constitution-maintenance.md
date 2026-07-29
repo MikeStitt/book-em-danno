@@ -40,6 +40,27 @@ checklist for any change to `constitution.md` or a part.
 
 ## Changelog
 
+- **2.3.0 (2026-07-29)** — MINOR: added a **Printing & Error Reporting** policy —
+  a new principle, hence the minor bump. A thin subsection under Engineering
+  Discipline in `constitution.md` names the five severity levels (FATAL / ERROR /
+  TRANSIENT / WARNING / INFO), the no-silent-swallow prohibition, the single
+  standard mechanism, and the stdout-data / stderr-log / file-mirror channel
+  split; the full policy lives in the new
+  [`parts/printing-and-error-reporting.md`](printing-and-error-reporting.md), with
+  its design-of-record at `.docs/plan-printing-error-reporting-policy.md`. _Why:_
+  _Fail Loud_ (Working Rule 8) forbids silent failure but never said what level a
+  condition is, where it goes, or through what mechanism — so each module invented
+  its own answer, and a whole class of failures (guaranteed-empty capture sidecars
+  #98, silently-accepted o4-mini 401s #99, the capture egress log #101) stayed
+  invisible because caught errors were returned as the same sentinel a legitimate
+  empty result would return. This policy closes issue #102. **No on-disk companion
+  is enforced in this commit** (it is docs-only): the code migration — routing
+  `log_warn`/`log_err` to stderr, adding the file sink and the `TRANSIENT` level,
+  and enabling the ruff `T20` bare-print ban — is booked as the remediation backlog
+  in the DoR, because enabling `T20` before that routing lands would misrepresent
+  the WARN/ERROR-on-stdout gap as fixed. The verbosity model (`-q`/default/`-v`
+  gating the console threshold only) is defined in the part; its code remediation
+  is likewise tracked in the DoR per the _Configuration is code_ rule.
 - **2.2.0 (2026-06-22)** — MINOR: the _ADOS provenance_ rule now permits danno to
   write **model assignment** into a danno-managed, marker-delimited region of an
   agent `.md`'s frontmatter when that `.md` controls the agent. _Why:_ OpenCode

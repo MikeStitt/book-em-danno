@@ -40,7 +40,7 @@ def test_bench_no_save_captures_with_capture_dir_fails_loud(tmp_path: Path) -> N
         ["bench", "--no-save-captures", "--capture-dir", str(tmp_path), "--target", str(tmp_path)],
     )
     assert result.exit_code == 2
-    assert "conflicts with --capture-dir" in result.stdout
+    assert "conflicts with --capture-dir" in result.stderr  # errors go to the stderr log
 
 
 def test_install_accepts_apply_after_subcommand() -> None:

@@ -20,9 +20,9 @@ from __future__ import annotations
 import argparse
 import html
 import json
-import sys
 from pathlib import Path
 
+from book_em_danno.core.exec import log_info
 from danno_validator import harnesses
 
 # --- small formatting helpers -------------------------------------------------
@@ -629,10 +629,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--html", type=Path)
     args = ap.parse_args(argv)
     payloads = load(args.paths)
-    print(merge_markdown(payloads))
+    print(merge_markdown(payloads))  # noqa: T201 — the merged report IS this command's stdout product
     if args.html:
         args.html.write_text(merge_html(payloads), encoding="utf-8")
-        print(f"wrote {args.html}", file=sys.stderr)
+        log_info(f"wrote {args.html}")
     return 0
 
 
