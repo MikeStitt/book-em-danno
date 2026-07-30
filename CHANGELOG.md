@@ -3,6 +3,50 @@
 All notable changes to `danno` (book-em-danno). Generated from conventional
 commits by [git-cliff](https://git-cliff.org).
 
+## [0.18.0] - 2026-07-30
+
+### Bug Fixes
+
+- *(log)* Guard FATAL-tier silent swallows in config + stub-ai setup (#102)
+- *(log)* Surface ERROR-tier silent swallows as typed failures (#102)
+- *(log)* TRANSIENT→ERROR retry helper + wire ollama probes/pull (#102)
+- *(log)* WARNING-tier swallow remediation — distinguish absent from failed (#102)
+- *(sandbox)* Validate the harness arg up front in create/provision (#109)
+- *(capture)* Create the capture JSONL lazily on first record, not at startup
+- *(bench)* Make runaway-gate reap & survivor probe fail loud (#103)
+- *(bench)* Claurst matrix skips unreachable-backend models instead of aborting the sweep (#107)
+- *(bench)* A 0-request active backend fails loud instead of grading to a silent pass (#105)
+- *(bench)* Make cell `termination` a faithful enum, not a gate_kill/else binary
+- *(bench)* Persist bench verdicts incrementally so a kill keeps graded cells (#113)
+- *(log)* WARNING-tier swallow remediation for the sbx egress audit (#102)
+- *(doctor)* Probe both sandbox CLIs, not just the active backend (#102)
+
+### Documentation
+
+- *(constitution)* Add printing & error-reporting policy (#102)
+
+### Features
+
+- *(log)* Stdlib-logging keystone + FATAL egress guard (#102)
+- *(log)* Auto-open a durable run log per bench/validate sweep (#102)
+- *(log)* Capture handler errors in the capture proxy + stub-ai (#102)
+- *(bench)* Record per-cell resolved gates + image-harness version in provenance (#89)
+- *(capture)* Record sbx egress reachability log as egress.json
+- *(doctor)* Validate the target danno.toml as a preflight check (#102)
+
+### Refactor
+
+- *(validate)* Split ConsoleReporter progress→stderr, results→stdout (#102)
+
+### Testing
+
+- *(bench)* Cover every sb.provision caller by harness name, incl. e2e (#108)
+- *(log)* Migrate validator warning assertions to stderr channel (#102)
+- *(capture)* Route egress blocked-host warning assertion to stderr (#101)
+- Fix §5-sweep CI failures on Windows and narrow terminals (#102)
+- Escape the interpolated path in env-file failure matchers (#102)
+- Cover the two _kill_process_group WARN branches (#102)
+
 ## [0.17.3] - 2026-07-27
 
 ### CI
